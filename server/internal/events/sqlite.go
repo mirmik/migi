@@ -50,11 +50,194 @@ CREATE TABLE IF NOT EXISTS device_acks (
     device_id TEXT PRIMARY KEY,
     through_id INTEGER NOT NULL CHECK (through_id >= 0),
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pairing_codes (
+    secret_hash BLOB PRIMARY KEY,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS devices (
+    device_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    token_hash BLOB NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    revoked_at TEXT
 );`
 	if _, err := j.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
 	return nil
+}
+
+func (j *SQLiteJournal) CreatePairingCode(ctx context.Context, secretHash []byte, expiresAt time.Time) error {
+	if len(secretHash) != 32 {
+		return errors.New("pairing secret hash must be 32 bytes")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := j.db.ExecContext(ctx, `
+DELETE FROM pairing_codes WHERE expires_at <= ?;
+INSERT INTO pairing_codes(secret_hash, expires_at, created_at) VALUES(?, ?, ?);`,
+		now, secretHash, expiresAt.UTC().Format(time.RFC3339Nano), now)
+	if err != nil {
+		return fmt.Errorf("create pairing code: %w", err)
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) RedeemPairingCode(
+	ctx context.Context,
+	secretHash []byte,
+	deviceID string,
+	name string,
+	tokenHash []byte,
+) error {
+	if len(secretHash) != 32 || len(tokenHash) != 32 || deviceID == "" {
+		return ErrInvalidPairingCode
+	}
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin pairing transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM pairing_codes WHERE secret_hash = ? AND expires_at > ?`, secretHash, now)
+	if err != nil {
+		return fmt.Errorf("consume pairing code: %w", err)
+	}
+	consumed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read pairing result: %w", err)
+	}
+	if consumed != 1 {
+		return ErrInvalidPairingCode
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO devices(device_id, name, token_hash, created_at, last_seen_at, revoked_at)
+VALUES(?, ?, ?, ?, ?, NULL)
+ON CONFLICT(device_id) DO UPDATE SET
+    name = excluded.name,
+    token_hash = excluded.token_hash,
+    last_seen_at = excluded.last_seen_at,
+    revoked_at = NULL`, deviceID, name, tokenHash, now, now)
+	if err != nil {
+		return fmt.Errorf("store device credential: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pairing transaction: %w", err)
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) AuthenticateDevice(ctx context.Context, tokenHash []byte) (string, error) {
+	if len(tokenHash) != 32 {
+		return "", ErrUnauthorized
+	}
+	var deviceID string
+	err := j.db.QueryRowContext(ctx,
+		`SELECT device_id FROM devices WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash,
+	).Scan(&deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrUnauthorized
+	}
+	if err != nil {
+		return "", fmt.Errorf("authenticate device: %w", err)
+	}
+	if _, err := j.db.ExecContext(ctx,
+		`UPDATE devices SET last_seen_at = ? WHERE device_id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano), deviceID,
+	); err != nil {
+		return "", fmt.Errorf("update device activity: %w", err)
+	}
+	return deviceID, nil
+}
+
+func (j *SQLiteJournal) RevokeDevice(ctx context.Context, deviceID string) error {
+	if deviceID == "" {
+		return errors.New("device id is required")
+	}
+	result, err := j.db.ExecContext(ctx,
+		`UPDATE devices SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339Nano), deviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke device: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read revoke result: %w", err)
+	}
+	if updated != 1 {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
+	rows, err := j.db.QueryContext(ctx, `
+SELECT d.device_id, d.name, d.created_at, d.last_seen_at, d.revoked_at,
+       coalesce(a.through_id, 0)
+FROM devices d
+LEFT JOIN device_acks a ON a.device_id = d.device_id
+ORDER BY d.created_at, d.device_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list devices: %w", err)
+	}
+	defer rows.Close()
+	var devices []DeviceInfo
+	for rows.Next() {
+		var device DeviceInfo
+		var createdAt, lastSeenAt string
+		var revokedAt sql.NullString
+		if err := rows.Scan(&device.ID, &device.Name, &createdAt, &lastSeenAt, &revokedAt, &device.AckThrough); err != nil {
+			return nil, fmt.Errorf("scan device: %w", err)
+		}
+		device.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse device creation time: %w", err)
+		}
+		device.LastSeenAt, err = time.Parse(time.RFC3339Nano, lastSeenAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse device activity time: %w", err)
+		}
+		if revokedAt.Valid {
+			value, err := time.Parse(time.RFC3339Nano, revokedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse device revocation time: %w", err)
+			}
+			device.RevokedAt = &value
+		}
+		devices = append(devices, device)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate devices: %w", err)
+	}
+	return devices, nil
+}
+
+func (j *SQLiteJournal) Stats(ctx context.Context) (ServerStats, error) {
+	var stats ServerStats
+	err := j.db.QueryRowContext(ctx, `
+SELECT
+    (SELECT count(*) FROM events),
+    (SELECT coalesce(max(id), 0) FROM events),
+    (SELECT count(*) FROM devices),
+    (SELECT count(*) FROM devices WHERE revoked_at IS NULL),
+    (SELECT count(*) FROM pairing_codes WHERE expires_at > ?)
+`, time.Now().UTC().Format(time.RFC3339Nano)).Scan(
+		&stats.EventCount,
+		&stats.LatestEventID,
+		&stats.DeviceCount,
+		&stats.ActiveDeviceCount,
+		&stats.ActivePairingCodes,
+	)
+	if err != nil {
+		return ServerStats{}, fmt.Errorf("read server stats: %w", err)
+	}
+	return stats, nil
 }
 
 func (j *SQLiteJournal) Append(ctx context.Context, input Input) (Event, error) {

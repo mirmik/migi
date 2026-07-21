@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Broker struct {
@@ -69,6 +70,36 @@ func (b *Broker) Subscribe(ctx context.Context, after uint64) ([]Event, <-chan E
 
 func (b *Broker) Acknowledge(ctx context.Context, deviceID string, through uint64) error {
 	return b.journal.Acknowledge(ctx, deviceID, through)
+}
+
+func (b *Broker) CreatePairingCode(ctx context.Context, secretHash []byte, expiresAt time.Time) error {
+	return b.journal.CreatePairingCode(ctx, secretHash, expiresAt)
+}
+
+func (b *Broker) RedeemPairingCode(ctx context.Context, secretHash []byte, deviceID, name string, tokenHash []byte) error {
+	return b.journal.RedeemPairingCode(ctx, secretHash, deviceID, name, tokenHash)
+}
+
+func (b *Broker) AuthenticateDevice(ctx context.Context, tokenHash []byte) (string, error) {
+	return b.journal.AuthenticateDevice(ctx, tokenHash)
+}
+
+func (b *Broker) RevokeDevice(ctx context.Context, deviceID string) error {
+	return b.journal.RevokeDevice(ctx, deviceID)
+}
+
+func (b *Broker) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
+	return b.journal.ListDevices(ctx)
+}
+
+func (b *Broker) Stats(ctx context.Context) (ServerStats, error) {
+	return b.journal.Stats(ctx)
+}
+
+func (b *Broker) SubscriberCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subscribers)
 }
 
 func (b *Broker) Healthy(ctx context.Context) error {

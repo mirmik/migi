@@ -2,8 +2,11 @@ package dev.migi.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.ViewGroup
@@ -11,60 +14,55 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.time.Instant
+import kotlin.concurrent.thread
+import org.json.JSONObject
 
 class MainActivity : Activity() {
+    private lateinit var endpoint: EditText
+    private lateinit var certificatePin: EditText
+    private lateinit var status: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        buildContentView()
+        handlePairingIntent(intent)
+    }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairingIntent(intent)
+    }
+
+    private fun buildContentView() {
         val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-        val endpoint = EditText(this).apply {
+        endpoint = EditText(this).apply {
             hint = getString(R.string.endpoint_hint)
             setText(preferences.getString(KEY_ENDPOINT, ""))
             inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
         }
-        val certificatePin = EditText(this).apply {
+        certificatePin = EditText(this).apply {
             hint = getString(R.string.certificate_pin_hint)
             setText(preferences.getString(KEY_CERTIFICATE_PIN, ""))
             inputType = android.text.InputType.TYPE_CLASS_TEXT
         }
-        val status = TextView(this).apply {
-            text = getString(
-                if (ConnectionService.isRunning) R.string.service_running else R.string.service_stopped,
-            )
+        status = TextView(this).apply {
+            text = when {
+                ConnectionService.isRunning -> getString(R.string.service_running)
+                CredentialStore(this@MainActivity).load() == null -> getString(R.string.device_not_paired)
+                else -> getString(R.string.service_stopped)
+            }
             textSize = 16f
         }
 
         val start = Button(this).apply {
             text = getString(R.string.start_connection)
-            setOnClickListener {
-                val value = endpoint.text.toString().trim()
-                if (!value.startsWith("https://")) {
-                    endpoint.error = getString(R.string.endpoint_required)
-                    return@setOnClickListener
-                }
-                val rawPin = certificatePin.text.toString().trim()
-                val pin = rawPin.filterNot { it.isWhitespace() || it == ':' }
-                if (
-                    pin.length != 64 ||
-                    pin.any { !it.isDigit() && it.lowercaseChar() !in 'a'..'f' } ||
-                    rawPin.any { !it.isWhitespace() && it != ':' && !it.isDigit() && it.lowercaseChar() !in 'a'..'f' }
-                ) {
-                    certificatePin.error = getString(R.string.certificate_pin_required)
-                    return@setOnClickListener
-                }
-                preferences.edit()
-                    .putString(KEY_ENDPOINT, value.trimEnd('/'))
-                    .putString(KEY_CERTIFICATE_PIN, pin.uppercase())
-                    .apply()
-                startForegroundService(Intent(this@MainActivity, ConnectionService::class.java))
-                status.setText(R.string.service_starting)
-            }
+            setOnClickListener { startConfiguredConnection() }
         }
-
         val stop = Button(this).apply {
             text = getString(R.string.stop_connection)
             setOnClickListener {
@@ -72,7 +70,6 @@ class MainActivity : Activity() {
                 status.setText(R.string.service_stopped)
             }
         }
-
         val battery = Button(this).apply {
             text = getString(R.string.open_battery_settings)
             setOnClickListener {
@@ -97,14 +94,138 @@ class MainActivity : Activity() {
         })
     }
 
+    private fun startConfiguredConnection() {
+        val value = endpoint.text.toString().trim().trimEnd('/')
+        if (!value.startsWith("https://")) {
+            endpoint.error = getString(R.string.endpoint_required)
+            return
+        }
+        val pin = normalizePin(certificatePin.text.toString())
+        if (pin == null) {
+            certificatePin.error = getString(R.string.certificate_pin_required)
+            return
+        }
+        if (CredentialStore(this).load() == null) {
+            status.setText(R.string.device_not_paired)
+            return
+        }
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+            .putString(KEY_ENDPOINT, value)
+            .putString(KEY_CERTIFICATE_PIN, pin)
+            .apply()
+        startForegroundService(
+            Intent(this, ConnectionService::class.java).setAction(ConnectionService.ACTION_RECONFIGURE),
+        )
+        status.setText(R.string.service_starting)
+    }
+
+    private fun handlePairingIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val invitation = PairingInvitation.parse(intent.data) ?: run {
+            setIntent(Intent(this, MainActivity::class.java))
+            status.setText(R.string.invalid_pairing_invitation)
+            return
+        }
+        // The one-time secret must not be replayed after activity recreation.
+        setIntent(Intent(this, MainActivity::class.java))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.confirm_pairing_title)
+            .setMessage(
+                getString(
+                    R.string.confirm_pairing_message,
+                    invitation.endpoint,
+                    invitation.pin.chunked(2).joinToString(":"),
+                    invitation.expiresAt.toString(),
+                ),
+            )
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.pair_device) { _, _ -> pair(invitation) }
+            .show()
+    }
+
+    private fun pair(invitation: PairingInvitation) {
+        status.setText(R.string.pairing_in_progress)
+        thread(name = "migi-pair") {
+            val result = runCatching {
+                val response = NativeQuicClient.pair(
+                    endpoint = invitation.endpoint,
+                    certificatePin = invitation.pin,
+                    secret = invitation.secret,
+                    deviceID = DeviceIdentity.get(this),
+                    deviceName = "${Build.MANUFACTURER} ${Build.MODEL}",
+                )
+                check(!response.startsWith("MIGI_ERROR:")) {
+                    response.removePrefix("MIGI_ERROR:")
+                }
+                val json = JSONObject(response)
+                check(json.getString("device_id") == DeviceIdentity.get(this)) {
+                    "Server returned a different device ID"
+                }
+                CredentialStore(this).save(json.getString("token"))
+                check(
+                    getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+                        .putString(KEY_ENDPOINT, invitation.endpoint)
+                        .putString(KEY_CERTIFICATE_PIN, invitation.pin)
+                        .commit(),
+                ) { "Failed to save paired server" }
+            }
+            runOnUiThread {
+                result.onSuccess {
+                    endpoint.setText(invitation.endpoint)
+                    certificatePin.setText(invitation.pin)
+                    startForegroundService(
+                        Intent(this, ConnectionService::class.java)
+                            .setAction(ConnectionService.ACTION_RECONFIGURE),
+                    )
+                    status.setText(R.string.pairing_complete)
+                }.onFailure {
+                    status.text = getString(R.string.pairing_failed, it.message ?: "unknown error")
+                }
+            }
+        }
+    }
+
     private fun matchWidth() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT,
     )
 
+    private data class PairingInvitation(
+        val endpoint: String,
+        val pin: String,
+        val secret: String,
+        val expiresAt: Instant,
+    ) {
+        companion object {
+            fun parse(uri: Uri?): PairingInvitation? = runCatching {
+                require(uri?.scheme == "migi" && uri.host == "pair")
+                val endpoint = requireNotNull(uri.getQueryParameter("endpoint")).trimEnd('/')
+                require(endpoint.startsWith("https://"))
+                val pin = requireNotNull(normalizePin(uri.getQueryParameter("pin")))
+                val secret = requireNotNull(uri.getQueryParameter("secret"))
+                require(secret.matches(Regex("^[A-Za-z0-9_-]{43}$")))
+                val expires = Instant.parse(requireNotNull(uri.getQueryParameter("expires")))
+                require(expires.isAfter(Instant.now()))
+                PairingInvitation(endpoint, pin, secret, expires)
+            }.getOrNull()
+        }
+    }
+
     companion object {
         const val PREFERENCES = "migi"
         const val KEY_ENDPOINT = "endpoint"
         const val KEY_CERTIFICATE_PIN = "certificate_pin"
+
+        private fun normalizePin(raw: String?): String? {
+            if (raw == null) return null
+            val trimmed = raw.trim()
+            val compact = trimmed.filterNot { it.isWhitespace() || it == ':' }
+            return compact.uppercase().takeIf {
+                it.length == 64 && it.all { character -> character.isHexDigit() } &&
+                    trimmed.all { character -> character.isWhitespace() || character == ':' || character.isHexDigit() }
+            }
+        }
+
+        private fun Char.isHexDigit(): Boolean = isDigit() || lowercaseChar() in 'a'..'f'
     }
 }

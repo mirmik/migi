@@ -9,5 +9,9 @@ local.properties
 *.pem
 *.key
 server/migi-server
+server/bin/
 server/dev-certs/
-server/dev-certs-sslip/
+/migi.db
+/server/migi.db
+*.db-shm
+*.db-wal

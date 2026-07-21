@@ -2,7 +2,13 @@ package events
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+var (
+	ErrInvalidPairingCode = errors.New("pairing code is invalid, expired, or already used")
+	ErrUnauthorized       = errors.New("device credential is invalid or revoked")
 )
 
 type Event struct {
@@ -21,11 +27,34 @@ type Input struct {
 	Body  string `json:"body,omitempty"`
 }
 
+type DeviceInfo struct {
+	ID         string
+	Name       string
+	CreatedAt  time.Time
+	LastSeenAt time.Time
+	RevokedAt  *time.Time
+	AckThrough uint64
+}
+
+type ServerStats struct {
+	EventCount         uint64
+	LatestEventID      uint64
+	DeviceCount        uint64
+	ActiveDeviceCount  uint64
+	ActivePairingCodes uint64
+}
+
 type Journal interface {
 	Append(context.Context, Input) (Event, error)
 	After(context.Context, uint64) ([]Event, error)
 	Acknowledge(context.Context, string, uint64) error
 	Acknowledged(context.Context, string) (uint64, error)
+	CreatePairingCode(context.Context, []byte, time.Time) error
+	RedeemPairingCode(context.Context, []byte, string, string, []byte) error
+	AuthenticateDevice(context.Context, []byte) (string, error)
+	RevokeDevice(context.Context, string) error
+	ListDevices(context.Context) ([]DeviceInfo, error)
+	Stats(context.Context) (ServerStats, error)
 	Ping(context.Context) error
 	Close() error
 }

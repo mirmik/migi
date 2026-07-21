@@ -3,10 +3,13 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -39,9 +42,12 @@ func TestIngestAcceptsEventsButPublicListenerDoesNot(t *testing.T) {
 }
 
 func TestPublicEventStreamRequiresHTTP3(t *testing.T) {
+	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "phone-1")
 	request := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
-	newPublicMux(newTestBroker(t)).ServeHTTP(response, request)
+	newPublicMux(broker).ServeHTTP(response, request)
 
 	if response.Code != http.StatusHTTPVersionNotSupported {
 		t.Fatalf("stream returned %d, want %d", response.Code, http.StatusHTTPVersionNotSupported)
@@ -50,11 +56,13 @@ func TestPublicEventStreamRequiresHTTP3(t *testing.T) {
 
 func TestAcknowledgementIsPersisted(t *testing.T) {
 	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "phone-1")
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/ack",
 		strings.NewReader(`{"device_id":"phone-1","through":42}`),
 	)
+	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
 	newPublicMux(broker).ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -62,8 +70,55 @@ func TestAcknowledgementIsPersisted(t *testing.T) {
 	}
 }
 
+func TestPublicEndpointsRequirePairedDevice(t *testing.T) {
+	broker := newTestBroker(t)
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/v1/events", nil),
+		httptest.NewRequest(http.MethodPost, "/v1/ack", strings.NewReader(`{"device_id":"phone-1","through":1}`)),
+	} {
+		response := httptest.NewRecorder()
+		newPublicMux(broker).ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("%s returned %d, want 401", request.URL.Path, response.Code)
+		}
+	}
+}
+
+func TestPairingCodeCanBeRedeemedOnlyOnce(t *testing.T) {
+	broker := newTestBroker(t)
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	secretHash := sha256.Sum256(secret)
+	if err := broker.CreatePairingCode(t.Context(), secretHash[:], time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"secret":%q,"device_id":"phone-1","name":"Samsung A54"}`,
+		base64.RawURLEncoding.EncodeToString(secret))
+
+	response := httptest.NewRecorder()
+	newPublicMux(broker).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/pair", strings.NewReader(body)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("pair returned %d: %s", response.Code, response.Body.String())
+	}
+	var paired struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&paired); err != nil || paired.Token == "" {
+		t.Fatalf("invalid pair response %q: %v", response.Body.String(), err)
+	}
+
+	replay := httptest.NewRecorder()
+	newPublicMux(broker).ServeHTTP(replay, httptest.NewRequest(http.MethodPost, "/v1/pair", strings.NewReader(body)))
+	if replay.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed pair returned %d, want 401", replay.Code)
+	}
+}
+
 func TestHTTP3StreamsPersistedEvent(t *testing.T) {
 	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "phone-1")
 	want, err := broker.Publish(t.Context(), events.Input{
 		Kind:  "agent.completed",
 		Agent: "builder-1",
@@ -100,7 +155,12 @@ func TestHTTP3StreamsPersistedEvent(t *testing.T) {
 	}
 	t.Cleanup(func() { transport.Close() })
 	client := http.Client{Transport: transport, Timeout: 5 * time.Second}
-	response, err := client.Get("https://" + packetConn.LocalAddr().String() + "/v1/events?after=0")
+	request, err := http.NewRequest(http.MethodGet, "https://"+packetConn.LocalAddr().String()+"/v1/events?after=0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +175,20 @@ func TestHTTP3StreamsPersistedEvent(t *testing.T) {
 	if got.ID != want.ID || got.Title != want.Title {
 		t.Fatalf("streamed event %#v, want %#v", got, want)
 	}
+}
+
+func pairTestDevice(t *testing.T, broker *events.Broker, deviceID string) string {
+	t.Helper()
+	secretHash := sha256.Sum256([]byte("test pairing secret " + deviceID))
+	token := []byte("01234567890123456789012345678901")
+	tokenHash := sha256.Sum256(token)
+	if err := broker.CreatePairingCode(t.Context(), secretHash[:], time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.RedeemPairingCode(t.Context(), secretHash[:], deviceID, "test device", tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(token)
 }
 
 func newTestBroker(t *testing.T) *events.Broker {

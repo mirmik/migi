@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Migi administration</title>
+  <link rel="stylesheet" href="/admin/assets/style.css">
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">Self-hosted agent link</span><h1>Migi</h1></div>
+    <span class="healthy">● server running</span>
+  </header>
+  <main>
+    {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+    <section class="stats">
+      <article><strong>{{.Stats.EventCount}}</strong><span>stored events</span></article>
+      <article><strong>{{.Stats.LatestEventID}}</strong><span>latest event ID</span></article>
+      <article><strong>{{.Stats.ActiveDeviceCount}}</strong><span>active devices</span></article>
+      <article><strong>{{.ActiveStreams}}</strong><span>live streams</span></article>
+      <article><strong>{{.Stats.ActivePairingCodes}}</strong><span>pairing invites</span></article>
+      <article><strong>{{formatDuration .Uptime}}</strong><span>uptime</span></article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Pair a device</h2>
+        {{if .PublicEndpoint}}
+          <p>Create a short-lived, one-time invitation. Confirm the endpoint and fingerprint on the phone.</p>
+          <form method="post" action="/admin/pair">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label>Lifetime
+              <select name="ttl"><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option></select>
+            </label>
+            <button type="submit">Create pairing QR</button>
+          </form>
+          {{if .Pairing}}
+          <div class="pairing">
+            <img src="{{.Pairing.QRDataURI}}" width="384" height="384" alt="One-time Migi pairing QR">
+            <p>Expires {{formatTime .Pairing.ExpiresAt}}. Delete screenshots after use or expiry.</p>
+          </div>
+          {{end}}
+        {{else}}
+          <p class="warning">Pairing is unavailable. Restart the server with <code>-public-endpoint https://address:port</code>.</p>
+        {{end}}
+      </article>
+
+      <article class="panel configuration">
+        <h2>Configuration</h2>
+        <dl>
+          <dt>Public endpoint</dt><dd>{{if .PublicEndpoint}}{{.PublicEndpoint}}{{else}}not configured{{end}}</dd>
+          <dt>Certificate SHA-256</dt><dd class="fingerprint">{{.CertificateFingerprint}}</dd>
+          <dt>QUIC listener</dt><dd>{{.PublicListen}}</dd>
+          <dt>Agent ingress</dt><dd>{{.IngestListen}}</dd>
+          <dt>Administration</dt><dd>{{.AdminListen}}</dd>
+          <dt>Started</dt><dd>{{formatTime .StartedAt}}</dd>
+        </dl>
+      </article>
+    </section>
+
+    <section class="panel devices">
+      <h2>Paired devices</h2>
+      {{if .Devices}}
+      <div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Device ID</th><th>Last seen</th><th>ACK cursor</th><th>Status</th><th></th></tr></thead>
+        <tbody>{{range .Devices}}<tr>
+          <td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .LastSeenAt}}</td><td>{{.AckThrough}}</td>
+          <td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td>
+          <td>{{if not .RevokedAt}}<form method="post" action="/admin/devices/revoke">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="device_id" value="{{.ID}}">
+            <button class="danger" type="submit">Revoke</button>
+          </form>{{end}}</td>
+        </tr>{{end}}</tbody>
+      </table></div>
+      {{else}}<p>No devices paired yet.</p>{{end}}
+    </section>
+  </main>
+  <footer>Administration is intended for loopback access through an SSH tunnel.</footer>
+</body>
+</html>

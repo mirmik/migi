@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -23,13 +23,16 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_run(
     after: jlong,
     device_id: JString,
     certificate_pin: JString,
+    credential: JString,
     callback: JObject,
 ) -> jstring {
     let result = (|| -> Result<(), AnyError> {
         let endpoint: String = env.get_string(&endpoint)?.into();
         let device_id: String = env.get_string(&device_id)?.into();
         let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
         let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
         run_client(
             &mut env,
             &callback,
@@ -37,6 +40,7 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_run(
             after.max(0) as u64,
             &device_id,
             &expected_pin,
+            &credential,
         )
     })();
 
@@ -49,6 +53,41 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_run(
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_pair(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    secret: JString,
+    device_id: JString,
+    device_name: JString,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let secret: String = env.get_string(&secret)?.into();
+        let device_id: String = env.get_string(&device_id)?.into();
+        let device_name: String = env.get_string(&device_name)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        let body = serde_json::json!({
+            "secret": secret,
+            "device_id": device_id,
+            "name": device_name,
+        })
+        .to_string();
+        single_request(&endpoint, &expected_pin, "POST", "/v1/pair", &body)
+    })();
+
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 fn run_client(
     env: &mut JNIEnv,
     callback: &JObject,
@@ -56,6 +95,7 @@ fn run_client(
     after: u64,
     device_id: &str,
     expected_pin: &[u8; 32],
+    credential: &str,
 ) -> Result<(), AnyError> {
     let url = Url::parse(endpoint)?;
     if url.scheme() != "https" {
@@ -77,20 +117,7 @@ fn run_client(
     socket.set_read_timeout(Some(CALLBACK_POLL))?;
     let local_addr = socket.local_addr()?;
 
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
-    // The exact leaf certificate is authenticated immediately after the TLS
-    // handshake, before any HTTP request or application data is sent.
-    config.verify_peer(false);
-    config.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)?;
-    config.set_max_idle_timeout(90_000);
-    config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
-    config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
-    config.set_initial_max_stream_data_uni(1_000_000);
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
+    let mut config = quic_config()?;
 
     let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
     rand::rng().fill_bytes(&mut scid_bytes);
@@ -172,7 +199,7 @@ fn run_client(
 
         if certificate_checked && event_stream.is_none() {
             let path = format!("/v1/events?after={after}");
-            let headers = request_headers("GET", &url, &path, None);
+            let headers = request_headers("GET", &url, &path, None, Some(credential));
             event_stream = Some(
                 h3_connection
                     .as_mut()
@@ -234,10 +261,182 @@ fn run_client(
             }
 
             for through in acknowledgements {
-                send_ack(http3, &mut connection, &url, device_id, through)?;
+                send_ack(http3, &mut connection, &url, device_id, credential, through)?;
             }
         }
     }
+}
+
+fn single_request(
+    endpoint: &str,
+    expected_pin: &[u8; 32],
+    method: &str,
+    path: &str,
+    body: &str,
+) -> Result<String, AnyError> {
+    let url = Url::parse(endpoint)?;
+    if url.scheme() != "https" {
+        return Err(invalid("endpoint must use https"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| invalid("endpoint has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let peer_addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| invalid("endpoint host did not resolve"))?;
+    let bind_addr = match peer_addr {
+        SocketAddr::V4(_) => "0.0.0.0:0",
+        SocketAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_addr)?;
+    socket.set_read_timeout(Some(CALLBACK_POLL))?;
+    let local_addr = socket.local_addr()?;
+    let mut config = quic_config()?;
+    let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
+    rand::rng().fill_bytes(&mut scid_bytes);
+    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
+    let h3_config = quiche::h3::Config::new()?;
+    let mut http3 = None;
+    let mut certificate_checked = false;
+    let mut request_stream = None;
+    let mut response_status = None::<String>;
+    let mut response_body = Vec::new();
+    let mut input = [0_u8; 65_535];
+    let mut output = [0_u8; MAX_DATAGRAM_SIZE];
+    let deadline = Instant::now() + Duration::from_secs(15);
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err("pairing request timed out".into());
+        }
+        flush_packets(&socket, &mut connection, &mut output)?;
+        match socket.recv_from(&mut input) {
+            Ok((length, from)) => {
+                let info = quiche::RecvInfo {
+                    from,
+                    to: local_addr,
+                };
+                match connection.recv(&mut input[..length], info) {
+                    Ok(_) | Err(quiche::Error::Done) => {}
+                    Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if connection.timeout() == Some(Duration::ZERO) {
+                    connection.on_timeout();
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if connection.is_closed() {
+            return Err("QUIC connection closed during pairing".into());
+        }
+        if connection.is_established() && !certificate_checked {
+            verify_certificate_pin(&connection, expected_pin)?;
+            certificate_checked = true;
+            http3 = Some(quiche::h3::Connection::with_transport(
+                &mut connection,
+                &h3_config,
+            )?);
+        }
+        if certificate_checked && request_stream.is_none() {
+            let headers = request_headers(method, &url, path, Some(body.len()), None);
+            let stream = http3
+                .as_mut()
+                .unwrap()
+                .send_request(&mut connection, &headers, false)?;
+            http3
+                .as_mut()
+                .unwrap()
+                .send_body(&mut connection, stream, body.as_bytes(), true)?;
+            request_stream = Some(stream);
+        }
+        if let Some(http3) = http3.as_mut() {
+            loop {
+                match http3.poll(&mut connection) {
+                    Ok((stream, quiche::h3::Event::Headers { list, .. }))
+                        if Some(stream) == request_stream =>
+                    {
+                        response_status = list
+                            .iter()
+                            .find(|header| header.name() == b":status")
+                            .and_then(|header| std::str::from_utf8(header.value()).ok())
+                            .map(str::to_owned);
+                    }
+                    Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
+                        while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                            if response_body.len() + read > 64 * 1024 {
+                                return Err("pairing response is too large".into());
+                            }
+                            response_body.extend_from_slice(&input[..read]);
+                        }
+                    }
+                    Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
+                        let status = response_status.as_deref().unwrap_or("unknown");
+                        let body = String::from_utf8(response_body)?;
+                        if status != "201" {
+                            return Err(
+                                format!("pairing returned HTTP {status}: {}", body.trim()).into()
+                            );
+                        }
+                        return Ok(body);
+                    }
+                    Ok((stream, quiche::h3::Event::Reset(code)))
+                        if Some(stream) == request_stream =>
+                    {
+                        return Err(format!("pairing stream was reset ({code})").into());
+                    }
+                    Ok((_, _)) => {}
+                    Err(quiche::h3::Error::Done) => break,
+                    Err(error) => return Err(format!("HTTP/3 pairing failed: {error:?}").into()),
+                }
+            }
+        }
+    }
+}
+
+fn quic_config() -> Result<quiche::Config, quiche::Error> {
+    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
+    // Authentication is performed by verify_certificate_pin() before HTTP/3
+    // is created or application data is sent.
+    config.verify_peer(false);
+    config.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)?;
+    config.set_max_idle_timeout(90_000);
+    config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
+    config.set_initial_max_data(10_000_000);
+    config.set_initial_max_stream_data_bidi_local(1_000_000);
+    config.set_initial_max_stream_data_bidi_remote(1_000_000);
+    config.set_initial_max_stream_data_uni(1_000_000);
+    config.set_initial_max_streams_bidi(100);
+    config.set_initial_max_streams_uni(100);
+    Ok(config)
+}
+
+fn verify_certificate_pin(
+    connection: &quiche::Connection,
+    expected_pin: &[u8; 32],
+) -> Result<(), AnyError> {
+    let peer_certificate = connection
+        .peer_cert()
+        .ok_or_else(|| invalid("server did not present a certificate"))?;
+    let actual_pin: [u8; 32] = Sha256::digest(peer_certificate).into();
+    if &actual_pin != expected_pin {
+        return Err(format!(
+            "server certificate pin mismatch (received {})",
+            format_pin(&actual_pin)
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn flush_packets(
@@ -261,6 +460,7 @@ fn request_headers<'a>(
     url: &'a Url,
     path: &'a str,
     content_length: Option<usize>,
+    bearer: Option<&str>,
 ) -> Vec<quiche::h3::Header> {
     let host = url.host_str().unwrap_or_default();
     let mut authority = if host.contains(':') {
@@ -288,6 +488,12 @@ fn request_headers<'a>(
             length.to_string().as_bytes(),
         ));
     }
+    if let Some(token) = bearer {
+        headers.push(quiche::h3::Header::new(
+            b"authorization",
+            format!("Bearer {token}").as_bytes(),
+        ));
+    }
     headers
 }
 
@@ -296,10 +502,11 @@ fn send_ack(
     connection: &mut quiche::Connection,
     url: &Url,
     device_id: &str,
+    credential: &str,
     through: i64,
 ) -> Result<(), AnyError> {
     let body = format!(r#"{{"device_id":"{device_id}","through":{through}}}"#);
-    let headers = request_headers("POST", url, "/v1/ack", Some(body.len()));
+    let headers = request_headers("POST", url, "/v1/ack", Some(body.len()), Some(credential));
     let stream = http3.send_request(connection, &headers, false)?;
     http3.send_body(connection, stream, body.as_bytes(), true)?;
     Ok(())
@@ -380,6 +587,17 @@ fn format_pin(pin: &[u8; 32]) -> String {
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(":")
+}
+
+fn validate_token(token: &str) -> Result<(), AnyError> {
+    if token.len() != 43
+        || !token.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        return Err(invalid("device credential is malformed"));
+    }
+    Ok(())
 }
 
 fn invalid(message: &str) -> AnyError {

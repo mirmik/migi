@@ -38,11 +38,17 @@ The JNI call owns the UDP socket, QUIC state, HTTP/3 stream and TLS certificate
 check. Kotlin continues to own reconnect policy, durable cursors and Android
 notifications.
 
-The server uses Go and `github.com/quic-go/quic-go/http3`. It exposes two
-listeners: public HTTP/3 for phones and a separate TCP HTTP listener bound to
-loopback for trusted local agent submissions. Agents therefore do not need a
-QUIC implementation, and the unauthenticated bootstrap submission endpoint is
-not accidentally exposed to the internet.
+The server uses Go and `github.com/quic-go/quic-go/http3`. It exposes three
+independently configurable listeners:
+
+- public HTTP/3 over UDP for phones;
+- TCP HTTP on loopback for trusted local agent submissions;
+- TCP HTTP on loopback for the administration UI.
+
+Agents therefore do not need a QUIC implementation. Neither the unauthenticated
+bootstrap submission endpoint nor administrative actions are accidentally
+exposed to the internet. The administration UI is server-rendered and embedded
+in the Go binary, so it adds no Node or browser-framework deployment runtime.
 
 ### Streaming model
 
@@ -92,7 +98,7 @@ local agents
     |
     | HTTP POST /v1/events on loopback TCP
     v
-Go event server ---- event journal / device state
+Go event server ---- event journal / device state <---- local web administration
     |
     | public HTTP/3 stream over QUIC (UDP)
     v
@@ -113,19 +119,27 @@ configured pin. It creates the HTTP/3 connection and sends `/v1/events` only
 after an exact match. A peer presenting the same public certificate still needs
 the corresponding private key to complete the handshake.
 
-The pin is bootstrapped manually in the current UI. This is secure when the
-fingerprint is transferred over a separately trusted path, such as USB during
-initial setup. QR-assisted pairing, protected local storage and an explicit
-key-rotation flow remain production work. Replacing the server certificate
-requires deliberately updating the pin on every paired device.
+The pin is bootstrapped through a short-lived `migi://pair` QR invitation. The
+phone shows the endpoint and fingerprint for confirmation, verifies the pin in
+the native QUIC handshake, and exchanges the QR's one-time secret for a random
+device token. Pairing secrets and device tokens are stored by the server only
+as SHA-256 hashes. Android wraps its token with an AES-GCM key held in Android
+Keystore. Replacing the server certificate requires a new pairing QR.
+
+The token is a Bearer credential on the event stream and acknowledgements. The
+server binds the requested device ID to the credential, supports local
+revocation, and revalidates active streams before events and heartbeats. A
+rejected Android credential is deleted and cannot enter an endless retry loop.
 
 The previously tested platform `HttpEngine` remains unsuitable for this mode:
 on the Samsung it rejected both an APK-bundled debug CA and a user-installed CA.
 Public CA certificates remain an optional deployment mode, not a requirement.
 
-Device pairing and authentication are not invented in the bootstrap. The
-planned direction is a QR-assisted one-time pairing secret, a per-device
-credential stored through Android Keystore, and server-side revocation.
+Administrative POST actions carry a process-local CSRF token, and the panel
+sends a restrictive content security policy and `no-store` caching policy. The
+panel has no remote-access authentication of its own: its security boundary is
+the loopback bind plus an authenticated SSH tunnel. Binding it to a non-loopback
+address requires adding a real authentication layer first.
 
 ## Failure handling
 
@@ -139,7 +153,7 @@ credential stored through Android Keystore, and server-side revocation.
 ## Decisions deferred without blocking bootstrap
 
 - UDP/443 exposure versus a small relay when the home connection is behind CGNAT;
-- QR pairing, pin storage and certificate rotation policy;
+- multi-certificate overlap for graceful server identity rotation;
 - server retention period;
 - auto-start after reboot;
 - NDJSON-to-CBOR migration point.

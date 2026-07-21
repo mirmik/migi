@@ -1,7 +1,27 @@
 # Bootstrap protocol
 
 This document specifies protocol version 1 used by the initial vertical slice.
-All production endpoints require HTTP/3 and TLS.
+All public endpoints require HTTP/3 and TLS. Except for `/healthz` and
+`/v1/pair`, requests require `Authorization: Bearer <device-token>`.
+
+## Pair a device
+
+```http
+POST /v1/pair
+Content-Type: application/json
+
+{"secret":"base64url-one-time-secret","device_id":"phone-1","name":"samsung SM-A546E"}
+```
+
+The secret is created locally by `migi-pair`, stored only as a SHA-256 hash,
+expires, and can be consumed once. A successful pinned request returns
+`201 Created` with `Cache-Control: no-store`:
+
+```json
+{"device_id":"phone-1","token":"base64url-device-token"}
+```
+
+Only the device-token hash is persisted by the server.
 
 ## Event object
 
@@ -43,6 +63,7 @@ It must not be exposed publicly without authentication.
 ```http
 GET /v1/events?after=1841
 Accept: application/x-ndjson
+Authorization: Bearer <device-token>
 ```
 
 The response stays open. Each non-empty line is either an event object or a
@@ -60,14 +81,15 @@ strictly increasing within one server journal.
 ```http
 POST /v1/ack
 Content-Type: application/json
+Authorization: Bearer <device-token>
 
 {"device_id":"phone-1","through":1842}
 ```
 
-The server stores the greatest cursor acknowledged by each device. An older
+The `device_id` must match the identity authenticated by the Bearer token. The
+server stores the greatest cursor acknowledged by each device. An older
 acknowledgement never moves a device cursor backward. Success returns
-`204 No Content`. Authentication will bind `device_id` to a paired credential
-before this endpoint is exposed in production.
+`204 No Content`.
 
 ## Health
 

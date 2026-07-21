@@ -2,7 +2,6 @@ package dev.migi.app
 
 import android.content.Context
 import android.util.Log
-import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -28,8 +27,17 @@ internal object NativeQuicClient {
         after: Long,
         deviceID: String,
         certificatePin: String,
+        credential: String,
         callback: NativeCallbacks,
     ): String?
+
+    external fun pair(
+        endpoint: String,
+        certificatePin: String,
+        secret: String,
+        deviceID: String,
+        deviceName: String,
+    ): String
 }
 
 internal class NativeCallbacks(
@@ -55,19 +63,16 @@ internal class NativeCallbacks(
 }
 
 class EventStreamClient(
-    context: Context,
+    private val context: Context,
     private val endpoint: String,
     private val certificatePin: String,
+    private val credential: String,
     private val onState: (String) -> Unit,
     private val onEvent: (AgentEvent) -> Unit,
 ) : AutoCloseable {
     private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val preferences = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
-    private val deviceID = preferences.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also {
-        check(preferences.edit().putString(KEY_DEVICE_ID, it).commit()) {
-            "Failed to persist device ID"
-        }
-    }
+    private val deviceID = DeviceIdentity.get(context)
 
     @Volatile
     private var closed = false
@@ -106,13 +111,20 @@ class EventStreamClient(
         callbacks = runCallbacks
         val cursor = preferences.getLong(KEY_LAST_EVENT_ID, 0)
         val error = runCatching {
-            NativeQuicClient.run(endpoint, cursor, deviceID, certificatePin, runCallbacks)
+            NativeQuicClient.run(endpoint, cursor, deviceID, certificatePin, credential, runCallbacks)
         }.getOrElse {
             Log.e(TAG, "Native QUIC client failed", it)
             it.message ?: it.javaClass.simpleName
         }
         if (closed || generation != runGeneration) return
         callbacks = null
+        if (error?.contains("HTTP 401") == true) {
+            CredentialStore(context).clear()
+            closed = true
+            onState("Device credential rejected; scan a new pairing QR")
+            executor.shutdown()
+            return
+        }
         scheduleReconnect(error ?: "Connection stopped")
     }
 
@@ -161,7 +173,6 @@ class EventStreamClient(
 
     companion object {
         private const val KEY_LAST_EVENT_ID = "last_event_id"
-        private const val KEY_DEVICE_ID = "device_id"
         private const val TAG = "MigiEventStream"
     }
 }

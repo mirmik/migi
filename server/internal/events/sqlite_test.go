@@ -2,8 +2,11 @@ package events
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSQLiteJournalPersistsEventsAndIDs(t *testing.T) {
@@ -39,6 +42,52 @@ func TestSQLiteJournalPersistsEventsAndIDs(t *testing.T) {
 	}
 	if len(replay) != 1 || replay[0].Title != "second" {
 		t.Fatalf("unexpected replay: %#v", replay)
+	}
+}
+
+func TestPairingCodeIsOneTimeAndCredentialCanBeRevoked(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	secretHash := sha256.Sum256([]byte("one-time secret"))
+	tokenHash := sha256.Sum256([]byte("device token"))
+	if err := journal.CreatePairingCode(ctx, secretHash[:], time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RedeemPairingCode(ctx, secretHash[:], "phone-1", "Samsung", tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RedeemPairingCode(ctx, secretHash[:], "phone-2", "Replay", tokenHash[:]); !errors.Is(err, ErrInvalidPairingCode) {
+		t.Fatalf("replayed pairing code returned %v", err)
+	}
+	deviceID, err := journal.AuthenticateDevice(ctx, tokenHash[:])
+	if err != nil || deviceID != "phone-1" {
+		t.Fatalf("authenticated device %q, error %v", deviceID, err)
+	}
+	if err := journal.RevokeDevice(ctx, "phone-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.AuthenticateDevice(ctx, tokenHash[:]); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked credential returned %v", err)
+	}
+	devices, err := journal.ListDevices(ctx)
+	if err != nil || len(devices) != 1 || devices[0].ID != "phone-1" || devices[0].RevokedAt == nil {
+		t.Fatalf("unexpected device list %#v, error %v", devices, err)
+	}
+	stats, err := journal.Stats(ctx)
+	if err != nil || stats.DeviceCount != 1 || stats.ActiveDeviceCount != 0 {
+		t.Fatalf("unexpected stats %#v, error %v", stats, err)
+	}
+}
+
+func TestExpiredPairingCodeIsRejected(t *testing.T) {
+	journal := openTestJournal(t)
+	secretHash := sha256.Sum256([]byte("expired secret"))
+	tokenHash := sha256.Sum256([]byte("device token"))
+	if err := journal.CreatePairingCode(context.Background(), secretHash[:], time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RedeemPairingCode(context.Background(), secretHash[:], "phone-1", "", tokenHash[:]); !errors.Is(err, ErrInvalidPairingCode) {
+		t.Fatalf("expired pairing code returned %v", err)
 	}
 }
 

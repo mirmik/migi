@@ -12,4 +12,12 @@
     <string name="service_running">Connection service is running</string>
     <string name="service_stopped">Connection service is stopped</string>
     <string name="service_starting">Connection service is starting</string>
+    <string name="device_not_paired">Scan a Migi pairing QR with the phone camera</string>
+    <string name="invalid_pairing_invitation">Invalid or expired pairing invitation</string>
+    <string name="confirm_pairing_title">Pair with this Migi server?</string>
+    <string name="confirm_pairing_message">Endpoint:\n%1$s\n\nCertificate SHA-256:\n%2$s\n\nInvitation expires:\n%3$s</string>
+    <string name="pair_device">Pair</string>
+    <string name="pairing_in_progress">Pairing over pinned QUIC…</string>
+    <string name="pairing_complete">Paired; starting connection</string>
+    <string name="pairing_failed">Pairing failed: %1$s</string>
 </resources>

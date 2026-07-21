@@ -17,7 +17,7 @@ Services, or a bundled Chromium network stack.
 ## Repository layout
 
 - `android/` — Android application and foreground connection service.
-- `server/` — self-hosted Go HTTP/3 event server.
+- `server/` — self-hosted Go HTTP/3 event server and local administration UI.
 - `docs/` — architecture, wire protocol, and development setup.
 
 ## Current status
@@ -27,7 +27,12 @@ acknowledgements in SQLite, accepts submissions on a trusted loopback listener,
 and streams NDJSON events over public HTTP/3. The Android service verifies the
 server certificate pin before sending HTTP,
 deduplicates events, turns them into system notifications, and acknowledges the
-durable cursor. Authentication and production deployment remain follow-up work
-tracked on the `migi` Kanboard project.
+durable cursor. QR-assisted pairing provisions a per-device revocable
+credential protected by Android Keystore. Production deployment remains
+follow-up work tracked on the `migi` Kanboard project.
+
+The server's loopback-only web panel shows health and delivery state, creates
+one-time pairing QR codes, and revokes paired devices. It is deliberately kept
+off the public listener; see [docs/administration.md](docs/administration.md).
 
 See [docs/development.md](docs/development.md) for build commands.

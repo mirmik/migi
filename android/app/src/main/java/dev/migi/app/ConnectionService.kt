@@ -47,12 +47,17 @@ class ConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_RECONFIGURE) {
+            client?.close()
+            client = null
+        }
         if (client == null) {
             val preferences = getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE)
             val endpoint = preferences.getString(MainActivity.KEY_ENDPOINT, null)
             val certificatePin = preferences.getString(MainActivity.KEY_CERTIFICATE_PIN, null)
-            if (endpoint.isNullOrBlank() || certificatePin.isNullOrBlank()) {
-                updateConnectionStatus("Server endpoint or certificate pin is not configured")
+            val credential = CredentialStore(this).load()
+            if (endpoint.isNullOrBlank() || certificatePin.isNullOrBlank() || credential.isNullOrBlank()) {
+                updateConnectionStatus("Pair this device before connecting")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -62,6 +67,7 @@ class ConnectionService : Service() {
                     context = this,
                     endpoint = endpoint,
                     certificatePin = certificatePin,
+                    credential = credential,
                     onState = ::updateConnectionStatus,
                     onEvent = ::showEvent,
                 ).also { it.start() }
@@ -147,6 +153,7 @@ class ConnectionService : Service() {
         private const val CONNECTION_NOTIFICATION_ID = 1
         private const val TAG = "MigiConnection"
         private val nextEventNotification = AtomicInteger(1000)
+        const val ACTION_RECONFIGURE = "dev.migi.app.action.RECONFIGURE"
 
         @Volatile
         var isRunning: Boolean = false
