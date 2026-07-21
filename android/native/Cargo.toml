@@ -1,0 +1,23 @@
+[package]
+name = "migi-quiche"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "migi_quiche"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21.1"
+quiche = "0.29.3"
+rand = "0.9.2"
+sha2 = "0.10.9"
+url = "2.5.4"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = "s"
+panic = "abort"
+strip = true

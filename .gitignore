@@ -1,0 +1,13 @@
+.gradle/
+**/build/
+**/target/
+local.properties
+.idea/
+*.iml
+*.jks
+*.keystore
+*.pem
+*.key
+server/migi-server
+server/dev-certs/
+server/dev-certs-sslip/
