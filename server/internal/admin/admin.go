@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -110,6 +111,7 @@ func (h *Handler) Routes() http.Handler {
 	})
 	mux.HandleFunc("GET /admin/", h.dashboard)
 	mux.HandleFunc("POST /admin/pair", h.createPairing)
+	mux.HandleFunc("POST /admin/notifications/test", h.sendTestNotification)
 	mux.HandleFunc("POST /admin/devices/revoke", h.revokeDevice)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
 	return h.securityHeaders(mux)
@@ -117,6 +119,24 @@ func (h *Handler) Routes() http.Handler {
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	h.renderDashboard(w, r, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) sendTestNotification(w http.ResponseWriter, r *http.Request) {
+	if !h.validForm(w, r) {
+		return
+	}
+	event, err := h.config.Broker.Publish(r.Context(), events.Input{
+		Kind:  "agent.attention",
+		Agent: "migi-admin",
+		Title: "Migi test notification",
+		Body:  "Sent from the server administration panel.",
+	})
+	if err != nil {
+		http.Error(w, "failed to send test notification", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("test notification sent", "event_id", event.ID, "remote_addr", r.RemoteAddr)
+	http.Redirect(w, r, "/admin/?notice=Test+notification+sent", http.StatusSeeOther)
 }
 
 func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +163,11 @@ func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to persist pairing invitation", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("pairing invitation created",
+		"expires_at", expiresAt,
+		"public_endpoint", h.config.PublicEndpoint,
+		"remote_addr", r.RemoteAddr,
+	)
 	invitation := &url.URL{Scheme: "migi", Host: "pair"}
 	query := invitation.Query()
 	query.Set("endpoint", h.config.PublicEndpoint)
@@ -178,6 +203,7 @@ func (h *Handler) revokeDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to revoke device", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("device revoked", "device_id", deviceID, "remote_addr", r.RemoteAddr)
 	http.Redirect(w, r, "/admin/?notice=Device+revoked", http.StatusSeeOther)
 }
 

@@ -2,7 +2,8 @@
 
 Migi includes a small server-rendered administration panel in the server
 binary. It shows event, device, acknowledgement, pairing and active-stream
-state. It can create short-lived one-time pairing QR codes and revoke a device.
+state. It can send a real test notification, create short-lived one-time
+pairing QR codes and revoke a device.
 
 ## Start it
 
@@ -53,3 +54,12 @@ Administrative forms are protected by an in-memory CSRF token. Responses use
 `Cache-Control: no-store` and a restrictive Content Security Policy. A pairing
 QR embeds a random 256-bit secret and should still be treated as sensitive until
 it is consumed or expires.
+
+## Operational log
+
+The server writes structured operational messages to standard error. They cover
+listener startup and shutdown, accepted events and acknowledgement cursors,
+pairing invitation creation, successful pairing, revocation, rejected device
+authentication, and event-stream connection and disconnection. Stream records
+include the device ID, remote address, replay cursor, duration and delivery
+counts. Pairing secrets, device bearer tokens and QR contents are never logged.

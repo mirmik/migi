@@ -24,6 +24,15 @@
 
     <section class="grid">
       <article class="panel">
+        <h2>Test notification</h2>
+        <p>Send a real attention event through the journal and every connected device stream.</p>
+        <form method="post" action="/admin/notifications/test">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button type="submit">Send test notification</button>
+        </form>
+      </article>
+
+      <article class="panel">
         <h2>Pair a device</h2>
         {{if .PublicEndpoint}}
           <p>Create a short-lived, one-time invitation. Confirm the endpoint and fingerprint on the phone.</p>

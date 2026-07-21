@@ -26,7 +26,8 @@ func TestDashboardAndPairing(t *testing.T) {
 		t.Fatalf("dashboard status = %d, want %d", response.Code, http.StatusOK)
 	}
 	if !strings.Contains(response.Body.String(), "Migi") ||
-		!strings.Contains(response.Body.String(), "https://203.0.113.10:443") {
+		!strings.Contains(response.Body.String(), "https://203.0.113.10:443") ||
+		!strings.Contains(response.Body.String(), "Send test notification") {
 		t.Fatalf("dashboard is missing expected server details: %s", response.Body.String())
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
@@ -72,6 +73,34 @@ func TestAdminRejectsInvalidCSRF(t *testing.T) {
 
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestAdminSendsTestNotification(t *testing.T) {
+	handler, broker := newTestHandler(t)
+	form := url.Values{"csrf_token": {handler.csrfToken}}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/notifications/test",
+		strings.NewReader(form.Encode()),
+	)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+
+	handler.Routes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusSeeOther, response.Body.String())
+	}
+	if location := response.Header().Get("Location"); location != "/admin/?notice=Test+notification+sent" {
+		t.Fatalf("Location = %q", location)
+	}
+	stats, err := broker.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.EventCount != 1 || stats.LatestEventID != 1 {
+		t.Fatalf("unexpected stats after test notification: %#v", stats)
 	}
 }
 

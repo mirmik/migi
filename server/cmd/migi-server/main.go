@@ -60,6 +60,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	slog.Info("server configured",
+		"public_endpoint", *publicEndpoint,
+		"database", *databasePath,
+		"certificate_fingerprint", fingerprint,
+	)
+	if *publicEndpoint == "" {
+		slog.Warn("public endpoint is not configured; web pairing will be unavailable")
+	}
 
 	publicMux := newPublicMux(broker)
 	quicConfig := &quic.Config{}
@@ -198,6 +206,12 @@ func publishHandler(broker *events.Broker) http.HandlerFunc {
 			http.Error(w, "failed to persist event", http.StatusInternalServerError)
 			return
 		}
+		slog.Info("event accepted",
+			"event_id", event.ID,
+			"kind", event.Kind,
+			"agent", event.Agent,
+			"remote_addr", r.RemoteAddr,
+		)
 		writeJSON(w, http.StatusCreated, event)
 	}
 }
@@ -238,11 +252,13 @@ func pairHandler(broker *events.Broker) http.HandlerFunc {
 		var request pairingRequest
 		if err := decoder.Decode(&request); err != nil ||
 			!deviceIDPattern.MatchString(request.DeviceID) || len(request.Name) > 128 {
+			slog.Warn("rejected malformed pairing request", "remote_addr", r.RemoteAddr)
 			http.Error(w, "valid secret and device_id are required", http.StatusBadRequest)
 			return
 		}
 		secret, err := base64.RawURLEncoding.DecodeString(request.Secret)
 		if err != nil || len(secret) != 32 {
+			slog.Warn("rejected invalid pairing code", "device_id", request.DeviceID, "remote_addr", r.RemoteAddr)
 			http.Error(w, "pairing code is invalid or expired", http.StatusUnauthorized)
 			return
 		}
@@ -258,6 +274,7 @@ func pairHandler(broker *events.Broker) http.HandlerFunc {
 			r.Context(), secretHash[:], request.DeviceID, request.Name, tokenHash[:],
 		); err != nil {
 			if errors.Is(err, events.ErrInvalidPairingCode) {
+				slog.Warn("rejected invalid or expired pairing code", "device_id", request.DeviceID, "remote_addr", r.RemoteAddr)
 				http.Error(w, "pairing code is invalid or expired", http.StatusUnauthorized)
 				return
 			}
@@ -266,7 +283,11 @@ func pairHandler(broker *events.Broker) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		slog.Info("paired device", "device_id", request.DeviceID, "name", request.Name)
+		slog.Info("paired device",
+			"device_id", request.DeviceID,
+			"name", request.Name,
+			"remote_addr", r.RemoteAddr,
+		)
 		writeJSON(w, http.StatusCreated, pairingResponse{
 			DeviceID: request.DeviceID,
 			Token:    base64.RawURLEncoding.EncodeToString(token),
@@ -278,6 +299,11 @@ func authenticateDevice(broker *events.Broker, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := parseBearerToken(r.Header.Get("Authorization"))
 		if !ok {
+			slog.Warn("rejected unauthenticated device request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote_addr", r.RemoteAddr,
+			)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "device authentication required", http.StatusUnauthorized)
 			return
@@ -286,6 +312,11 @@ func authenticateDevice(broker *events.Broker, next http.Handler) http.Handler {
 		deviceID, err := broker.AuthenticateDevice(r.Context(), tokenHash[:])
 		if err != nil {
 			if errors.Is(err, events.ErrUnauthorized) {
+				slog.Warn("rejected invalid device credential",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"remote_addr", r.RemoteAddr,
+				)
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				http.Error(w, "device credential is invalid or revoked", http.StatusUnauthorized)
 				return
@@ -330,6 +361,11 @@ func acknowledgeHandler(broker *events.Broker) http.HandlerFunc {
 			http.Error(w, "failed to persist acknowledgement", http.StatusInternalServerError)
 			return
 		}
+		slog.Info("event cursor acknowledged",
+			"device_id", ack.DeviceID,
+			"through", ack.Through,
+			"remote_addr", r.RemoteAddr,
+		)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -359,6 +395,33 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 			http.Error(w, "event journal is unavailable", http.StatusInternalServerError)
 			return
 		}
+		device, _ := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+		connectedAt := time.Now()
+		disconnectReason := "stream ended"
+		var disconnectErr error
+		eventsSent := 0
+		heartbeatsSent := 0
+		slog.Info("device event stream connected",
+			"device_id", device.ID,
+			"remote_addr", r.RemoteAddr,
+			"after", after,
+			"replay_events", len(replay),
+			"active_streams", broker.SubscriberCount(),
+		)
+		defer func() {
+			attributes := []any{
+				"device_id", device.ID,
+				"remote_addr", r.RemoteAddr,
+				"reason", disconnectReason,
+				"duration", time.Since(connectedAt).Round(time.Millisecond),
+				"events_sent", eventsSent,
+				"heartbeats_sent", heartbeatsSent,
+			}
+			if disconnectErr != nil {
+				attributes = append(attributes, "error", disconnectErr)
+			}
+			slog.Info("device event stream disconnected", attributes...)
+		}()
 
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("Cache-Control", "no-store")
@@ -367,29 +430,53 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 
 		for _, event := range replay {
 			if !deviceStillAuthorized(r.Context(), broker) {
+				disconnectReason = "credential revoked"
 				return
 			}
 			if err := writeLine(w, flusher, event); err != nil {
+				disconnectReason = "write failed"
+				disconnectErr = err
 				return
 			}
+			eventsSent++
 		}
 		heartbeat := time.NewTicker(30 * time.Second)
 		defer heartbeat.Stop()
 		for {
 			select {
 			case <-r.Context().Done():
+				disconnectReason = "client disconnected"
+				disconnectErr = context.Cause(r.Context())
 				return
 			case event, open := <-stream:
-				if !open || !deviceStillAuthorized(r.Context(), broker) || writeLine(w, flusher, event) != nil {
+				if !open {
+					disconnectReason = "subscriber closed"
 					return
 				}
+				if !deviceStillAuthorized(r.Context(), broker) {
+					disconnectReason = "credential revoked"
+					return
+				}
+				if err := writeLine(w, flusher, event); err != nil {
+					disconnectReason = "write failed"
+					disconnectErr = err
+					return
+				}
+				eventsSent++
 			case now := <-heartbeat.C:
-				if !deviceStillAuthorized(r.Context(), broker) || writeLine(w, flusher, map[string]any{
+				if !deviceStillAuthorized(r.Context(), broker) {
+					disconnectReason = "credential revoked"
+					return
+				}
+				if err := writeLine(w, flusher, map[string]any{
 					"type": "heartbeat",
 					"time": now.UTC(),
-				}) != nil {
+				}); err != nil {
+					disconnectReason = "write failed"
+					disconnectErr = err
 					return
 				}
+				heartbeatsSent++
 			}
 		}
 	}
