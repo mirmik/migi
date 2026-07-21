@@ -81,6 +81,18 @@ acknowledgement cursors in SQLite. Live subscribers are buffered; when a client
 falls behind that buffer, its stream is closed so it reconnects and replays from
 its durable client cursor instead of silently losing an event.
 
+### Pager state
+
+The administration UI owns one server-wide pager string. Updating it atomically
+stores the current state and appends a `pager.message` event, so connected
+phones see it immediately and disconnected phones receive it through normal
+event replay. Android saves the value before advancing its durable event cursor
+and displays it on the main screen. An empty value represents a cleared pager.
+
+The pager establishes a stateful server-to-device channel without treating
+large media as JSON. A later audio channel will define its own framing and flow
+control while reusing the authenticated HTTP/3 connection.
+
 ### Minimal Android surface
 
 The bootstrap UI uses platform Views rather than Compose. The application needs

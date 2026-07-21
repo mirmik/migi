@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mirmik/migi/server/internal/events"
 	qrcode "github.com/skip2/go-qrcode"
@@ -52,6 +53,7 @@ type pageData struct {
 	StartedAt              time.Time
 	Uptime                 time.Duration
 	Stats                  events.ServerStats
+	Pager                  events.PagerState
 	Devices                []events.DeviceInfo
 	ActiveStreams          int
 	Pairing                *pairingView
@@ -112,6 +114,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/", h.dashboard)
 	mux.HandleFunc("POST /admin/pair", h.createPairing)
 	mux.HandleFunc("POST /admin/notifications/test", h.sendTestNotification)
+	mux.HandleFunc("POST /admin/pager", h.setPagerMessage)
 	mux.HandleFunc("POST /admin/devices/revoke", h.revokeDevice)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
 	return h.securityHeaders(mux)
@@ -119,6 +122,29 @@ func (h *Handler) Routes() http.Handler {
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	h.renderDashboard(w, r, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) setPagerMessage(w http.ResponseWriter, r *http.Request) {
+	if !h.validForm(w, r) {
+		return
+	}
+	message := strings.TrimSpace(r.FormValue("message"))
+	if utf8.RuneCountInString(message) > 512 {
+		http.Error(w, "pager message must not exceed 512 characters", http.StatusBadRequest)
+		return
+	}
+	event, err := h.config.Broker.SetPagerMessage(r.Context(), message)
+	if err != nil {
+		http.Error(w, "failed to update pager message", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("pager message updated",
+		"event_id", event.ID,
+		"characters", utf8.RuneCountInString(message),
+		"cleared", message == "",
+		"remote_addr", r.RemoteAddr,
+	)
+	http.Redirect(w, r, "/admin/?notice=Pager+message+updated", http.StatusSeeOther)
 }
 
 func (h *Handler) sendTestNotification(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +250,11 @@ func (h *Handler) renderDashboard(
 		http.Error(w, "failed to read paired devices", http.StatusInternalServerError)
 		return
 	}
+	pager, err := h.config.Broker.PagerState(r.Context())
+	if err != nil {
+		http.Error(w, "failed to read pager state", http.StatusInternalServerError)
+		return
+	}
 	now := h.now()
 	data := pageData{
 		CSRFToken:              h.csrfToken,
@@ -235,6 +266,7 @@ func (h *Handler) renderDashboard(
 		StartedAt:              h.config.StartedAt,
 		Uptime:                 now.Sub(h.config.StartedAt),
 		Stats:                  stats,
+		Pager:                  pager,
 		Devices:                devices,
 		ActiveStreams:          h.config.Broker.SubscriberCount(),
 		Pairing:                pairing,

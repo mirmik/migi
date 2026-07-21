@@ -126,6 +126,14 @@ class ConnectionService : Service() {
     }
 
     private fun showEvent(event: AgentEvent) {
+		if (event.kind == PAGER_EVENT_KIND) {
+			check(
+				getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE).edit()
+					.putString(MainActivity.KEY_PAGER_MESSAGE, event.body)
+					.commit(),
+			) { "Failed to persist pager message" }
+			if (event.body.isBlank()) return
+		}
         val notification = Notification.Builder(this, EVENT_CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_more)
             .setContentTitle(event.title)
@@ -151,6 +159,7 @@ class ConnectionService : Service() {
         private const val CONNECTION_CHANNEL = "connection"
         private const val EVENT_CHANNEL = "agent-events-v1"
         private const val CONNECTION_NOTIFICATION_ID = 1
+		private const val PAGER_EVENT_KIND = "pager.message"
         private const val TAG = "MigiConnection"
         private val nextEventNotification = AtomicInteger(1000)
         const val ACTION_RECONFIGURE = "dev.migi.app.action.RECONFIGURE"

@@ -43,6 +43,30 @@ func TestBrokerReplaysAndStreamsInOrder(t *testing.T) {
 	}
 }
 
+func TestBrokerStreamsPagerUpdates(t *testing.T) {
+	journal := openTestJournal(t)
+	b := NewBroker(journal)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, stream, err := b.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want, err := b.SetPagerMessage(context.Background(), "Come look at the agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-stream:
+		if got.ID != want.ID || got.Kind != "pager.message" || got.Body != want.Body {
+			t.Fatalf("streamed pager event %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pager update")
+	}
+}
+
 func openTestJournal(t *testing.T) *SQLiteJournal {
 	t.Helper()
 	journal, err := OpenSQLite(t.TempDir() + "/events.db")

@@ -41,8 +41,22 @@ kinds are:
 
 - `agent.completed`
 - `agent.attention_required`
+- `pager.message`
 
 Unknown kinds must remain displayable and must not terminate the stream.
+
+### Pager message
+
+`pager.message` updates the single server-wide text line shown inside the Migi
+application. Its `body` is the complete new value, not a delta. An empty body
+clears the line. The server limits the value to 512 Unicode characters and
+stores the current value together with the event that produced it. The phone
+persists the body before advancing and acknowledging the event cursor.
+
+Pager updates use ordinary event delivery and replay. This deliberately keeps
+the first text channel simple; a future audio channel will require separate
+framing, size limits and flow-control rules rather than embedding audio in this
+JSON object.
 
 ## Submit a local event
 

@@ -2,6 +2,8 @@
 <resources>
     <string name="app_name">Migi</string>
     <string name="server_title">Migi server</string>
+	<string name="pager_title">PAGER</string>
+	<string name="pager_empty">No pager message</string>
     <string name="endpoint_hint">https://192.168.0.90:8443</string>
     <string name="endpoint_required">An HTTPS endpoint is required</string>
     <string name="certificate_pin_hint">SHA-256 server certificate fingerprint</string>

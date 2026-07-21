@@ -2,8 +2,14 @@
 
 Migi includes a small server-rendered administration panel in the server
 binary. It shows event, device, acknowledgement, pairing and active-stream
-state. It can send a real test notification, create short-lived one-time
-pairing QR codes and revoke a device.
+state. It can set the persistent pager line displayed by the Android app, send
+a real test notification, create short-lived one-time pairing QR codes and
+revoke a device.
+
+The **Pager** form accepts up to 512 characters. Updating it creates a durable
+`pager.message` event; submitting an empty field clears the line on connected
+devices. A disconnected device receives the update through event replay when it
+returns.
 
 ## Start it
 

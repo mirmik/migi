@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS devices (
     created_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS pager_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    message TEXT NOT NULL,
+    event_id INTEGER NOT NULL CHECK (event_id > 0),
+    updated_at TEXT NOT NULL
 );`
 	if _, err := j.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
@@ -238,6 +244,73 @@ SELECT
 		return ServerStats{}, fmt.Errorf("read server stats: %w", err)
 	}
 	return stats, nil
+}
+
+func (j *SQLiteJournal) SetPagerMessage(ctx context.Context, message string) (Event, error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Event{}, fmt.Errorf("begin pager transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	createdAt := time.Now().UTC()
+	event := Event{
+		Kind:      "pager.message",
+		Agent:     "migi-admin",
+		Title:     "Migi pager",
+		Body:      message,
+		CreatedAt: createdAt,
+	}
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO events(kind, agent, title, body, created_at) VALUES(?, ?, ?, ?, ?)`,
+		event.Kind,
+		event.Agent,
+		event.Title,
+		event.Body,
+		createdAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return Event{}, fmt.Errorf("append pager event: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return Event{}, fmt.Errorf("read pager event id: %w", err)
+	}
+	event.ID = uint64(id)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO pager_state(singleton, message, event_id, updated_at)
+VALUES(1, ?, ?, ?)
+ON CONFLICT(singleton) DO UPDATE SET
+    message = excluded.message,
+    event_id = excluded.event_id,
+    updated_at = excluded.updated_at`,
+		message, event.ID, createdAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return Event{}, fmt.Errorf("store pager state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, fmt.Errorf("commit pager transaction: %w", err)
+	}
+	return event, nil
+}
+
+func (j *SQLiteJournal) PagerState(ctx context.Context) (PagerState, error) {
+	var state PagerState
+	var updatedAt string
+	err := j.db.QueryRowContext(ctx,
+		`SELECT message, event_id, updated_at FROM pager_state WHERE singleton = 1`,
+	).Scan(&state.Message, &state.EventID, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PagerState{}, nil
+	}
+	if err != nil {
+		return PagerState{}, fmt.Errorf("read pager state: %w", err)
+	}
+	state.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return PagerState{}, fmt.Errorf("parse pager update time: %w", err)
+	}
+	return state, nil
 }
 
 func (j *SQLiteJournal) Append(ctx context.Context, input Input) (Event, error) {

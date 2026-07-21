@@ -79,6 +79,36 @@ func TestPairingCodeIsOneTimeAndCredentialCanBeRevoked(t *testing.T) {
 	}
 }
 
+func TestPagerMessagePersistsStateAndEvents(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	first, err := journal.SetPagerMessage(ctx, "First message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := journal.SetPagerMessage(ctx, "Current message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID+1 || second.Kind != "pager.message" || second.Body != "Current message" {
+		t.Fatalf("unexpected pager event %#v after %#v", second, first)
+	}
+	state, err := journal.PagerState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Message != "Current message" || state.EventID != second.ID || state.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected pager state %#v", state)
+	}
+	replay, err := journal.After(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 2 || replay[0].Body != "First message" || replay[1].Body != "Current message" {
+		t.Fatalf("unexpected pager replay %#v", replay)
+	}
+}
+
 func TestExpiredPairingCodeIsRejected(t *testing.T) {
 	journal := openTestJournal(t)
 	secretHash := sha256.Sum256([]byte("expired secret"))

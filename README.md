@@ -32,7 +32,8 @@ credential protected by Android Keystore. Production deployment remains
 follow-up work tracked on the `migi` Kanboard project.
 
 The server's loopback-only web panel shows health and delivery state, creates
-one-time pairing QR codes, and revokes paired devices. It is deliberately kept
-off the public listener; see [docs/administration.md](docs/administration.md).
+one-time pairing QR codes, updates a persistent pager line in the Android app,
+and revokes paired devices. It is deliberately kept off the public listener;
+see [docs/administration.md](docs/administration.md).
 
 See [docs/development.md](docs/development.md) for build commands.

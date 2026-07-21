@@ -24,7 +24,11 @@ func (b *Broker) Publish(ctx context.Context, input Input) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
+	b.broadcast(event)
+	return event, nil
+}
 
+func (b *Broker) broadcast(event Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -39,8 +43,6 @@ func (b *Broker) Publish(ctx context.Context, input Input) (Event, error) {
 			close(subscriber)
 		}
 	}
-
-	return event, nil
 }
 
 func (b *Broker) Subscribe(ctx context.Context, after uint64) ([]Event, <-chan Event, error) {
@@ -94,6 +96,19 @@ func (b *Broker) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 
 func (b *Broker) Stats(ctx context.Context) (ServerStats, error) {
 	return b.journal.Stats(ctx)
+}
+
+func (b *Broker) SetPagerMessage(ctx context.Context, message string) (Event, error) {
+	event, err := b.journal.SetPagerMessage(ctx, message)
+	if err != nil {
+		return Event{}, err
+	}
+	b.broadcast(event)
+	return event, nil
+}
+
+func (b *Broker) PagerState(ctx context.Context) (PagerState, error) {
+	return b.journal.PagerState(ctx)
 }
 
 func (b *Broker) SubscriberCount() int {

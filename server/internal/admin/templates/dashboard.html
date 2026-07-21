@@ -24,6 +24,19 @@
 
     <section class="grid">
       <article class="panel">
+        <h2>Pager</h2>
+        <p>Set the persistent one-line message shown inside the Migi app. Submit an empty field to clear it.</p>
+        <form method="post" action="/admin/pager">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <label>Message
+            <input type="text" name="message" maxlength="512" value="{{.Pager.Message}}" placeholder="Waiting for instructions…">
+          </label>
+          <button type="submit">Update pager</button>
+        </form>
+        {{if .Pager.EventID}}<p class="muted">Last updated {{formatTime .Pager.UpdatedAt}} · event {{.Pager.EventID}}</p>{{end}}
+      </article>
+
+      <article class="panel">
         <h2>Test notification</h2>
         <p>Send a real attention event through the journal and every connected device stream.</p>
         <form method="post" action="/admin/notifications/test">

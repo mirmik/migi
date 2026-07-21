@@ -104,6 +104,48 @@ func TestAdminSendsTestNotification(t *testing.T) {
 	}
 }
 
+func TestAdminUpdatesAndClearsPager(t *testing.T) {
+	handler, broker := newTestHandler(t)
+
+	postPager := func(message string) *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{"csrf_token": {handler.csrfToken}, "message": {message}}
+		request := httptest.NewRequest(http.MethodPost, "/admin/pager", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, request)
+		return response
+	}
+
+	response := postPager("  Agent needs a decision  ")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("set pager status = %d: %s", response.Code, response.Body.String())
+	}
+	state, err := broker.PagerState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Message != "Agent needs a decision" || state.EventID != 1 {
+		t.Fatalf("unexpected pager state %#v", state)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	response = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), "Agent needs a decision") {
+		t.Fatalf("dashboard does not show pager state: %s", response.Body.String())
+	}
+
+	response = postPager("")
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("clear pager status = %d: %s", response.Code, response.Body.String())
+	}
+	state, err = broker.PagerState(context.Background())
+	if err != nil || state.Message != "" || state.EventID != 2 {
+		t.Fatalf("unexpected cleared pager state %#v, error %v", state, err)
+	}
+}
+
 func TestAdminRevokesDevice(t *testing.T) {
 	handler, broker := newTestHandler(t)
 	secretHash := sha256.Sum256([]byte("pairing secret"))

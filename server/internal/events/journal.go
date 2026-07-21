@@ -44,6 +44,12 @@ type ServerStats struct {
 	ActivePairingCodes uint64
 }
 
+type PagerState struct {
+	Message   string
+	EventID   uint64
+	UpdatedAt time.Time
+}
+
 type Journal interface {
 	Append(context.Context, Input) (Event, error)
 	After(context.Context, uint64) ([]Event, error)
@@ -55,6 +61,8 @@ type Journal interface {
 	RevokeDevice(context.Context, string) error
 	ListDevices(context.Context) ([]DeviceInfo, error)
 	Stats(context.Context) (ServerStats, error)
+	SetPagerMessage(context.Context, string) (Event, error)
+	PagerState(context.Context) (PagerState, error)
 	Ping(context.Context) error
 	Close() error
 }

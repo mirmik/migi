@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -19,9 +20,14 @@ import kotlin.concurrent.thread
 import org.json.JSONObject
 
 class MainActivity : Activity() {
+	private lateinit var preferences: SharedPreferences
     private lateinit var endpoint: EditText
     private lateinit var certificatePin: EditText
     private lateinit var status: TextView
+	private lateinit var pagerMessage: TextView
+	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
+	}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,8 +44,19 @@ class MainActivity : Activity() {
         handlePairingIntent(intent)
     }
 
+	override fun onStart() {
+		super.onStart()
+		preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
+		refreshPagerMessage()
+	}
+
+	override fun onStop() {
+		preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+		super.onStop()
+	}
+
     private fun buildContentView() {
-        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+		preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
         endpoint = EditText(this).apply {
             hint = getString(R.string.endpoint_hint)
             setText(preferences.getString(KEY_ENDPOINT, ""))
@@ -58,6 +75,11 @@ class MainActivity : Activity() {
             }
             textSize = 16f
         }
+		pagerMessage = TextView(this).apply {
+			textSize = 20f
+			setTextIsSelectable(true)
+			setPadding(0, 6, 0, 18)
+		}
 
         val start = Button(this).apply {
             text = getString(R.string.start_connection)
@@ -85,6 +107,11 @@ class MainActivity : Activity() {
                 setText(R.string.server_title)
                 textSize = 24f
             })
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.pager_title)
+				textSize = 13f
+			})
+			addView(pagerMessage, matchWidth())
             addView(endpoint, matchWidth())
             addView(certificatePin, matchWidth())
             addView(start, matchWidth())
@@ -93,6 +120,12 @@ class MainActivity : Activity() {
             addView(status, matchWidth())
         })
     }
+
+	private fun refreshPagerMessage() {
+		pagerMessage.text = preferences.getString(KEY_PAGER_MESSAGE, null)
+			?.takeIf { it.isNotBlank() }
+			?: getString(R.string.pager_empty)
+	}
 
     private fun startConfiguredConnection() {
         val value = endpoint.text.toString().trim().trimEnd('/')
@@ -215,6 +248,7 @@ class MainActivity : Activity() {
         const val PREFERENCES = "migi"
         const val KEY_ENDPOINT = "endpoint"
         const val KEY_CERTIFICATE_PIN = "certificate_pin"
+		const val KEY_PAGER_MESSAGE = "pager_message"
 
         private fun normalizePin(raw: String?): String? {
             if (raw == null) return null
