@@ -20,19 +20,22 @@ const (
 	publicMaxUnvalidatedConnections = 48
 	publicMaxConnectionsPerSource   = 8
 	publicMaxConcurrentRequests     = 128
+	publicMaxStreamsPerDevice       = 2
 	publicRateLimitEntries          = 4096
 )
 
 var errConnectionCapacity = errors.New("public QUIC connection capacity exceeded")
 
 type publicSecurity struct {
-	connections  *connectionAdmission
-	handshakes   *keyedRateLimiter
-	pairRequests *keyedRateLimiter
-	healthChecks *keyedRateLimiter
-	authAttempts *keyedRateLimiter
-	authFailures *keyedRateLimiter
-	requestSlots chan struct{}
+	connections   *connectionAdmission
+	handshakes    *keyedRateLimiter
+	pairRequests  *keyedRateLimiter
+	healthChecks  *keyedRateLimiter
+	authAttempts  *keyedRateLimiter
+	authFailures  *keyedRateLimiter
+	rejectionLogs *keyedRateLimiter
+	deviceStreams *deviceStreamAdmission
+	requestSlots  chan struct{}
 }
 
 func newPublicSecurity() *publicSecurity {
@@ -49,7 +52,10 @@ func newPublicSecurity() *publicSecurity {
 		healthChecks: newKeyedRateLimiter(50, 100, 5, 10),
 		authAttempts: newKeyedRateLimiter(100, 200, 10, 20),
 		authFailures: newKeyedRateLimiter(20, 40, 2, 5),
-		requestSlots: make(chan struct{}, publicMaxConcurrentRequests),
+		// Rejected traffic must not turn into an unbounded log-writing workload.
+		rejectionLogs: newKeyedRateLimiter(5, 20, 0.2, 2),
+		deviceStreams: newDeviceStreamAdmission(publicMaxStreamsPerDevice),
+		requestSlots:  make(chan struct{}, publicMaxConcurrentRequests),
 	}
 }
 
@@ -76,7 +82,7 @@ func (s *publicSecurity) rateLimit(
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !limiter.allowRemote(r.RemoteAddr) {
-			slog.Warn("public request rate limited", "scope", scope, "remote_addr", r.RemoteAddr)
+			s.logRejection("public request rate limited", r.RemoteAddr, "scope", scope)
 			writeRateLimited(w)
 			return
 		}
@@ -91,10 +97,35 @@ func (s *publicSecurity) limitConcurrency(next http.Handler) http.Handler {
 			defer func() { <-s.requestSlots }()
 			next.ServeHTTP(w, r)
 		default:
-			slog.Warn("public request capacity reached", "remote_addr", r.RemoteAddr)
+			s.logRejection("public request capacity reached", r.RemoteAddr)
 			writeRateLimited(w)
 		}
 	})
+}
+
+func (s *publicSecurity) limitDeviceStreams(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		device, ok := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+		if !ok {
+			http.Error(w, "device authentication required", http.StatusUnauthorized)
+			return
+		}
+		if !s.deviceStreams.admit(device.ID) {
+			s.logRejection("device event stream capacity reached", r.RemoteAddr, "device_id", device.ID)
+			writeRateLimited(w)
+			return
+		}
+		defer s.deviceStreams.release(device.ID)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *publicSecurity) logRejection(message, remoteAddr string, attributes ...any) {
+	if !s.rejectionLogs.allowRemote(remoteAddr) {
+		return
+	}
+	attributes = append(attributes, "remote_addr", remoteAddr)
+	slog.Warn(message, attributes...)
 }
 
 func writeRateLimited(w http.ResponseWriter) {
@@ -111,6 +142,36 @@ type connectionAdmission struct {
 	active         int
 	unvalidated    int
 	bySource       map[string]int
+}
+
+type deviceStreamAdmission struct {
+	mu       sync.Mutex
+	max      int
+	byDevice map[string]int
+}
+
+func newDeviceStreamAdmission(max int) *deviceStreamAdmission {
+	return &deviceStreamAdmission{max: max, byDevice: make(map[string]int)}
+}
+
+func (a *deviceStreamAdmission) admit(deviceID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if deviceID == "" || a.byDevice[deviceID] >= a.max {
+		return false
+	}
+	a.byDevice[deviceID]++
+	return true
+}
+
+func (a *deviceStreamAdmission) release(deviceID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.byDevice[deviceID] <= 1 {
+		delete(a.byDevice, deviceID)
+		return
+	}
+	a.byDevice[deviceID]--
 }
 
 func newConnectionAdmission(maxTotal, maxUnvalidated, maxPerSource int) *connectionAdmission {
@@ -173,10 +234,26 @@ func (l *keyedRateLimiter) allowAddr(addr net.Addr) bool {
 }
 
 func (l *keyedRateLimiter) allow(source string) bool {
-	if !l.global.allow("global") {
+	// Reserve both tokens as one operation. In particular, traffic that has
+	// exhausted its source bucket must not consume capacity shared by other
+	// sources.
+	l.sources.mu.Lock()
+	defer l.sources.mu.Unlock()
+	sourceBucket := l.sources.bucket(source, l.sources.now())
+	if sourceBucket.tokens < 1 {
 		return false
 	}
-	return l.sources.allow(source)
+
+	l.global.mu.Lock()
+	defer l.global.mu.Unlock()
+	globalBucket := l.global.bucket("global", l.global.now())
+	if globalBucket.tokens < 1 {
+		return false
+	}
+
+	sourceBucket.tokens--
+	globalBucket.tokens--
+	return true
 }
 
 func (l *keyedRateLimiter) readyRemote(remoteAddr string) bool {

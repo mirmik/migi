@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -167,6 +170,37 @@ func TestFailedAuthenticationBurstStopsBeforeJournal(t *testing.T) {
 	}
 }
 
+func TestMalformedAuthenticationFloodDoesNotBlockAnotherSource(t *testing.T) {
+	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "phone-1")
+	security := newPublicSecurity()
+	security.authFailures = newKeyedRateLimiter(1, 3, 1, 1)
+	fixed := time.Unix(1, 0)
+	security.authFailures.global.now = func() time.Time { return fixed }
+	security.authFailures.sources.now = func() time.Time { return fixed }
+	security.authAttempts = fixedLimiter(10)
+	handler := newPublicMuxWithSecurity(broker, security)
+
+	for range 100 {
+		request := httptest.NewRequest(http.MethodPost, "/v1/ack", nil)
+		request.RemoteAddr = "192.0.2.31:50000"
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/ack",
+		strings.NewReader(`{"device_id":"phone-1","through":1}`),
+	)
+	request.RemoteAddr = "192.0.2.32:50000"
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("valid source returned %d after another source flooded authentication", response.Code)
+	}
+}
+
 func TestPublicConcurrencyGateRejectsExcessWork(t *testing.T) {
 	security := newPublicSecurity()
 	security.requestSlots = make(chan struct{}, 1)
@@ -206,6 +240,93 @@ func TestTokenBucketEntryCountIsBounded(t *testing.T) {
 	}
 	if buckets.entries["one"] == nil || buckets.entries["three"] == nil || buckets.entries["two"] != nil {
 		t.Fatal("bounded limiter did not evict the least recently used source")
+	}
+}
+
+func TestSourceLimitRejectionDoesNotConsumeGlobalCapacity(t *testing.T) {
+	limiter := newKeyedRateLimiter(1, 3, 1, 1)
+	fixed := time.Unix(1, 0)
+	limiter.global.now = func() time.Time { return fixed }
+	limiter.sources.now = func() time.Time { return fixed }
+
+	if !limiter.allow("192.0.2.1") {
+		t.Fatal("first source was unexpectedly rejected")
+	}
+	for range 100 {
+		if limiter.allow("192.0.2.1") {
+			t.Fatal("source limit was not enforced")
+		}
+	}
+	if !limiter.allow("192.0.2.2") || !limiter.allow("192.0.2.3") {
+		t.Fatal("rejected source traffic consumed another source's global capacity")
+	}
+	if limiter.allow("192.0.2.4") {
+		t.Fatal("global limit was not enforced after three accepted sources")
+	}
+}
+
+func TestRejectionLoggingIsIndependentlyBounded(t *testing.T) {
+	security := newPublicSecurity()
+	security.rejectionLogs = fixedLimiter(2)
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	for range 20 {
+		security.logRejection("public request rejected", "192.0.2.40:50000")
+	}
+	if got := strings.Count(output.String(), "public request rejected"); got != 2 {
+		t.Fatalf("rejection log count = %d, want 2", got)
+	}
+}
+
+func TestDeviceEventStreamsAreBoundedIndependently(t *testing.T) {
+	security := newPublicSecurity()
+	security.deviceStreams = newDeviceStreamAdmission(1)
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	handler := security.limitDeviceStreams(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		device := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+		started <- device.ID
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	requestFor := func(deviceID string) *http.Request {
+		request := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+		ctx := context.WithValue(request.Context(), deviceContextKey{}, authenticatedDevice{ID: deviceID})
+		return request.WithContext(ctx)
+	}
+	serve := func(deviceID string) <-chan int {
+		result := make(chan int, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, requestFor(deviceID))
+			result <- response.Code
+		}()
+		return result
+	}
+
+	first := serve("phone-1")
+	if got := <-started; got != "phone-1" {
+		t.Fatalf("started device %q", got)
+	}
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, requestFor("phone-1"))
+	if blocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("second stream returned %d", blocked.Code)
+	}
+	secondDevice := serve("phone-2")
+	if got := <-started; got != "phone-2" {
+		t.Fatalf("started device %q", got)
+	}
+	close(release)
+	if code := <-first; code != http.StatusNoContent {
+		t.Fatalf("first stream returned %d", code)
+	}
+	if code := <-secondDevice; code != http.StatusNoContent {
+		t.Fatalf("independent device stream returned %d", code)
 	}
 }
 

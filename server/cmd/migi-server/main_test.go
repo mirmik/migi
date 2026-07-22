@@ -118,16 +118,20 @@ func TestPairingCodeCanBeRedeemedOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestHTTP3StreamsPersistedEvent(t *testing.T) {
+func TestHTTP3StreamsPersistedReplayPages(t *testing.T) {
 	broker := newTestBroker(t)
 	token := pairTestDevice(t, broker, "phone-1")
-	want, err := broker.Publish(t.Context(), events.Input{
-		Kind:  "agent.completed",
-		Agent: "builder-1",
-		Title: "done",
-	})
-	if err != nil {
-		t.Fatal(err)
+	var want events.Event
+	for index := 0; index < events.ReplayBatchSize+1; index++ {
+		var err error
+		want, err = broker.Publish(t.Context(), events.Input{
+			Kind:  "agent.completed",
+			Agent: "builder-1",
+			Title: fmt.Sprintf("event-%d", index),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	packetConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -171,9 +175,12 @@ func TestHTTP3StreamsPersistedEvent(t *testing.T) {
 	if response.ProtoMajor != 3 {
 		t.Fatalf("negotiated HTTP/%d, want HTTP/3", response.ProtoMajor)
 	}
+	decoder := json.NewDecoder(response.Body)
 	var got events.Event
-	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
-		t.Fatal(err)
+	for index := 0; index < events.ReplayBatchSize+1; index++ {
+		if err := decoder.Decode(&got); err != nil {
+			t.Fatalf("decode replay event %d: %v", index, err)
+		}
 	}
 	if got.ID != want.ID || got.Title != want.Title {
 		t.Fatalf("streamed event %#v, want %#v", got, want)

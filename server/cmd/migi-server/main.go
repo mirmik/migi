@@ -222,7 +222,7 @@ func newPublicMuxWithSecurity(broker *events.Broker, security *publicSecurity) h
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/pair", security.rateLimit("pair", security.pairRequests, pairHandler(broker)))
-	mux.Handle("GET /v1/events", authenticateDevice(broker, security, streamHandler(broker)))
+	mux.Handle("GET /v1/events", authenticateDevice(broker, security, security.limitDeviceStreams(streamHandler(broker))))
 	mux.Handle("POST /v1/ack", authenticateDevice(broker, security, acknowledgeHandler(broker)))
 	return security.limitConcurrency(mux)
 }
@@ -468,7 +468,6 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 			"device_id", device.ID,
 			"remote_addr", r.RemoteAddr,
 			"after", after,
-			"replay_events", len(replay),
 			"active_streams", broker.SubscriberCount(),
 		)
 		defer func() {
@@ -491,17 +490,30 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
-		for _, event := range replay {
-			if !deviceStillAuthorized(r.Context(), broker) {
-				disconnectReason = "credential revoked"
-				return
+		cursor := after
+		for {
+			for _, event := range replay {
+				if !deviceStillAuthorized(r.Context(), broker) {
+					disconnectReason = "credential revoked"
+					return
+				}
+				if err := writeLine(w, flusher, event); err != nil {
+					disconnectReason = "write failed"
+					disconnectErr = err
+					return
+				}
+				cursor = event.ID
+				eventsSent++
 			}
-			if err := writeLine(w, flusher, event); err != nil {
-				disconnectReason = "write failed"
+			if stream != nil {
+				break
+			}
+			replay, stream, err = broker.Subscribe(r.Context(), cursor)
+			if err != nil {
+				disconnectReason = "replay failed"
 				disconnectErr = err
 				return
 			}
-			eventsSent++
 		}
 		heartbeat := time.NewTicker(30 * time.Second)
 		defer heartbeat.Stop()

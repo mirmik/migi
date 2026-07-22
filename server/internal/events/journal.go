@@ -52,7 +52,7 @@ type PagerState struct {
 
 type Journal interface {
 	Append(context.Context, Input) (Event, error)
-	After(context.Context, uint64) ([]Event, error)
+	After(context.Context, uint64, int) ([]Event, error)
 	Acknowledge(context.Context, string, uint64) error
 	Acknowledged(context.Context, string) (uint64, error)
 	CreatePairingCode(context.Context, []byte, time.Time) error

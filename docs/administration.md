@@ -52,6 +52,7 @@ is exposed to untrusted UDP traffic:
 | Active QUIC connections | 64 total, 8 per source IP |
 | Unvalidated connections | 48, leaving 16 slots for address-validated reconnects |
 | Incoming QUIC streams | 16 bidirectional and 8 unidirectional per connection |
+| Event streams | 2 concurrent streams per paired device |
 | Receive windows | 256 KiB per stream and 1 MiB per connection maximum |
 | Handshake / idle | 5 second handshake, 2 minute idle, 30 second keepalive |
 | Concurrent public requests | 128, including long-lived event streams |
@@ -76,7 +77,16 @@ Application endpoints also use global and per-source token buckets:
 
 Rate-limited requests receive HTTP 429 and `Retry-After: 1`. Source tables are
 bounded to 4096 entries to keep address churn from becoming a memory attack.
+Per-source and global tokens are reserved together, so traffic rejected for one
+source cannot consume capacity available to other sources. Rejection logs have
+an independent limit of 5/s globally with burst 20 and 0.2/s per source with
+burst 2, preventing denied traffic from becoming an unbounded logging workload.
 Pairing secrets and bearer credentials are never included in limit logs.
+
+Durable event replay is read in pages of 64 events. The broker registers the
+live subscription under the same lock as the final short replay query, so a
+reconnect neither loads the complete journal into memory nor loses events in
+the transition from replay to live delivery.
 
 ## Remote administration
 

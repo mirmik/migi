@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const ReplayBatchSize = 64
+
 type Broker struct {
 	mu          sync.Mutex
 	journal     Journal
@@ -47,10 +49,19 @@ func (b *Broker) broadcast(event Event) {
 
 func (b *Broker) Subscribe(ctx context.Context, after uint64) ([]Event, <-chan Event, error) {
 	b.mu.Lock()
-	replay, err := b.journal.After(ctx, after)
+	replay, err := b.journal.After(ctx, after, ReplayBatchSize)
 	if err != nil {
 		b.mu.Unlock()
 		return nil, nil, err
+	}
+
+	// A full page may have more durable events behind it. Return it without a
+	// live subscription; the handler will write the bounded page and ask again.
+	// Once a short page is reached, registering under the same broker lock closes
+	// the query-to-subscribe race without loading the complete history at once.
+	if len(replay) == ReplayBatchSize {
+		b.mu.Unlock()
+		return replay, nil, nil
 	}
 
 	stream := make(chan Event, 32)

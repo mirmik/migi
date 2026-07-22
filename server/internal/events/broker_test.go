@@ -67,6 +67,51 @@ func TestBrokerStreamsPagerUpdates(t *testing.T) {
 	}
 }
 
+func TestBrokerReplaysInBoundedPagesBeforeSubscribing(t *testing.T) {
+	journal := openTestJournal(t)
+	b := NewBroker(journal)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var last Event
+	for index := 0; index < ReplayBatchSize+1; index++ {
+		var err error
+		last, err = b.Publish(ctx, Input{Kind: "agent.completed", Title: "event"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	firstPage, stream, err := b.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstPage) != ReplayBatchSize || stream != nil || b.SubscriberCount() != 0 {
+		t.Fatalf("first page size=%d stream=%v subscribers=%d", len(firstPage), stream != nil, b.SubscriberCount())
+	}
+
+	secondPage, stream, err := b.Subscribe(ctx, firstPage[len(firstPage)-1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondPage) != 1 || secondPage[0].ID != last.ID || stream == nil || b.SubscriberCount() != 1 {
+		t.Fatalf("second page=%#v stream=%v subscribers=%d", secondPage, stream != nil, b.SubscriberCount())
+	}
+
+	want, err := b.Publish(ctx, Input{Kind: "agent.completed", Title: "live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-stream:
+		if got.ID != want.ID {
+			t.Fatalf("streamed id %d, want %d", got.ID, want.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event after paged replay")
+	}
+}
+
 func openTestJournal(t *testing.T) *SQLiteJournal {
 	t.Helper()
 	journal, err := OpenSQLite(t.TempDir() + "/events.db")

@@ -36,7 +36,7 @@ func TestSQLiteJournalPersistsEventsAndIDs(t *testing.T) {
 		t.Fatalf("id after restart is %d, want %d", second.ID, first.ID+1)
 	}
 
-	replay, err := journal.After(context.Background(), first.ID)
+	replay, err := journal.After(context.Background(), first.ID, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,12 +100,33 @@ func TestPagerMessagePersistsStateAndEvents(t *testing.T) {
 	if state.Message != "Current message" || state.EventID != second.ID || state.UpdatedAt.IsZero() {
 		t.Fatalf("unexpected pager state %#v", state)
 	}
-	replay, err := journal.After(ctx, 0)
+	replay, err := journal.After(ctx, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(replay) != 2 || replay[0].Body != "First message" || replay[1].Body != "Current message" {
 		t.Fatalf("unexpected pager replay %#v", replay)
+	}
+}
+
+func TestSQLiteJournalBoundsReplayPage(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	for _, title := range []string{"first", "second", "third"} {
+		if _, err := journal.Append(ctx, Input{Kind: "agent.completed", Title: title}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	replay, err := journal.After(ctx, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 2 || replay[0].Title != "first" || replay[1].Title != "second" {
+		t.Fatalf("bounded replay = %#v", replay)
+	}
+	if _, err := journal.After(ctx, 0, 0); err == nil {
+		t.Fatal("zero replay limit was accepted")
 	}
 }
 

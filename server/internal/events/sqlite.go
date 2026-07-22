@@ -341,14 +341,17 @@ func (j *SQLiteJournal) Append(ctx context.Context, input Input) (Event, error) 
 	}, nil
 }
 
-func (j *SQLiteJournal) After(ctx context.Context, after uint64) ([]Event, error) {
+func (j *SQLiteJournal) After(ctx context.Context, after uint64, limit int) ([]Event, error) {
 	if after > math.MaxInt64 {
 		return nil, errors.New("event cursor exceeds sqlite integer range")
 	}
+	if limit <= 0 {
+		return nil, errors.New("event replay limit must be positive")
+	}
 	rows, err := j.db.QueryContext(
 		ctx,
-		`SELECT id, kind, agent, title, body, created_at FROM events WHERE id > ? ORDER BY id`,
-		after,
+		`SELECT id, kind, agent, title, body, created_at FROM events WHERE id > ? ORDER BY id LIMIT ?`,
+		after, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query events: %w", err)
