@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -69,16 +71,45 @@ func run() error {
 		slog.Warn("public endpoint is not configured; web pairing will be unavailable")
 	}
 
-	publicMux := newPublicMux(broker)
-	quicConfig := &quic.Config{}
+	publicSecurity := newPublicSecurity()
+	publicMux := newPublicMuxWithSecurity(broker, publicSecurity)
+	quicConfig := newPublicQUICConfig()
 	if os.Getenv("QLOGDIR") != "" {
 		quicConfig.Tracer = qlog.DefaultConnectionTracer
 	}
+	tlsCertificate, err := tls.LoadX509KeyPair(*cert, *key)
+	if err != nil {
+		return fmt.Errorf("load TLS certificate and key: %w", err)
+	}
+	packetConn, err := net.ListenPacket("udp", *listen)
+	if err != nil {
+		return fmt.Errorf("listen for public QUIC traffic: %w", err)
+	}
+	quicTransport := &quic.Transport{
+		Conn:                packetConn,
+		VerifySourceAddress: publicSecurity.verifySourceAddress,
+		ConnContext:         publicSecurity.connectionContext,
+		MaxTokenAge:         12 * time.Hour,
+	}
+	quicListener, err := quicTransport.ListenEarly(
+		http3.ConfigureTLSConfig(&tls.Config{
+			Certificates: []tls.Certificate{tlsCertificate},
+			MinVersion:   tls.VersionTLS13,
+		}),
+		quicConfig,
+	)
+	if err != nil {
+		packetConn.Close()
+		return fmt.Errorf("configure public QUIC listener: %w", err)
+	}
+	defer packetConn.Close()
+	defer quicTransport.Close()
+	defer quicListener.Close()
 	quicServer := http3.Server{
 		Addr:           *listen,
 		Handler:        publicMux,
 		QUICConfig:     quicConfig,
-		IdleTimeout:    90 * time.Second,
+		IdleTimeout:    2 * time.Minute,
 		MaxHeaderBytes: 16 << 10,
 	}
 	ingestServer := http.Server{
@@ -118,7 +149,7 @@ func run() error {
 	}()
 	go func() {
 		slog.Info("starting public HTTP/3 server", "address", *listen)
-		serverErrors <- quicServer.ListenAndServeTLS(*cert, *key)
+		serverErrors <- quicServer.ServeListener(quicListener)
 	}()
 	if adminServer != nil {
 		go func() {
@@ -151,6 +182,21 @@ func run() error {
 	return errors.Join(serveErr, ingestErr, quicErr, adminErr)
 }
 
+func newPublicQUICConfig() *quic.Config {
+	return &quic.Config{
+		HandshakeIdleTimeout:           5 * time.Second,
+		MaxIdleTimeout:                 2 * time.Minute,
+		KeepAlivePeriod:                30 * time.Second,
+		InitialStreamReceiveWindow:     64 << 10,
+		MaxStreamReceiveWindow:         256 << 10,
+		InitialConnectionReceiveWindow: 256 << 10,
+		MaxConnectionReceiveWindow:     1 << 20,
+		MaxIncomingStreams:             16,
+		MaxIncomingUniStreams:          8,
+		Allow0RTT:                      false,
+	}
+}
+
 func certificateFingerprint(path string) (string, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -169,12 +215,16 @@ func certificateFingerprint(path string) (string, error) {
 }
 
 func newPublicMux(broker *events.Broker) http.Handler {
+	return newPublicMuxWithSecurity(broker, newPublicSecurity())
+}
+
+func newPublicMuxWithSecurity(broker *events.Broker, security *publicSecurity) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthHandler(broker))
-	mux.HandleFunc("POST /v1/pair", pairHandler(broker))
-	mux.Handle("GET /v1/events", authenticateDevice(broker, streamHandler(broker)))
-	mux.Handle("POST /v1/ack", authenticateDevice(broker, acknowledgeHandler(broker)))
-	return mux
+	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
+	mux.Handle("POST /v1/pair", security.rateLimit("pair", security.pairRequests, pairHandler(broker)))
+	mux.Handle("GET /v1/events", authenticateDevice(broker, security, streamHandler(broker)))
+	mux.Handle("POST /v1/ack", authenticateDevice(broker, security, acknowledgeHandler(broker)))
+	return security.limitConcurrency(mux)
 }
 
 func newIngestMux(broker *events.Broker) http.Handler {
@@ -295,10 +345,14 @@ func pairHandler(broker *events.Broker) http.HandlerFunc {
 	}
 }
 
-func authenticateDevice(broker *events.Broker, next http.Handler) http.Handler {
+func authenticateDevice(broker *events.Broker, security *publicSecurity, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := parseBearerToken(r.Header.Get("Authorization"))
 		if !ok {
+			if !security.authFailures.allowRemote(r.RemoteAddr) {
+				writeRateLimited(w)
+				return
+			}
 			slog.Warn("rejected unauthenticated device request",
 				"method", r.Method,
 				"path", r.URL.Path,
@@ -308,10 +362,19 @@ func authenticateDevice(broker *events.Broker, next http.Handler) http.Handler {
 			http.Error(w, "device authentication required", http.StatusUnauthorized)
 			return
 		}
+		if !security.authFailures.readyRemote(r.RemoteAddr) ||
+			!security.authAttempts.allowRemote(r.RemoteAddr) {
+			writeRateLimited(w)
+			return
+		}
 		tokenHash := sha256.Sum256(token)
 		deviceID, err := broker.AuthenticateDevice(r.Context(), tokenHash[:])
 		if err != nil {
 			if errors.Is(err, events.ErrUnauthorized) {
+				if !security.authFailures.allowRemote(r.RemoteAddr) {
+					writeRateLimited(w)
+					return
+				}
 				slog.Warn("rejected invalid device credential",
 					"method", r.Method,
 					"path", r.URL.Path,

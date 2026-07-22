@@ -42,6 +42,42 @@ must not be TCP-only.
 The public endpoint is required only to create pairing invitations. An empty
 `-admin-listen` disables the web panel.
 
+## Public endpoint resource limits
+
+The public HTTP/3 listener applies fixed conservative limits before the server
+is exposed to untrusted UDP traffic:
+
+| Resource | Limit |
+| --- | --- |
+| Active QUIC connections | 64 total, 8 per source IP |
+| Unvalidated connections | 48, leaving 16 slots for address-validated reconnects |
+| Incoming QUIC streams | 16 bidirectional and 8 unidirectional per connection |
+| Receive windows | 256 KiB per stream and 1 MiB per connection maximum |
+| Handshake / idle | 5 second handshake, 2 minute idle, 30 second keepalive |
+| Concurrent public requests | 128, including long-lived event streams |
+
+Normal connection attempts avoid an extra round trip. Handshake validation uses
+50/s globally with burst 100 and 5/s per source with burst 10; when either token
+bucket is empty, new attempts require QUIC Retry address validation. Validated
+attempts can use the reserved connection capacity, so spoofed or unvalidated
+floods cannot consume every reconnect slot.
+Connection migration stays attached to the admitted QUIC connection and does
+not allocate another slot. TLS 0-RTT is disabled because the public API contains
+state-changing pairing and acknowledgement requests.
+
+Application endpoints also use global and per-source token buckets:
+
+| Request | Per-source rate / burst | Global rate / burst |
+| --- | --- | --- |
+| `POST /v1/pair` | 2/s / 4 | 20/s / 40 |
+| `GET /healthz` | 5/s / 10 | 50/s / 100 |
+| Device authentication attempts | 10/s / 20 | 100/s / 200 |
+| Failed device authentication | 2/s / 5 | 20/s / 40 |
+
+Rate-limited requests receive HTTP 429 and `Retry-After: 1`. Source tables are
+bounded to 4096 entries to keep address churn from becoming a memory attack.
+Pairing secrets and bearer credentials are never included in limit logs.
+
 ## Remote administration
 
 The panel intentionally has no password login and defaults to loopback. Do not

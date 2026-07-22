@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mirmik/migi/server/internal/events"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -136,7 +138,8 @@ func TestHTTP3StreamsPersistedEvent(t *testing.T) {
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{testCertificate(t)},
 		},
-		Handler: newPublicMux(broker),
+		Handler:    newPublicMux(broker),
+		QUICConfig: newPublicQUICConfig(),
 	}
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- server.Serve(packetConn) }()
@@ -175,6 +178,106 @@ func TestHTTP3StreamsPersistedEvent(t *testing.T) {
 	if got.ID != want.ID || got.Title != want.Title {
 		t.Fatalf("streamed event %#v, want %#v", got, want)
 	}
+}
+
+func TestHardenedHTTP3AllowsAuthenticatedReconnect(t *testing.T) {
+	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "phone-1")
+	address := startHardenedHTTP3Server(t, newPublicMux(broker))
+	udpAddress, err := net.ResolveUDPAddr("udp4", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	garbageConn, err := net.DialUDP("udp4", nil, udpAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	garbage := make([]byte, 1200)
+	for i := range garbage {
+		garbage[i] = byte(i)
+	}
+	for range 64 {
+		if _, err := garbageConn.Write(garbage); err != nil {
+			garbageConn.Close()
+			t.Fatal(err)
+		}
+	}
+	garbageConn.Close()
+
+	for connection := 1; connection <= 2; connection++ {
+		transport := &http3.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Test-only certificate.
+			QUICConfig:      newPublicQUICConfig(),
+		}
+		client := http.Client{Transport: transport, Timeout: 5 * time.Second}
+		request, err := http.NewRequest(
+			http.MethodPost,
+			"https://"+address+"/v1/ack",
+			strings.NewReader(`{"device_id":"phone-1","through":1}`),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+		response, err := client.Do(request)
+		if err != nil {
+			transport.Close()
+			t.Fatalf("connection %d failed: %v", connection, err)
+		}
+		response.Body.Close()
+		transport.Close()
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("connection %d returned %d", connection, response.StatusCode)
+		}
+	}
+}
+
+func startHardenedHTTP3Server(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	packetConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	security := newPublicSecurity()
+	transport := &quic.Transport{
+		Conn:                packetConn,
+		VerifySourceAddress: security.verifySourceAddress,
+		ConnContext:         security.connectionContext,
+		MaxTokenAge:         12 * time.Hour,
+	}
+	listener, err := transport.ListenEarly(
+		http3.ConfigureTLSConfig(&tls.Config{
+			Certificates: []tls.Certificate{testCertificate(t)},
+			MinVersion:   tls.VersionTLS13,
+		}),
+		newPublicQUICConfig(),
+	)
+	if err != nil {
+		packetConn.Close()
+		t.Fatal(err)
+	}
+	server := &http3.Server{
+		Handler:        handler,
+		QUICConfig:     newPublicQUICConfig(),
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 16 << 10,
+	}
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.ServeListener(listener) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+		listener.Close()
+		transport.Close()
+		packetConn.Close()
+		select {
+		case <-serveErrors:
+		case <-time.After(time.Second):
+			t.Error("hardened HTTP/3 server did not stop")
+		}
+	})
+	return packetConn.LocalAddr().String()
 }
 
 func pairTestDevice(t *testing.T, broker *events.Broker, deviceID string) string {
