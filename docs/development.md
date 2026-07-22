@@ -5,12 +5,13 @@
 Observed on 2026-07-21:
 
 - OpenJDK 21 is installed;
-- Go 1.26.0 is installed;
+- system Go 1.26.0 is installed; the server module requires the patched Go
+  1.26.5 toolchain, which the default `GOTOOLCHAIN=auto` setting downloads;
 - Android command-line tools and `adb` are installed;
-- Android platforms 35 and 36 are installed;
+- Android platform 36 is installed;
 - Android build-tools 35.0.0 and 36.0.0 are installed;
 - Android NDK 27.2.12479018 is installed;
-- Rust 1.94 with the `aarch64-linux-android` target is installed;
+- Rust 1.97.1 with the `aarch64-linux-android` target is installed;
 - `cargo-ndk` 4.1.2 is installed;
 - system Gradle 4.4.1 is too old, so the project uses its own Gradle 8.14.5 wrapper;
 - no Android device was connected during inventory.
@@ -99,6 +100,25 @@ when the router translates it. `-admin-listen ''` disables the panel. See
 
 The SQLite driver uses CGO. A fresh Linux build host therefore needs a C
 compiler; the current workstation already has GCC and SQLite development files.
+
+### Server security verification
+
+The server requires Go 1.26.5 or newer. Run the complete verification below
+after changing the toolchain or dependencies and before deploying a new binary:
+
+```bash
+cd server
+go test -race ./...
+go vet ./...
+go build -o ./bin/migi-server ./cmd/migi-server
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -mode binary ./bin/migi-server
+go version -m ./bin/migi-server
+```
+
+The source and binary scans intentionally use the same pinned official
+`govulncheck` release. Update that version deliberately when adopting a newer
+scanner.
 
 ### Generate a private server identity
 
