@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ConnectionService : Service() {
     private var client: EventStreamClient? = null
+    private lateinit var eventAudioPlayer: EventAudioPlayer
     private lateinit var connectivityManager: ConnectivityManager
     private var cpuWakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -41,6 +42,7 @@ class ConnectionService : Service() {
         super.onCreate()
         isRunning = true
         connectivityManager = getSystemService(ConnectivityManager::class.java)
+        eventAudioPlayer = EventAudioPlayer(this)
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
         createChannels()
         startForeground(
@@ -90,6 +92,7 @@ class ConnectionService : Service() {
         client = null
         connectivityManager.unregisterNetworkCallback(networkCallback)
         releaseKeepAliveLocks()
+        eventAudioPlayer.close()
         isRunning = false
         super.onDestroy()
     }
@@ -138,7 +141,10 @@ class ConnectionService : Service() {
                 EVENT_CHANNEL,
                 "Agent events",
                 NotificationManager.IMPORTANCE_HIGH,
-            ).apply { description = "Agent completion and attention alerts" },
+            ).apply {
+                description = "Agent completion and attention alerts with Migi audio cues"
+                setSound(null, null)
+            },
         )
     }
 
@@ -168,6 +174,7 @@ class ConnectionService : Service() {
 			) { "Failed to persist pager message" }
 			if (event.body.isBlank()) return
 		}
+        eventAudioPlayer.play(event)
         val notification = Notification.Builder(this, EVENT_CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_more)
             .setContentTitle(event.title)
@@ -191,7 +198,9 @@ class ConnectionService : Service() {
 
     companion object {
         private const val CONNECTION_CHANNEL = "connection"
-        private const val EVENT_CHANNEL = "agent-events-v1"
+        // Channel sound behavior is immutable after creation, so changing from
+        // the old system sound to app-rendered cues requires a new channel ID.
+        private const val EVENT_CHANNEL = "agent-events-v2"
         private const val CONNECTION_NOTIFICATION_ID = 1
 		private const val PAGER_EVENT_KIND = "pager.message"
         private const val TAG = "MigiConnection"

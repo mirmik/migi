@@ -38,11 +38,12 @@ The JNI call owns the UDP socket, QUIC state, HTTP/3 stream and TLS certificate
 check. Kotlin continues to own reconnect policy, durable cursors and Android
 notifications.
 
-The server uses Go and `github.com/quic-go/quic-go/http3`. It exposes three
+The server uses Go and `github.com/quic-go/quic-go/http3`. It exposes four
 independently configurable listeners:
 
 - public HTTP/3 over UDP for phones;
 - TCP HTTP on loopback for trusted local agent submissions;
+- TLS/TCP with per-agent bearer credentials for remote submissions;
 - TCP HTTP on loopback for the administration UI.
 
 Agents therefore do not need a QUIC implementation. Neither the unauthenticated
@@ -80,7 +81,8 @@ The target semantic is at-least-once transport with idempotent handling:
 The server persists both the event journal and monotonic per-device
 acknowledgement cursors in SQLite. Live subscribers are buffered; when a client
 falls behind that buffer, its stream is closed so it reconnects and replays from
-its durable client cursor instead of silently losing an event.
+the server's durable per-device acknowledgement instead of silently losing an
+event.
 
 ### Pager state
 
@@ -102,20 +104,28 @@ additional UI dependency graph is not justified yet.
 
 The foreground service type is `remoteMessaging`. Event notifications use
 separate Android notification channels from the permanent connection-status
-notification so the user can control their sound and importance independently.
+notification. The event channel itself is silent; `EventAudioPlayer` maps fresh
+event kinds to short bundled `SoundPool` cues, avoiding the ordinary device
+notification sound and suppressing old replay noise.
+
+Short cues and future voice messages intentionally have different playback
+paths. Voice media will be represented by authenticated metadata (media ID,
+MIME type, byte size, digest and duration), fetched over the pinned connection,
+bounded before storage, and handed to a streaming player. Audio bytes are not
+embedded in the event JSON and do not pass through `SoundPool`.
 
 ## Component view
 
 ```text
-local agents
-    |
-    | HTTP POST /v1/events on loopback TCP
-    v
-Go event server ---- event journal / device state <---- local web administration
-    |
-    | public HTTP/3 stream over QUIC (UDP)
-    v
-Android foreground service
+local agents ---- HTTP POST /v1/events on loopback TCP ----+
+                                                          |
+remote agents -- HTTPS POST with per-agent token ----------> Go event server
+                                                          |       |
+local web administration ---------------------------------+       +---- event journal / device state
+                                                                  |
+                                                                  | public HTTP/3 stream over QUIC (UDP)
+                                                                  v
+                                                        Android foreground service
     |
     +---- local cursor / deduplication
     |
@@ -143,6 +153,11 @@ The token is a Bearer credential on the event stream and acknowledgements. The
 server binds the requested device ID to the credential, supports local
 revocation, and revalidates active streams before events and heartbeats. A
 rejected Android credential is deleted and cannot enter an endless retry loop.
+
+Remote agents use a separate bearer-token namespace and ordinary HTTPS/TCP.
+Each token fixes the agent identity, is persisted only as a SHA-256 hash, and
+can be revoked without affecting phones or other agents. Hooks pin the same
+leaf certificate fingerprint as the phone; no persistent tunnel is required.
 
 The previously tested platform `HttpEngine` remains unsuitable for this mode:
 on the Samsung it rejected both an APK-bundled debug CA and a user-installed CA.

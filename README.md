@@ -18,13 +18,15 @@ Services, or a bundled Chromium network stack.
 
 - `android/` — Android application and foreground connection service.
 - `server/` — self-hosted Go HTTP/3 event server and local administration UI.
+- `integrations/` — lifecycle hooks for agent runtimes such as Codex.
 - `docs/` — architecture, wire protocol, and development setup.
 
 ## Current status
 
 This is an initial vertical slice. The server persists events and per-device
 acknowledgements in SQLite, accepts submissions on a trusted loopback listener,
-and streams NDJSON events over public HTTP/3. The Android service verifies the
+accepts per-agent bearer-authenticated submissions on an optional HTTPS/TCP
+listener, and streams NDJSON events over public HTTP/3. The Android service verifies the
 server certificate pin before sending HTTP,
 deduplicates events, turns them into system notifications, and acknowledges the
 durable cursor. QR-assisted pairing provisions a per-device revocable
@@ -39,5 +41,9 @@ The server's loopback-only web panel shows health and delivery state, creates
 one-time pairing QR codes, updates a persistent pager line in the Android app,
 and revokes paired devices. It is deliberately kept off the public listener;
 see [docs/administration.md](docs/administration.md).
+
+Remote agent hooks need no resident client or tunnel. The administration panel
+creates their revocable credentials and one-time connection configuration; see
+[docs/agent-hooks.md](docs/agent-hooks.md).
 
 See [docs/development.md](docs/development.md) for build commands.

@@ -39,8 +39,10 @@ func main() {
 func run() error {
 	listen := flag.String("listen", ":8443", "UDP address for the HTTP/3 server")
 	ingestListen := flag.String("ingest-listen", "127.0.0.1:8787", "trusted local TCP address for event submission")
+	agentListen := flag.String("agent-listen", "", "public TLS/TCP address for authenticated agent event submission; empty disables it")
 	adminListen := flag.String("admin-listen", "127.0.0.1:8788", "local TCP address for the administration UI; empty disables it")
 	publicEndpoint := flag.String("public-endpoint", "", "default public https://host[:port] for pairing invitations")
+	agentEndpoint := flag.String("agent-endpoint", "", "public https://host[:port] advertised to agent hooks")
 	databasePath := flag.String("db", "migi.db", "SQLite event journal path")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")
 	key := flag.String("key", "", "TLS private key in PEM format")
@@ -63,6 +65,7 @@ func run() error {
 	}
 	slog.Info("server configured",
 		"public_endpoint", *publicEndpoint,
+		"agent_endpoint", *agentEndpoint,
 		"database", *databasePath,
 		"certificate_fingerprint", fingerprint,
 	)
@@ -118,6 +121,22 @@ func run() error {
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
+	var agentServer *http.Server
+	if *agentListen != "" {
+		agentServer = &http.Server{
+			Addr:              *agentListen,
+			Handler:           newAgentMux(broker),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			MaxHeaderBytes:    16 << 10,
+			TLSConfig: &tls.Config{
+				Certificates: []tls.Certificate{tlsCertificate},
+				MinVersion:   tls.VersionTLS12,
+			},
+		}
+	}
 	var adminServer *http.Server
 	if *adminListen != "" {
 		adminHandler, err := admin.New(admin.Config{
@@ -126,6 +145,8 @@ func run() error {
 			CertificateFingerprint: fingerprint,
 			PublicListen:           *listen,
 			IngestListen:           *ingestListen,
+			AgentListen:            *agentListen,
+			AgentEndpoint:          *agentEndpoint,
 			AdminListen:            *adminListen,
 			StartedAt:              startedAt,
 		})
@@ -141,7 +162,7 @@ func run() error {
 		}
 	}
 
-	serverErrors := make(chan error, 3)
+	serverErrors := make(chan error, 4)
 	go func() {
 		slog.Info("starting trusted local ingest", "address", *ingestListen)
 		serverErrors <- ingestServer.ListenAndServe()
@@ -150,6 +171,12 @@ func run() error {
 		slog.Info("starting public HTTP/3 server", "address", *listen)
 		serverErrors <- quicServer.ServeListener(quicListener)
 	}()
+	if agentServer != nil {
+		go func() {
+			slog.Info("starting authenticated agent HTTPS ingress", "address", *agentListen)
+			serverErrors <- agentServer.ListenAndServeTLS("", "")
+		}()
+	}
 	if adminServer != nil {
 		go func() {
 			slog.Info("starting local administration UI", "address", *adminListen)
@@ -178,7 +205,11 @@ func run() error {
 	if adminServer != nil {
 		adminErr = adminServer.Shutdown(shutdownContext)
 	}
-	return errors.Join(serveErr, ingestErr, quicErr, adminErr)
+	var agentErr error
+	if agentServer != nil {
+		agentErr = agentServer.Shutdown(shutdownContext)
+	}
+	return errors.Join(serveErr, ingestErr, quicErr, agentErr, adminErr)
 }
 
 func newPublicQUICConfig() *quic.Config {

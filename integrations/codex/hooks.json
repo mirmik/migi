@@ -1,0 +1,28 @@
+{
+  "description": "Send Codex completion and approval notifications through Migi.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.local/libexec/migi/migi-codex-hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.local/libexec/migi/migi-codex-hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

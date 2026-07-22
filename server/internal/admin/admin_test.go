@@ -111,6 +111,53 @@ func TestAdminSendsTestNotification(t *testing.T) {
 	}
 }
 
+func TestAdminCreatesOneTimeAgentConfigurationAndRevokesIt(t *testing.T) {
+	handler, broker := newTestHandler(t)
+	form := url.Values{
+		"csrf_token": {handler.csrfToken},
+		"name":       {"builder-1"},
+		"endpoint":   {"https://203.0.113.10:10444"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/agents/create", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create agent token returned %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "https://203.0.113.10:10444/v1/agent-events") ||
+		!strings.Contains(body, "AA:BB:CC:DD") || !strings.Contains(body, "migi_at_") {
+		t.Fatal("created agent configuration is incomplete")
+	}
+	tokens, err := broker.ListAgentTokens(t.Context())
+	if err != nil || len(tokens) != 1 || tokens[0].Name != "builder-1" {
+		t.Fatalf("agent tokens %#v, error %v", tokens, err)
+	}
+
+	dashboard := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/admin/", nil))
+	if strings.Contains(dashboard.Body.String(), "migi_at_") {
+		t.Fatal("plain agent token was shown again on the dashboard")
+	}
+
+	revokeForm := url.Values{
+		"csrf_token": {handler.csrfToken},
+		"token_id":   {tokens[0].ID},
+	}
+	revoke := httptest.NewRequest(http.MethodPost, "/admin/agents/revoke", strings.NewReader(revokeForm.Encode()))
+	revoke.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	revokeResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(revokeResponse, revoke)
+	if revokeResponse.Code != http.StatusSeeOther {
+		t.Fatalf("revoke agent token returned %d", revokeResponse.Code)
+	}
+	tokens, err = broker.ListAgentTokens(t.Context())
+	if err != nil || tokens[0].RevokedAt == nil {
+		t.Fatalf("revoked agent tokens %#v, error %v", tokens, err)
+	}
+}
+
 func TestAdminUpdatesAndClearsPager(t *testing.T) {
 	handler, broker := newTestHandler(t)
 
@@ -324,6 +371,8 @@ func newTestHandler(t *testing.T) (*Handler, *events.Broker) {
 		CertificateFingerprint: "AA:BB:CC:DD",
 		PublicListen:           ":8443",
 		IngestListen:           "127.0.0.1:8787",
+		AgentListen:            ":8790",
+		AgentEndpoint:          "https://203.0.113.10:10444",
 		AdminListen:            "127.0.0.1:8788",
 		StartedAt:              time.Now().Add(-time.Minute),
 	})

@@ -26,6 +26,10 @@ button:hover { filter: brightness(1.1); }.danger { background: #572d37; border-c
 dl { display: grid; grid-template-columns: 150px 1fr; gap: 10px 14px; margin: 0; }
 dt { color: #7f8da2; } dd { margin: 0; overflow-wrap: anywhere; }.fingerprint { font-family: ui-monospace, monospace; font-size: 12px; }
 .table-wrap { overflow-x: auto; } table { width: 100%; border-collapse: collapse; } th, td { padding: 12px 10px; border-top: 1px solid #293245; text-align: left; white-space: nowrap; } th { color: #7f8da2; font-size: 12px; text-transform: uppercase; } code { font-family: ui-monospace, monospace; font-size: 12px; }
+.agents { margin-bottom: 18px; }
+.credential { margin: 20px 0; padding: 16px; border: 1px solid #35674f; border-radius: 10px; background: #10261e; }
+.credential h3 { margin-top: 0; }
+.credential pre { overflow-x: auto; padding: 14px; border-radius: 8px; background: #090d12; color: #dce9e1; white-space: pre-wrap; overflow-wrap: anywhere; }
 footer { padding: 24px 0 36px; color: #69778b; font-size: 12px; }
 .muted { color: #69778b; font-size: 12px; }
 @media (max-width: 900px) { .stats { grid-template-columns: repeat(3, 1fr); } .grid { grid-template-columns: 1fr; } }

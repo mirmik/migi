@@ -79,6 +79,39 @@ func TestPairingCodeIsOneTimeAndCredentialCanBeRevoked(t *testing.T) {
 	}
 }
 
+func TestAgentTokenAuthenticatesTracksUseAndCanBeRevoked(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	tokenHash := sha256.Sum256([]byte("complete agent bearer token"))
+	if err := journal.CreateAgentToken(ctx, "token-id", "builder-1", tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CreateAgentToken(ctx, "other-id", "builder-1", tokenHash[:]); !errors.Is(err, ErrAgentExists) {
+		t.Fatalf("duplicate agent returned %v", err)
+	}
+	agent, err := journal.AuthenticateAgent(ctx, "token-id", tokenHash[:])
+	if err != nil || agent.Name != "builder-1" || agent.LastUsedAt == nil {
+		t.Fatalf("authenticated agent %#v, error %v", agent, err)
+	}
+	if _, err := journal.AuthenticateAgent(ctx, "wrong-id", tokenHash[:]); !errors.Is(err, ErrAgentUnauthorized) {
+		t.Fatalf("wrong token id returned %v", err)
+	}
+	if err := journal.RevokeAgentToken(ctx, "token-id"); err != nil {
+		t.Fatal(err)
+	}
+	rotatedHash := sha256.Sum256([]byte("rotated agent bearer token"))
+	if err := journal.CreateAgentToken(ctx, "rotated-id", "builder-1", rotatedHash[:]); err != nil {
+		t.Fatalf("re-create revoked agent name: %v", err)
+	}
+	if _, err := journal.AuthenticateAgent(ctx, "token-id", tokenHash[:]); !errors.Is(err, ErrAgentUnauthorized) {
+		t.Fatalf("revoked agent token returned %v", err)
+	}
+	tokens, err := journal.ListAgentTokens(ctx)
+	if err != nil || len(tokens) != 2 || tokens[0].RevokedAt == nil || tokens[0].LastUsedAt == nil || tokens[1].RevokedAt != nil {
+		t.Fatalf("listed agent tokens %#v, error %v", tokens, err)
+	}
+}
+
 func TestPagerMessagePersistsStateAndEvents(t *testing.T) {
 	journal := openTestJournal(t)
 	ctx := context.Background()

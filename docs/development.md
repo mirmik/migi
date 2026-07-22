@@ -65,8 +65,10 @@ go test ./...
 go run ./cmd/migi-server \
   -listen :443 \
   -ingest-listen 127.0.0.1:8787 \
+  -agent-listen :8790 \
   -admin-listen 127.0.0.1:8788 \
   -public-endpoint https://203.0.113.10:443 \
+  -agent-endpoint https://203.0.113.10:10444 \
   -db ./migi.db \
   -cert /path/to/fullchain.pem \
   -key /path/to/privkey.pem

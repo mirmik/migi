@@ -5,6 +5,7 @@ import android.util.Log
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.time.Instant
 import kotlin.math.min
 import kotlin.random.Random
 import org.json.JSONObject
@@ -15,6 +16,7 @@ data class AgentEvent(
     val agent: String,
     val title: String,
     val body: String,
+    val createdAt: Instant,
 )
 
 internal object NativeQuicClient {
@@ -136,6 +138,7 @@ class EventStreamClient(
                 agent = json.optString("agent"),
                 title = json.getString("title"),
                 body = json.optString("body"),
+                createdAt = Instant.parse(json.getString("created_at")),
             )
             val lastID = preferences.getLong(KEY_LAST_EVENT_ID, 0)
             if (event.id <= lastID) return 0

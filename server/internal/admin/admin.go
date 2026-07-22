@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -14,10 +15,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/mirmik/migi/server/internal/agentauth"
 	"github.com/mirmik/migi/server/internal/events"
 	qrcode "github.com/skip2/go-qrcode"
 )
@@ -31,6 +34,8 @@ type Config struct {
 	CertificateFingerprint string
 	PublicListen           string
 	IngestListen           string
+	AgentListen            string
+	AgentEndpoint          string
 	AdminListen            string
 	StartedAt              time.Time
 }
@@ -49,14 +54,18 @@ type pageData struct {
 	CertificateFingerprint string
 	PublicListen           string
 	IngestListen           string
+	AgentListen            string
+	AgentEndpoint          string
 	AdminListen            string
 	StartedAt              time.Time
 	Uptime                 time.Duration
 	Stats                  events.ServerStats
 	Pager                  events.PagerState
 	Devices                []events.DeviceInfo
+	AgentTokens            []events.AgentTokenInfo
 	ActiveStreams          int
 	Pairing                *pairingView
+	AgentCredential        *agentCredentialView
 	Notice                 string
 }
 
@@ -65,6 +74,13 @@ type pairingView struct {
 	Endpoint  string
 	ExpiresAt time.Time
 }
+
+type agentCredentialView struct {
+	Name   string
+	Config string
+}
+
+var agentNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 func New(config Config) (*Handler, error) {
 	if config.Broker == nil {
@@ -83,12 +99,27 @@ func New(config Config) (*Handler, error) {
 		}
 		config.PublicEndpoint = parsed.String()
 	}
+	if config.AgentEndpoint != "" {
+		parsed, err := parsePublicEndpoint(config.AgentEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("invalid agent endpoint: %w", err)
+		}
+		config.AgentEndpoint = parsed.String()
+	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, fmt.Errorf("generate admin CSRF token: %w", err)
 	}
 	templates, err := template.New("dashboard.html").Funcs(template.FuncMap{
-		"formatTime":     func(value time.Time) string { return value.Local().Format("2006-01-02 15:04:05 MST") },
+		"formatTime": func(value time.Time) string {
+			return value.Local().Format("2006-01-02 15:04:05 MST")
+		},
+		"formatOptionalTime": func(value *time.Time) string {
+			if value == nil {
+				return "never"
+			}
+			return value.Local().Format("2006-01-02 15:04:05 MST")
+		},
 		"formatDuration": formatDuration,
 	}).ParseFS(content, "templates/*.html")
 	if err != nil {
@@ -117,12 +148,82 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/notifications/test", h.sendTestNotification)
 	mux.HandleFunc("POST /admin/pager", h.setPagerMessage)
 	mux.HandleFunc("POST /admin/devices/revoke", h.revokeDevice)
+	mux.HandleFunc("POST /admin/agents/create", h.createAgentToken)
+	mux.HandleFunc("POST /admin/agents/revoke", h.revokeAgentToken)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
 	return h.securityHeaders(mux)
 }
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
-	h.renderDashboard(w, r, nil, r.URL.Query().Get("notice"), http.StatusOK)
+	h.renderDashboard(w, r, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) createAgentToken(w http.ResponseWriter, r *http.Request) {
+	if !h.validForm(w, r) {
+		return
+	}
+	endpoint, err := parsePublicEndpoint(strings.TrimSpace(r.FormValue("endpoint")))
+	if err != nil {
+		http.Error(w, "agent endpoint must be a plain https://host[:port] URL", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if !agentNamePattern.MatchString(name) {
+		http.Error(w, "agent name must contain 1-128 letters, digits, dots, underscores, or hyphens", http.StatusBadRequest)
+		return
+	}
+	tokenID, plain, tokenHash, err := agentauth.Generate()
+	if err != nil {
+		http.Error(w, "failed to generate agent token", http.StatusInternalServerError)
+		return
+	}
+	if err := h.config.Broker.CreateAgentToken(r.Context(), tokenID, name, tokenHash[:]); err != nil {
+		if errors.Is(err, events.ErrAgentExists) {
+			http.Error(w, "an agent with this name already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "failed to persist agent token", http.StatusInternalServerError)
+		return
+	}
+	clientConfig := struct {
+		Endpoint       string `json:"endpoint"`
+		Token          string `json:"token"`
+		TLSFingerprint string `json:"tls_fingerprint"`
+	}{
+		Endpoint:       endpoint.String() + "/v1/agent-events",
+		Token:          plain,
+		TLSFingerprint: h.config.CertificateFingerprint,
+	}
+	encoded, err := json.MarshalIndent(clientConfig, "", "  ")
+	if err != nil {
+		http.Error(w, "failed to render agent configuration", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("agent token created", "agent", name, "token_id", tokenID, "remote_addr", r.RemoteAddr)
+	h.renderDashboard(w, r, nil, &agentCredentialView{
+		Name: name, Config: string(encoded),
+	}, "Agent token created; copy it now", http.StatusCreated)
+}
+
+func (h *Handler) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
+	if !h.validForm(w, r) {
+		return
+	}
+	tokenID := r.FormValue("token_id")
+	if tokenID == "" {
+		http.Error(w, "token_id is required", http.StatusBadRequest)
+		return
+	}
+	if err := h.config.Broker.RevokeAgentToken(r.Context(), tokenID); err != nil {
+		if errors.Is(err, events.ErrAgentUnauthorized) {
+			http.Error(w, "agent token is unknown or already revoked", http.StatusConflict)
+			return
+		}
+		http.Error(w, "failed to revoke agent token", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("agent token revoked", "token_id", tokenID, "remote_addr", r.RemoteAddr)
+	h.redirectToDashboard(w, r, "Agent token revoked")
 }
 
 func (h *Handler) setPagerMessage(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +313,7 @@ func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
 		QRDataURI: template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(png)),
 		Endpoint:  endpoint.String(),
 		ExpiresAt: expiresAt,
-	}, "Pairing invitation created", http.StatusCreated)
+	}, nil, "Pairing invitation created", http.StatusCreated)
 }
 
 func (h *Handler) revokeDevice(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +341,7 @@ func (h *Handler) renderDashboard(
 	w http.ResponseWriter,
 	r *http.Request,
 	pairing *pairingView,
+	agentCredential *agentCredentialView,
 	notice string,
 	status int,
 ) {
@@ -251,6 +353,11 @@ func (h *Handler) renderDashboard(
 	devices, err := h.config.Broker.ListDevices(r.Context())
 	if err != nil {
 		http.Error(w, "failed to read paired devices", http.StatusInternalServerError)
+		return
+	}
+	agentTokens, err := h.config.Broker.ListAgentTokens(r.Context())
+	if err != nil {
+		http.Error(w, "failed to read agent tokens", http.StatusInternalServerError)
 		return
 	}
 	pager, err := h.config.Broker.PagerState(r.Context())
@@ -265,14 +372,18 @@ func (h *Handler) renderDashboard(
 		CertificateFingerprint: h.config.CertificateFingerprint,
 		PublicListen:           h.config.PublicListen,
 		IngestListen:           h.config.IngestListen,
+		AgentListen:            h.config.AgentListen,
+		AgentEndpoint:          h.config.AgentEndpoint,
 		AdminListen:            h.config.AdminListen,
 		StartedAt:              h.config.StartedAt,
 		Uptime:                 now.Sub(h.config.StartedAt),
 		Stats:                  stats,
 		Pager:                  pager,
 		Devices:                devices,
+		AgentTokens:            agentTokens,
 		ActiveStreams:          h.config.Broker.SubscriberCount(),
 		Pairing:                pairing,
+		AgentCredential:        agentCredential,
 		Notice:                 notice,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

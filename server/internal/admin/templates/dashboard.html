@@ -74,10 +74,49 @@
           <dt>Certificate SHA-256</dt><dd class="fingerprint">{{.CertificateFingerprint}}</dd>
           <dt>QUIC listener</dt><dd>{{.PublicListen}}</dd>
           <dt>Agent ingress</dt><dd>{{.IngestListen}}</dd>
+          <dt>Authenticated agent TLS</dt><dd>{{if .AgentListen}}{{.AgentListen}}{{else}}disabled{{end}}</dd>
+          <dt>Agent endpoint</dt><dd>{{if .AgentEndpoint}}{{.AgentEndpoint}}/v1/agent-events{{else}}not configured{{end}}</dd>
           <dt>Administration</dt><dd>{{.AdminListen}}</dd>
           <dt>Started</dt><dd>{{formatTime .StartedAt}}</dd>
         </dl>
       </article>
+    </section>
+
+    <section class="panel agents">
+      <h2>Agent credentials</h2>
+      <p>Create one credential per agent host or identity. Migi derives the event's agent name from the token. The plain token is shown only once.</p>
+      <form method="post" action="agents/create">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <label>Public HTTPS endpoint
+          <input type="url" name="endpoint" required value="{{.AgentEndpoint}}" placeholder="https://host:10444" autocomplete="off" spellcheck="false">
+        </label>
+        <label>Agent name
+          <input type="text" name="name" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required placeholder="builder-1" autocomplete="off" spellcheck="false">
+        </label>
+        <button type="submit">Create token</button>
+      </form>
+
+      {{if .AgentCredential}}
+      <div class="credential">
+        <h3>Configuration for {{.AgentCredential.Name}}</h3>
+        <p>Copy this now. Migi cannot display the token again.</p>
+        <pre>{{.AgentCredential.Config}}</pre>
+      </div>
+      {{end}}
+
+      {{if .AgentTokens}}
+      <div class="table-wrap"><table>
+        <thead><tr><th>Agent</th><th>Token ID</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+        <tbody>{{range .AgentTokens}}<tr>
+          <td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .CreatedAt}}</td><td>{{formatOptionalTime .LastUsedAt}}</td>
+          <td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td>
+          <td>{{if not .RevokedAt}}<form method="post" action="agents/revoke">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="token_id" value="{{.ID}}">
+            <button class="danger" type="submit">Revoke</button>
+          </form>{{end}}</td>
+        </tr>{{end}}</tbody>
+      </table></div>
+      {{else}}<p>No agent credentials created yet.</p>{{end}}
     </section>
 
     <section class="panel devices">

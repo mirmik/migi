@@ -17,8 +17,10 @@ returns.
 ./migi-server \
   -listen :8443 \
   -ingest-listen 127.0.0.1:8787 \
+  -agent-listen :8790 \
   -admin-listen 127.0.0.1:8788 \
   -public-endpoint https://203.0.113.10:10443 \
+  -agent-endpoint https://203.0.113.10:10444 \
   -db ./migi.db \
   -cert /path/to/server.crt \
   -key /path/to/server.key
@@ -31,6 +33,8 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-listen` | UDP | Local bind for public HTTP/3/QUIC traffic |
 | `-public-endpoint` | HTTPS URL | Default address offered by the pairing form |
 | `-ingest-listen` | TCP | Trusted agent event submission |
+| `-agent-listen` | TLS/TCP | Authenticated event submission by remote agents; empty disables it |
+| `-agent-endpoint` | HTTPS URL | Default external address offered when creating agent credentials |
 | `-admin-listen` | TCP | Local administration panel |
 
 For example, a router can forward public UDP `10443` to server UDP `8443`; in
@@ -42,6 +46,13 @@ The pairing form lets the administrator edit the endpoint for each QR. It must
 be a plain `https://host[:port]` URL reachable by the phone over UDP. The
 `-public-endpoint` value only pre-fills that field; it may be empty. An empty
 `-admin-listen` disables the web panel.
+
+The agent credential form similarly allows its endpoint to be edited for each
+new token. The authenticated listener uses the same certificate as HTTP/3 but
+ordinary HTTPS over TCP. Forward it as a separate TCP router rule; do not
+expose the unauthenticated `-ingest-listen` port. Agent tokens are shown once,
+stored only as hashes, and can be revoked independently. See
+[`agent-hooks.md`](agent-hooks.md) for the client contract.
 
 ## Public endpoint resource limits
 
@@ -83,6 +94,12 @@ source cannot consume capacity available to other sources. Rejection logs have
 an independent limit of 5/s globally with burst 20 and 0.2/s per source with
 burst 2, preventing denied traffic from becoming an unbounded logging workload.
 Pairing secrets and bearer credentials are never included in limit logs.
+
+The authenticated agent HTTPS listener independently permits 32 concurrent
+requests. Event submission is limited to 10/s per source with burst 20 and
+100/s globally with burst 200. Failed authentication is limited to 2/s per
+source with burst 5 and 20/s globally with burst 40. JSON request bodies are
+limited to 64 KiB.
 
 Durable event replay is read in pages of 64 events. The broker registers the
 live subscription under the same lock as the final short replay query, so a

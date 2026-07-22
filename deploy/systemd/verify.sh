@@ -34,6 +34,7 @@ do
 done
 
 require_line 'MIGI_INGEST_LISTEN=127.0.0.1:8787' "$env_file"
+require_line 'MIGI_AGENT_LISTEN=' "$env_file"
 require_line 'MIGI_ADMIN_LISTEN=127.0.0.1:8788' "$env_file"
 require_line 'SystemMaxUse=256M' "$journal_file"
 require_line 'MaxRetentionSec=14day' "$journal_file"

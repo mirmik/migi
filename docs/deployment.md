@@ -119,7 +119,8 @@ sudo install -o root -g root -m 0644 \
   /etc/systemd/journald@migi.conf.d/retention.conf
 ```
 
-Edit `/etc/migi/migi.env`. Keep ingest on loopback. Keep administration on
+Edit `/etc/migi/migi.env`. Keep ingest on loopback. Enable the authenticated
+agent listener only when a dedicated TCP port will be forwarded. Keep administration on
 loopback too unless it is intentionally bound to a trusted LAN address behind
 an authenticated reverse proxy. Migi always serves the panel below `/admin/`;
 an external prefix belongs to the proxy, which should strip only that prefix
@@ -147,8 +148,9 @@ sudo ss -lunp
 sudo ss -ltnp
 ```
 
-Verify that the public port is UDP, while TCP ingest and admin remain bound to
-`127.0.0.1`. Check `/healthz`, pairing, delivery and acknowledgement before
+Verify that the phone port is UDP, that any authenticated agent port is TCP,
+and that trusted ingest remains bound to `127.0.0.1`. Check `/healthz`, pairing,
+agent authentication, delivery and acknowledgement before
 declaring the deployment complete.
 
 ## Service hardening
@@ -160,8 +162,17 @@ other processes, filters system calls and address families, isolates temporary
 files and devices, and limits the process to 256 MiB, 64 tasks and 4096 file
 descriptors. The long-lived QUIC stream remains compatible with these limits.
 
-The public listener, trusted listeners and public endpoint are separate env
-values. Treat non-loopback ingest as a failed review.
+The public phone listener, authenticated agent listener, trusted listeners and
+advertised endpoints are separate env values. Treat non-loopback trusted ingest
+as a failed review.
+
+On the current multi-gateway host, router port forwards arrive through
+`192.168.0.1` while the ordinary default route points at `192.168.0.81`.
+Install `deploy/networkmanager/90-migi-routing` as root-owned mode `0755` in
+`/etc/NetworkManager/dispatcher.d/`. It routes replies sourced from UDP `8443`
+and TCP `8790` through routing table `1061` and gateway `192.168.0.1`, avoiding
+asymmetric replies after NetworkManager reconnects. The rules use the internal
+listener ports, not the router's external translated ports.
 Accept a non-loopback admin listener only when it is limited to a trusted LAN,
 the router does not forward its TCP port, and the reverse proxy supplies the
 authentication boundary.

@@ -1,7 +1,7 @@
 # Bootstrap protocol
 
 This document specifies protocol version 1 used by the initial vertical slice.
-All public endpoints require HTTP/3 and TLS. Except for `/healthz` and
+Public phone endpoints require HTTP/3 and TLS. Except for `/healthz` and
 `/v1/pair`, requests require `Authorization: Bearer <device-token>`.
 
 ## Pair a device
@@ -58,6 +58,11 @@ the first text channel simple; a future audio channel will require separate
 framing, size limits and flow-control rules rather than embedding audio in this
 JSON object.
 
+On Android, fresh bootstrap events may select a bundled local cue by `kind`.
+This is presentation behavior, not protocol media. Future voice messages will
+reference a separately authenticated, size-bounded media object with an
+integrity digest rather than placing audio bytes or an arbitrary URL in `body`.
+
 ## Submit a local event
 
 ```http
@@ -71,6 +76,23 @@ endpoint is available only at `http://127.0.0.1:8787` on the trusted local TCP
 listener; it is not registered on the public HTTP/3 listener.
 
 It must not be exposed publicly without authentication.
+
+## Submit an authenticated agent event
+
+Remote hooks use the separate TLS/TCP listener:
+
+```http
+POST /v1/agent-events
+Authorization: Bearer <agent-token>
+Content-Type: application/json
+
+{"kind":"agent.completed","title":"Done","body":"Build finished"}
+```
+
+The request must not contain `agent`; the server derives it from the token.
+Tokens are created and revoked in the administration panel and stored only as
+SHA-256 hashes. A successful response has the same `201 Created` event object
+as trusted local submission. See [`agent-hooks.md`](agent-hooks.md).
 
 ## Stream events
 

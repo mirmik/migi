@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IFACE="enp197s0"
+LAN_IP="192.168.0.61"
+LAN_GATEWAY="192.168.0.1"
+LAN_CIDR="192.168.0.0/24"
+ROUTE_TABLE="1061"
+QUIC_RULE_PREF="10063"
+AGENT_RULE_PREF="10064"
+MIGI_QUIC_PORT="8443"
+MIGI_AGENT_PORT="8790"
+
+case "${2:-}" in
+    up|dhcp4-change|connectivity-change|vpn-up|vpn-down)
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+if [[ "${1:-}" != "${IFACE}" ]]; then
+    exit 0
+fi
+
+ip route replace default via "${LAN_GATEWAY}" dev "${IFACE}" src "${LAN_IP}" table "${ROUTE_TABLE}"
+ip route replace "${LAN_CIDR}" dev "${IFACE}" src "${LAN_IP}" table "${ROUTE_TABLE}"
+
+ip rule del pref "${QUIC_RULE_PREF}" 2>/dev/null || true
+ip rule del pref "${AGENT_RULE_PREF}" 2>/dev/null || true
+ip rule add pref "${QUIC_RULE_PREF}" ipproto udp sport "${MIGI_QUIC_PORT}" lookup "${ROUTE_TABLE}"
+ip rule add pref "${AGENT_RULE_PREF}" ipproto tcp sport "${MIGI_AGENT_PORT}" lookup "${ROUTE_TABLE}"
+
+logger -t migi-routing \
+    "forced udp sport ${MIGI_QUIC_PORT} and tcp sport ${MIGI_AGENT_PORT} through ${LAN_GATEWAY} table ${ROUTE_TABLE}"

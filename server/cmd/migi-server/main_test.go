@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mirmik/migi/server/internal/agentauth"
 	"github.com/mirmik/migi/server/internal/events"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -40,6 +41,84 @@ func TestIngestAcceptsEventsButPublicListenerDoesNot(t *testing.T) {
 	newPublicMux(broker).ServeHTTP(publicResponse, publicRequest)
 	if publicResponse.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("public listener returned %d, want %d", publicResponse.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestAuthenticatedAgentIngressUsesTokenIdentity(t *testing.T) {
+	broker := newTestBroker(t)
+	tokenID, plain, tokenHash, err := agentauth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.CreateAgentToken(t.Context(), tokenID, "builder-1", tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/agent-events",
+		strings.NewReader(`{"kind":"agent.completed","title":"done","body":"build passed"}`),
+	)
+	request.RemoteAddr = "192.0.2.50:50000"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+plain)
+	response := httptest.NewRecorder()
+	newAgentMux(broker).ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("agent ingress returned %d: %s", response.Code, response.Body.String())
+	}
+	var event events.Event
+	if err := json.NewDecoder(response.Body).Decode(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Agent != "builder-1" || event.Title != "done" {
+		t.Fatalf("stored event = %#v", event)
+	}
+
+	spoofed := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/agent-events",
+		strings.NewReader(`{"kind":"agent.completed","agent":"admin","title":"spoofed"}`),
+	)
+	spoofed.RemoteAddr = "192.0.2.50:50001"
+	spoofed.Header.Set("Content-Type", "application/json")
+	spoofed.Header.Set("Authorization", "Bearer "+plain)
+	spoofedResponse := httptest.NewRecorder()
+	newAgentMux(broker).ServeHTTP(spoofedResponse, spoofed)
+	if spoofedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("spoofed agent field returned %d", spoofedResponse.Code)
+	}
+}
+
+func TestAgentIngressRejectsMissingAndRevokedTokens(t *testing.T) {
+	broker := newTestBroker(t)
+	tokenID, plain, tokenHash, err := agentauth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.CreateAgentToken(t.Context(), tokenID, "builder-1", tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	handler := newAgentMux(broker)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/agent-events", strings.NewReader(`{}`))
+	request.RemoteAddr = "192.0.2.51:50000"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("missing token returned %d", response.Code)
+	}
+
+	if err := broker.RevokeAgentToken(t.Context(), tokenID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := httptest.NewRequest(http.MethodPost, "/v1/agent-events", strings.NewReader(`{}`))
+	revoked.RemoteAddr = "192.0.2.52:50000"
+	revoked.Header.Set("Authorization", "Bearer "+plain)
+	revokedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(revokedResponse, revoked)
+	if revokedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token returned %d", revokedResponse.Code)
 	}
 }
 

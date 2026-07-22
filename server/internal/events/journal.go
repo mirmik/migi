@@ -10,6 +10,8 @@ var (
 	ErrInvalidPairingCode     = errors.New("pairing code is invalid, expired, or already used")
 	ErrInvalidAcknowledgement = errors.New("acknowledgement exceeds the event journal")
 	ErrUnauthorized           = errors.New("device credential is invalid or revoked")
+	ErrAgentUnauthorized      = errors.New("agent credential is invalid or revoked")
+	ErrAgentExists            = errors.New("agent token id or name already exists")
 )
 
 type Event struct {
@@ -37,6 +39,14 @@ type DeviceInfo struct {
 	AckThrough uint64
 }
 
+type AgentTokenInfo struct {
+	ID         string
+	Name       string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+}
+
 type ServerStats struct {
 	EventCount         uint64
 	LatestEventID      uint64
@@ -61,6 +71,10 @@ type Journal interface {
 	AuthenticateDevice(context.Context, []byte) (string, error)
 	RevokeDevice(context.Context, string) error
 	ListDevices(context.Context) ([]DeviceInfo, error)
+	CreateAgentToken(context.Context, string, string, []byte) error
+	AuthenticateAgent(context.Context, string, []byte) (AgentTokenInfo, error)
+	RevokeAgentToken(context.Context, string) error
+	ListAgentTokens(context.Context) ([]AgentTokenInfo, error)
 	Stats(context.Context) (ServerStats, error)
 	SetPagerMessage(context.Context, string) (Event, error)
 	PagerState(context.Context) (PagerState, error)

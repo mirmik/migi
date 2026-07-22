@@ -109,6 +109,22 @@ func (b *Broker) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 	return b.journal.ListDevices(ctx)
 }
 
+func (b *Broker) CreateAgentToken(ctx context.Context, tokenID, name string, tokenHash []byte) error {
+	return b.journal.CreateAgentToken(ctx, tokenID, name, tokenHash)
+}
+
+func (b *Broker) AuthenticateAgent(ctx context.Context, tokenID string, tokenHash []byte) (AgentTokenInfo, error) {
+	return b.journal.AuthenticateAgent(ctx, tokenID, tokenHash)
+}
+
+func (b *Broker) RevokeAgentToken(ctx context.Context, tokenID string) error {
+	return b.journal.RevokeAgentToken(ctx, tokenID)
+}
+
+func (b *Broker) ListAgentTokens(ctx context.Context) ([]AgentTokenInfo, error) {
+	return b.journal.ListAgentTokens(ctx)
+}
+
 func (b *Broker) Stats(ctx context.Context) (ServerStats, error) {
 	return b.journal.Stats(ctx)
 }

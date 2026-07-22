@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen_at TEXT NOT NULL,
     revoked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS agent_tokens (
+    token_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_tokens_active_name
+ON agent_tokens(name) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS pager_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     message TEXT NOT NULL,
@@ -74,6 +84,144 @@ CREATE TABLE IF NOT EXISTS pager_state (
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
 	return nil
+}
+
+func (j *SQLiteJournal) CreateAgentToken(
+	ctx context.Context,
+	tokenID string,
+	name string,
+	tokenHash []byte,
+) error {
+	if tokenID == "" || name == "" || len(tokenHash) != 32 {
+		return errors.New("agent token id, name, and 32-byte hash are required")
+	}
+	var exists int
+	if err := j.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM agent_tokens
+    WHERE token_id = ? OR token_hash = ? OR (name = ? AND revoked_at IS NULL)
+)`, tokenID, tokenHash, name).Scan(&exists); err != nil {
+		return fmt.Errorf("check agent token: %w", err)
+	}
+	if exists != 0 {
+		return ErrAgentExists
+	}
+	_, err := j.db.ExecContext(ctx, `
+INSERT INTO agent_tokens(token_id, name, token_hash, created_at)
+VALUES(?, ?, ?, ?)`, tokenID, name, tokenHash, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		if checkErr := j.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM agent_tokens
+    WHERE token_id = ? OR token_hash = ? OR (name = ? AND revoked_at IS NULL)
+)`, tokenID, tokenHash, name).Scan(&exists); checkErr == nil && exists != 0 {
+			return ErrAgentExists
+		}
+		return fmt.Errorf("create agent token: %w", err)
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) AuthenticateAgent(
+	ctx context.Context,
+	tokenID string,
+	tokenHash []byte,
+) (AgentTokenInfo, error) {
+	if tokenID == "" || len(tokenHash) != 32 {
+		return AgentTokenInfo{}, ErrAgentUnauthorized
+	}
+	var info AgentTokenInfo
+	var createdAt string
+	err := j.db.QueryRowContext(ctx, `
+SELECT token_id, name, created_at
+FROM agent_tokens
+WHERE token_id = ? AND token_hash = ? AND revoked_at IS NULL`, tokenID, tokenHash).Scan(
+		&info.ID, &info.Name, &createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentTokenInfo{}, ErrAgentUnauthorized
+	}
+	if err != nil {
+		return AgentTokenInfo{}, fmt.Errorf("authenticate agent: %w", err)
+	}
+	info.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return AgentTokenInfo{}, fmt.Errorf("parse agent token creation time: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := j.db.ExecContext(ctx,
+		`UPDATE agent_tokens SET last_used_at = ? WHERE token_id = ?`,
+		now.Format(time.RFC3339Nano), info.ID,
+	); err != nil {
+		return AgentTokenInfo{}, fmt.Errorf("update agent token activity: %w", err)
+	}
+	info.LastUsedAt = &now
+	return info, nil
+}
+
+func (j *SQLiteJournal) RevokeAgentToken(ctx context.Context, tokenID string) error {
+	if tokenID == "" {
+		return errors.New("agent token id is required")
+	}
+	result, err := j.db.ExecContext(ctx, `
+UPDATE agent_tokens SET revoked_at = ?
+WHERE token_id = ? AND revoked_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339Nano), tokenID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke agent token: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read agent token revoke result: %w", err)
+	}
+	if updated != 1 {
+		return ErrAgentUnauthorized
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) ListAgentTokens(ctx context.Context) ([]AgentTokenInfo, error) {
+	rows, err := j.db.QueryContext(ctx, `
+SELECT token_id, name, created_at, last_used_at, revoked_at
+FROM agent_tokens
+ORDER BY created_at, token_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list agent tokens: %w", err)
+	}
+	defer rows.Close()
+	var tokens []AgentTokenInfo
+	for rows.Next() {
+		var info AgentTokenInfo
+		var createdAt string
+		var lastUsedAt, revokedAt sql.NullString
+		if err := rows.Scan(&info.ID, &info.Name, &createdAt, &lastUsedAt, &revokedAt); err != nil {
+			return nil, fmt.Errorf("scan agent token: %w", err)
+		}
+		info.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse agent token creation time: %w", err)
+		}
+		if lastUsedAt.Valid {
+			value, err := time.Parse(time.RFC3339Nano, lastUsedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse agent token activity time: %w", err)
+			}
+			info.LastUsedAt = &value
+		}
+		if revokedAt.Valid {
+			value, err := time.Parse(time.RFC3339Nano, revokedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse agent token revocation time: %w", err)
+			}
+			info.RevokedAt = &value
+		}
+		tokens = append(tokens, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agent tokens: %w", err)
+	}
+	return tokens, nil
 }
 
 func (j *SQLiteJournal) CreatePairingCode(ctx context.Context, secretHash []byte, expiresAt time.Time) error {

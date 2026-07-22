@@ -22,8 +22,10 @@ LoadCredential=server.key:/etc/migi/server.key
 ExecStart=/usr/local/libexec/migi/migi-server \
     -listen ${MIGI_LISTEN} \
     -ingest-listen ${MIGI_INGEST_LISTEN} \
+    -agent-listen=${MIGI_AGENT_LISTEN} \
     -admin-listen ${MIGI_ADMIN_LISTEN} \
     -public-endpoint=${MIGI_PUBLIC_ENDPOINT} \
+    -agent-endpoint=${MIGI_AGENT_ENDPOINT} \
     -db ${MIGI_DATABASE} \
     -cert %d/server.crt \
     -key %d/server.key

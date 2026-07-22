@@ -170,6 +170,28 @@ func TestFailedAuthenticationBurstStopsBeforeJournal(t *testing.T) {
 	}
 }
 
+func TestFailedAgentAuthenticationBurstIsRateLimited(t *testing.T) {
+	broker := newTestBroker(t)
+	security := newAgentSecurity()
+	security.authFailures = fixedLimiter(2)
+	security.publishRequests = fixedLimiter(20)
+	handler := newAgentMuxWithSecurity(broker, security)
+
+	for attempt, want := range []int{
+		http.StatusUnauthorized,
+		http.StatusUnauthorized,
+		http.StatusTooManyRequests,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/agent-events", http.NoBody)
+		request.RemoteAddr = "192.0.2.35:50000"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != want {
+			t.Fatalf("attempt %d returned %d, want %d", attempt+1, response.Code, want)
+		}
+	}
+}
+
 func TestMalformedAuthenticationFloodDoesNotBlockAnotherSource(t *testing.T) {
 	broker := newTestBroker(t)
 	token := pairTestDevice(t, broker, "phone-1")
