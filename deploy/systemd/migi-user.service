@@ -1,6 +1,6 @@
 [Unit]
 Description=Migi self-hosted agent notification server
-Documentation=file:/usr/local/share/doc/migi/deployment.md
+Documentation=file:%h/project/migi/docs/deployment.md
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=5min
@@ -8,23 +8,23 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=migi
-Group=migi
 UMask=0077
 
-EnvironmentFile=/etc/migi/migi.env
+EnvironmentFile=%E/migi/migi.env
 StateDirectory=migi
 StateDirectoryMode=0700
-WorkingDirectory=/var/lib/migi
-LoadCredential=server.crt:/etc/migi/server.crt
-LoadCredential=server.key:/etc/migi/server.key
+ConfigurationDirectory=migi
+ConfigurationDirectoryMode=0700
+WorkingDirectory=%S/migi
+LoadCredential=server.crt:%E/migi/server.crt
+LoadCredential=server.key:%E/migi/server.key
 
-ExecStart=/usr/local/libexec/migi/migi-server \
+ExecStart=%h/.local/libexec/migi/migi-server \
     -listen ${MIGI_LISTEN} \
     -ingest-listen ${MIGI_INGEST_LISTEN} \
     -admin-listen ${MIGI_ADMIN_LISTEN} \
     -public-endpoint=${MIGI_PUBLIC_ENDPOINT} \
-    -db ${MIGI_DATABASE} \
+    -db %S/migi/migi.db \
     -cert %d/server.crt \
     -key %d/server.key
 
@@ -37,7 +37,6 @@ OOMPolicy=stop
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=migi
-LogNamespace=migi
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=1000
 
@@ -47,19 +46,10 @@ TasksMax=64
 LimitNOFILE=4096
 
 NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
 PrivateTmp=yes
-PrivateDevices=yes
 PrivateMounts=yes
 ProtectSystem=strict
-ProtectHome=yes
-ProtectHostname=yes
-ProtectClock=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
-ProtectControlGroups=yes
+ProtectHome=read-only
 ProtectProc=invisible
 ProcSubset=pid
 RestrictSUIDSGID=yes
@@ -73,8 +63,8 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 KeyringMode=private
-ReadOnlyPaths=/etc/migi
-ReadWritePaths=/var/lib/migi
+ReadOnlyPaths=%E/migi %h/.local/libexec/migi
+ReadWritePaths=%S/migi
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

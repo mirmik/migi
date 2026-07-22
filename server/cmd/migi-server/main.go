@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,7 +40,7 @@ func run() error {
 	listen := flag.String("listen", ":8443", "UDP address for the HTTP/3 server")
 	ingestListen := flag.String("ingest-listen", "127.0.0.1:8787", "trusted local TCP address for event submission")
 	adminListen := flag.String("admin-listen", "127.0.0.1:8788", "local TCP address for the administration UI; empty disables it")
-	publicEndpoint := flag.String("public-endpoint", "", "public https://host[:port] inserted into pairing invitations")
+	publicEndpoint := flag.String("public-endpoint", "", "default public https://host[:port] for pairing invitations")
 	databasePath := flag.String("db", "migi.db", "SQLite event journal path")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")
 	key := flag.String("key", "", "TLS private key in PEM format")
@@ -68,7 +67,7 @@ func run() error {
 		"certificate_fingerprint", fingerprint,
 	)
 	if *publicEndpoint == "" {
-		slog.Warn("public endpoint is not configured; web pairing will be unavailable")
+		slog.Warn("default public endpoint is not configured; enter one in the administration UI when pairing")
 	}
 
 	publicSecurity := newPublicSecurity()
@@ -420,6 +419,10 @@ func acknowledgeHandler(broker *events.Broker) http.HandlerFunc {
 			return
 		}
 		if err := broker.Acknowledge(r.Context(), ack.DeviceID, ack.Through); err != nil {
+			if errors.Is(err, events.ErrInvalidAcknowledgement) {
+				http.Error(w, "acknowledgement exceeds the event journal", http.StatusBadRequest)
+				return
+			}
 			slog.Error("failed to persist acknowledgement", "error", err)
 			http.Error(w, "failed to persist acknowledgement", http.StatusInternalServerError)
 			return
@@ -440,9 +443,11 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 			return
 		}
 
-		after, err := parseCursor(r.URL.Query().Get("after"))
+		device, _ := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+		after, err := broker.Acknowledged(r.Context(), device.ID)
 		if err != nil {
-			http.Error(w, "after must be an unsigned integer", http.StatusBadRequest)
+			slog.Error("failed to read device acknowledgement", "device_id", device.ID, "error", err)
+			http.Error(w, "event journal is unavailable", http.StatusInternalServerError)
 			return
 		}
 
@@ -458,7 +463,6 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 			http.Error(w, "event journal is unavailable", http.StatusInternalServerError)
 			return
 		}
-		device, _ := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
 		connectedAt := time.Now()
 		disconnectReason := "stream ended"
 		var disconnectErr error
@@ -564,17 +568,6 @@ func deviceStillAuthorized(ctx context.Context, broker *events.Broker) bool {
 	}
 	deviceID, err := broker.AuthenticateDevice(ctx, device.TokenHash[:])
 	return err == nil && deviceID == device.ID
-}
-
-func parseCursor(raw string) (uint64, error) {
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return value, nil
 }
 
 func writeLine(w http.ResponseWriter, flusher http.Flusher, value any) error {

@@ -59,16 +59,36 @@ func TestPublicEventStreamRequiresHTTP3(t *testing.T) {
 func TestAcknowledgementIsPersisted(t *testing.T) {
 	broker := newTestBroker(t)
 	token := pairTestDevice(t, broker, "phone-1")
+	event, err := broker.Publish(t.Context(), events.Input{Kind: "test", Title: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/ack",
-		strings.NewReader(`{"device_id":"phone-1","through":42}`),
+		strings.NewReader(fmt.Sprintf(`{"device_id":"phone-1","through":%d}`, event.ID)),
 	)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
 	newPublicMux(broker).ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("ack returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAcknowledgementRejectsFutureCursor(t *testing.T) {
+	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "phone-1")
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/ack",
+		strings.NewReader(`{"device_id":"phone-1","through":1}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	newPublicMux(broker).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("future ack returned %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
 }
 
@@ -121,6 +141,7 @@ func TestPairingCodeCanBeRedeemedOnlyOnce(t *testing.T) {
 func TestHTTP3StreamsPersistedReplayPages(t *testing.T) {
 	broker := newTestBroker(t)
 	token := pairTestDevice(t, broker, "phone-1")
+	var first events.Event
 	var want events.Event
 	for index := 0; index < events.ReplayBatchSize+1; index++ {
 		var err error
@@ -132,6 +153,12 @@ func TestHTTP3StreamsPersistedReplayPages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if index == 0 {
+			first = want
+		}
+	}
+	if err := broker.Acknowledge(t.Context(), "phone-1", first.ID); err != nil {
+		t.Fatal(err)
 	}
 
 	packetConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -162,7 +189,8 @@ func TestHTTP3StreamsPersistedReplayPages(t *testing.T) {
 	}
 	t.Cleanup(func() { transport.Close() })
 	client := http.Client{Transport: transport, Timeout: 5 * time.Second}
-	request, err := http.NewRequest(http.MethodGet, "https://"+packetConn.LocalAddr().String()+"/v1/events?after=0", nil)
+	// A legacy client-supplied cursor must not override the durable server ACK.
+	request, err := http.NewRequest(http.MethodGet, "https://"+packetConn.LocalAddr().String()+"/v1/events?after=999999", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +205,7 @@ func TestHTTP3StreamsPersistedReplayPages(t *testing.T) {
 	}
 	decoder := json.NewDecoder(response.Body)
 	var got events.Event
-	for index := 0; index < events.ReplayBatchSize+1; index++ {
+	for index := 0; index < events.ReplayBatchSize; index++ {
 		if err := decoder.Decode(&got); err != nil {
 			t.Fatalf("decode replay event %d: %v", index, err)
 		}
@@ -220,7 +248,7 @@ func TestHardenedHTTP3AllowsAuthenticatedReconnect(t *testing.T) {
 		request, err := http.NewRequest(
 			http.MethodPost,
 			"https://"+address+"/v1/ack",
-			strings.NewReader(`{"device_id":"phone-1","through":1}`),
+			strings.NewReader(`{"device_id":"phone-1","through":0}`),
 		)
 		if err != nil {
 			t.Fatal(err)

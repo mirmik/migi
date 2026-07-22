@@ -55,13 +55,14 @@ in the Go binary, so it adds no Node or browser-framework deployment runtime.
 The phone opens a long-running request:
 
 ```text
-GET /v1/events?after=<last_processed_event_id>
+GET /v1/events
 ```
 
 The response is newline-delimited JSON for the bootstrap implementation. The
 server flushes every event and emits a heartbeat line while idle. Reconnection
-uses the last locally processed event ID, making replay and deduplication
-explicit.
+uses the last acknowledgement stored for the authenticated device. The server
+is the cursor authority; local client state is used only to suppress a possible
+duplicate after an acknowledgement is lost.
 
 NDJSON is chosen for inspectability during bootstrap. The framing may later move
 to length-prefixed CBOR without changing transport semantics.
@@ -71,7 +72,7 @@ to length-prefixed CBOR without changing transport semantics.
 The target semantic is at-least-once transport with idempotent handling:
 
 1. The server assigns a monotonically increasing event ID and persists it.
-2. The server sends all events newer than the client's cursor.
+2. The server sends all events newer than its durable per-device acknowledgement.
 3. The phone persists an ID after it has created the local notification.
 4. The phone acknowledges the processed cursor.
 5. Replayed IDs are ignored locally.

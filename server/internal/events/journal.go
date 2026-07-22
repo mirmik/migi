@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	ErrInvalidPairingCode = errors.New("pairing code is invalid, expired, or already used")
-	ErrUnauthorized       = errors.New("device credential is invalid or revoked")
+	ErrInvalidPairingCode     = errors.New("pairing code is invalid, expired, or already used")
+	ErrInvalidAcknowledgement = errors.New("acknowledgement exceeds the event journal")
+	ErrUnauthorized           = errors.New("device credential is invalid or revoked")
 )
 
 type Event struct {

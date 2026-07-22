@@ -20,7 +20,6 @@ const (
 	publicMaxUnvalidatedConnections = 48
 	publicMaxConnectionsPerSource   = 8
 	publicMaxConcurrentRequests     = 128
-	publicMaxStreamsPerDevice       = 2
 	publicRateLimitEntries          = 4096
 )
 
@@ -34,7 +33,7 @@ type publicSecurity struct {
 	authAttempts  *keyedRateLimiter
 	authFailures  *keyedRateLimiter
 	rejectionLogs *keyedRateLimiter
-	deviceStreams *deviceStreamAdmission
+	deviceStreams *deviceStreamRegistry
 	requestSlots  chan struct{}
 }
 
@@ -54,7 +53,7 @@ func newPublicSecurity() *publicSecurity {
 		authFailures: newKeyedRateLimiter(20, 40, 2, 5),
 		// Rejected traffic must not turn into an unbounded log-writing workload.
 		rejectionLogs: newKeyedRateLimiter(5, 20, 0.2, 2),
-		deviceStreams: newDeviceStreamAdmission(publicMaxStreamsPerDevice),
+		deviceStreams: newDeviceStreamRegistry(),
 		requestSlots:  make(chan struct{}, publicMaxConcurrentRequests),
 	}
 }
@@ -110,13 +109,15 @@ func (s *publicSecurity) limitDeviceStreams(next http.Handler) http.Handler {
 			http.Error(w, "device authentication required", http.StatusUnauthorized)
 			return
 		}
-		if !s.deviceStreams.admit(device.ID) {
-			s.logRejection("device event stream capacity reached", r.RemoteAddr, "device_id", device.ID)
-			writeRateLimited(w)
-			return
+		streamContext, streamID, replaced := s.deviceStreams.replace(r.Context(), device.ID)
+		if replaced {
+			slog.Info("superseding previous device event stream",
+				"device_id", device.ID,
+				"remote_addr", r.RemoteAddr,
+			)
 		}
-		defer s.deviceStreams.release(device.ID)
-		next.ServeHTTP(w, r)
+		defer s.deviceStreams.release(device.ID, streamID)
+		next.ServeHTTP(w, r.WithContext(streamContext))
 	})
 }
 
@@ -144,34 +145,46 @@ type connectionAdmission struct {
 	bySource       map[string]int
 }
 
-type deviceStreamAdmission struct {
+type deviceStream struct {
+	id     uint64
+	cancel context.CancelFunc
+}
+
+type deviceStreamRegistry struct {
 	mu       sync.Mutex
-	max      int
-	byDevice map[string]int
+	nextID   uint64
+	byDevice map[string]deviceStream
 }
 
-func newDeviceStreamAdmission(max int) *deviceStreamAdmission {
-	return &deviceStreamAdmission{max: max, byDevice: make(map[string]int)}
+func newDeviceStreamRegistry() *deviceStreamRegistry {
+	return &deviceStreamRegistry{byDevice: make(map[string]deviceStream)}
 }
 
-func (a *deviceStreamAdmission) admit(deviceID string) bool {
+func (a *deviceStreamRegistry) replace(parent context.Context, deviceID string) (context.Context, uint64, bool) {
+	ctx, cancel := context.WithCancel(parent)
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if deviceID == "" || a.byDevice[deviceID] >= a.max {
-		return false
+	previous, replaced := a.byDevice[deviceID]
+	a.nextID++
+	streamID := a.nextID
+	a.byDevice[deviceID] = deviceStream{id: streamID, cancel: cancel}
+	a.mu.Unlock()
+	if replaced {
+		previous.cancel()
 	}
-	a.byDevice[deviceID]++
-	return true
+	return ctx, streamID, replaced
+
 }
 
-func (a *deviceStreamAdmission) release(deviceID string) {
+func (a *deviceStreamRegistry) release(deviceID string, streamID uint64) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.byDevice[deviceID] <= 1 {
+	stream, current := a.byDevice[deviceID]
+	if current && stream.id == streamID {
 		delete(a.byDevice, deviceID)
-		return
 	}
-	a.byDevice[deviceID]--
+	a.mu.Unlock()
+	if current && stream.id == streamID {
+		stream.cancel()
+	}
 }
 
 func newConnectionAdmission(maxTotal, maxUnvalidated, maxPerSource int) *connectionAdmission {

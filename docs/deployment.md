@@ -1,5 +1,40 @@
 # Prepared systemd deployment
 
+Migi can run either as a dedicated system account or as the login user. The
+system account offers stronger identity separation. The user service makes
+routine binary updates and restarts possible without `sudo`; its process has
+the login user's read access, while systemd still restricts writes to the Migi
+state directory.
+
+## User service
+
+With systemd linger enabled, migrate an existing system deployment once:
+
+```sh
+./deploy/systemd/migrate-to-user.sh
+```
+
+The script builds the server, installs `migi-user.service` as
+`~/.config/systemd/user/migi.service`, stops the system service, copies the
+SQLite database and TLS material into the user's XDG directories, and starts
+the user service. The source deployment is retained for rollback. Only the
+state-copy and system-unit transition require `sudo`.
+
+Subsequent updates need no privilege escalation:
+
+```sh
+cd server
+go build -o ~/.local/libexec/migi/migi-server.new ./cmd/migi-server
+mv ~/.local/libexec/migi/migi-server.new ~/.local/libexec/migi/migi-server
+systemctl --user restart migi.service
+```
+
+Inspect logs with `journalctl --user -u migi.service`. The user deployment uses
+`~/.config/migi` for its environment and TLS material and
+`~/.local/state/migi` for SQLite state.
+
+## System service
+
 This repository contains a deployment kit for a future Linux server. It is
 prepared and locally validated, but these instructions have not yet been
 applied to a production host. Nothing in `deploy/systemd` installs, enables or
@@ -84,9 +119,13 @@ sudo install -o root -g root -m 0644 \
   /etc/systemd/journald@migi.conf.d/retention.conf
 ```
 
-Edit `/etc/migi/migi.env`. Keep ingest and administration on loopback. The QUIC
-listener deliberately uses an unprivileged internal UDP port; map the external
-port at the router instead of granting `CAP_NET_BIND_SERVICE`.
+Edit `/etc/migi/migi.env`. Keep ingest on loopback. Keep administration on
+loopback too unless it is intentionally bound to a trusted LAN address behind
+an authenticated reverse proxy. Migi always serves the panel below `/admin/`;
+an external prefix belongs to the proxy, which should strip only that prefix
+while forwarding the remaining path. The QUIC listener deliberately uses an unprivileged internal UDP
+port; map the external port at the router instead of granting
+`CAP_NET_BIND_SERVICE`.
 
 Before the first start, inspect and validate everything:
 
@@ -121,8 +160,11 @@ other processes, filters system calls and address families, isolates temporary
 files and devices, and limits the process to 256 MiB, 64 tasks and 4096 file
 descriptors. The long-lived QUIC stream remains compatible with these limits.
 
-The public listener, loopback listeners and public endpoint are separate env
-values. Treat a non-loopback ingest or admin value as a failed review.
+The public listener, trusted listeners and public endpoint are separate env
+values. Treat non-loopback ingest as a failed review.
+Accept a non-loopback admin listener only when it is limited to a trusted LAN,
+the router does not forward its TCP port, and the reverse proxy supplies the
+authentication boundary.
 
 ## Journal retention
 

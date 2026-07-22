@@ -62,6 +62,7 @@ type pageData struct {
 
 type pairingView struct {
 	QRDataURI template.URL
+	Endpoint  string
 	ExpiresAt time.Time
 }
 
@@ -144,7 +145,7 @@ func (h *Handler) setPagerMessage(w http.ResponseWriter, r *http.Request) {
 		"cleared", message == "",
 		"remote_addr", r.RemoteAddr,
 	)
-	http.Redirect(w, r, "/admin/?notice=Pager+message+updated", http.StatusSeeOther)
+	h.redirectToDashboard(w, r, "Pager message updated")
 }
 
 func (h *Handler) sendTestNotification(w http.ResponseWriter, r *http.Request) {
@@ -162,15 +163,16 @@ func (h *Handler) sendTestNotification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("test notification sent", "event_id", event.ID, "remote_addr", r.RemoteAddr)
-	http.Redirect(w, r, "/admin/?notice=Test+notification+sent", http.StatusSeeOther)
+	h.redirectToDashboard(w, r, "Test notification sent")
 }
 
 func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
 	if !h.validForm(w, r) {
 		return
 	}
-	if h.config.PublicEndpoint == "" {
-		http.Error(w, "pairing is unavailable until -public-endpoint is configured", http.StatusConflict)
+	endpoint, err := parsePublicEndpoint(strings.TrimSpace(r.FormValue("endpoint")))
+	if err != nil {
+		http.Error(w, "pairing endpoint must be a plain https://host[:port] URL", http.StatusBadRequest)
 		return
 	}
 	ttl, err := time.ParseDuration(r.FormValue("ttl"))
@@ -191,12 +193,12 @@ func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("pairing invitation created",
 		"expires_at", expiresAt,
-		"public_endpoint", h.config.PublicEndpoint,
+		"public_endpoint", endpoint.String(),
 		"remote_addr", r.RemoteAddr,
 	)
 	invitation := &url.URL{Scheme: "migi", Host: "pair"}
 	query := invitation.Query()
-	query.Set("endpoint", h.config.PublicEndpoint)
+	query.Set("endpoint", endpoint.String())
 	query.Set("pin", strings.ReplaceAll(h.config.CertificateFingerprint, ":", ""))
 	query.Set("secret", base64.RawURLEncoding.EncodeToString(secret))
 	query.Set("expires", expiresAt.Format(time.RFC3339))
@@ -208,6 +210,7 @@ func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
 	}
 	h.renderDashboard(w, r, &pairingView{
 		QRDataURI: template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(png)),
+		Endpoint:  endpoint.String(),
 		ExpiresAt: expiresAt,
 	}, "Pairing invitation created", http.StatusCreated)
 }
@@ -230,7 +233,7 @@ func (h *Handler) revokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("device revoked", "device_id", deviceID, "remote_addr", r.RemoteAddr)
-	http.Redirect(w, r, "/admin/?notice=Device+revoked", http.StatusSeeOther)
+	h.redirectToDashboard(w, r, "Device revoked")
 }
 
 func (h *Handler) renderDashboard(
@@ -277,6 +280,16 @@ func (h *Handler) renderDashboard(
 	if err := h.template.ExecuteTemplate(w, "dashboard.html", data); err != nil {
 		return
 	}
+}
+
+func (h *Handler) redirectToDashboard(w http.ResponseWriter, r *http.Request, notice string) {
+	action := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/"), "/")
+	location := "./"
+	if depth := strings.Count(action, "/"); depth > 0 {
+		location = strings.Repeat("../", depth)
+	}
+	w.Header().Set("Location", location+"?notice="+url.QueryEscape(notice))
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 func (h *Handler) validForm(w http.ResponseWriter, r *http.Request) bool {

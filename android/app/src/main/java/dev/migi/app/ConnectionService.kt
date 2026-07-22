@@ -10,12 +10,16 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
+import android.net.wifi.WifiManager
 import java.util.concurrent.atomic.AtomicInteger
 
 class ConnectionService : Service() {
     private var client: EventStreamClient? = null
     private lateinit var connectivityManager: ConnectivityManager
+    private var cpuWakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var currentNetwork: Network? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -44,6 +48,7 @@ class ConnectionService : Service() {
             connectionNotification("Starting QUIC connection"),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
         )
+        acquireKeepAliveLocks()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -84,11 +89,40 @@ class ConnectionService : Service() {
         client?.close()
         client = null
         connectivityManager.unregisterNetworkCallback(networkCallback)
+        releaseKeepAliveLocks()
         isRunning = false
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun acquireKeepAliveLocks() {
+        runCatching {
+            cpuWakeLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:connection")
+                .apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+        }.onFailure { Log.w(TAG, "Failed to acquire CPU wake lock", it) }
+
+        runCatching {
+            @Suppress("DEPRECATION")
+            wifiLock = getSystemService(WifiManager::class.java)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$packageName:connection")
+                .apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+        }.onFailure { Log.w(TAG, "Failed to acquire Wi-Fi lock", it) }
+    }
+
+    private fun releaseKeepAliveLocks() {
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
+        cpuWakeLock?.let { if (it.isHeld) it.release() }
+        cpuWakeLock = null
+    }
 
     private fun createChannels() {
         val manager = getSystemService(NotificationManager::class.java)

@@ -190,7 +190,7 @@ func TestMalformedAuthenticationFloodDoesNotBlockAnotherSource(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/ack",
-		strings.NewReader(`{"device_id":"phone-1","through":1}`),
+		strings.NewReader(`{"device_id":"phone-1","through":0}`),
 	)
 	request.RemoteAddr = "192.0.2.32:50000"
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -281,15 +281,14 @@ func TestRejectionLoggingIsIndependentlyBounded(t *testing.T) {
 	}
 }
 
-func TestDeviceEventStreamsAreBoundedIndependently(t *testing.T) {
+func TestNewDeviceEventStreamSupersedesPreviousStream(t *testing.T) {
 	security := newPublicSecurity()
-	security.deviceStreams = newDeviceStreamAdmission(1)
-	started := make(chan string, 2)
-	release := make(chan struct{})
+	security.deviceStreams = newDeviceStreamRegistry()
+	started := make(chan string, 3)
 	handler := security.limitDeviceStreams(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		device := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
 		started <- device.ID
-		<-release
+		<-r.Context().Done()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -312,18 +311,34 @@ func TestDeviceEventStreamsAreBoundedIndependently(t *testing.T) {
 	if got := <-started; got != "phone-1" {
 		t.Fatalf("started device %q", got)
 	}
-	blocked := httptest.NewRecorder()
-	handler.ServeHTTP(blocked, requestFor("phone-1"))
-	if blocked.Code != http.StatusTooManyRequests {
-		t.Fatalf("second stream returned %d", blocked.Code)
+	replacement := serve("phone-1")
+	if got := <-started; got != "phone-1" {
+		t.Fatalf("started replacement device %q", got)
+	}
+	if code := <-first; code != http.StatusNoContent {
+		t.Fatalf("superseded stream returned %d", code)
 	}
 	secondDevice := serve("phone-2")
 	if got := <-started; got != "phone-2" {
 		t.Fatalf("started device %q", got)
 	}
-	close(release)
-	if code := <-first; code != http.StatusNoContent {
-		t.Fatalf("first stream returned %d", code)
+
+	third := serve("phone-1")
+	if got := <-started; got != "phone-1" {
+		t.Fatalf("started second replacement device %q", got)
+	}
+	if code := <-replacement; code != http.StatusNoContent {
+		t.Fatalf("replacement stream returned %d", code)
+	}
+
+	security.deviceStreams.mu.Lock()
+	phoneOne := security.deviceStreams.byDevice["phone-1"]
+	phoneTwo := security.deviceStreams.byDevice["phone-2"]
+	security.deviceStreams.mu.Unlock()
+	phoneOne.cancel()
+	phoneTwo.cancel()
+	if code := <-third; code != http.StatusNoContent {
+		t.Fatalf("current stream returned %d", code)
 	}
 	if code := <-secondDevice; code != http.StatusNoContent {
 		t.Fatalf("independent device stream returned %d", code)

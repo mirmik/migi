@@ -75,13 +75,15 @@ It must not be exposed publicly without authentication.
 ## Stream events
 
 ```http
-GET /v1/events?after=1841
+GET /v1/events
 Accept: application/x-ndjson
 Authorization: Bearer <device-token>
 ```
 
-The response stays open. Each non-empty line is either an event object or a
-heartbeat:
+The server resumes from the greatest cursor durably acknowledged for the
+authenticated device. A client-supplied cursor is deliberately not used: this
+prevents stale state from another pairing or server from skipping events. The
+response stays open. Each non-empty line is either an event object or a heartbeat:
 
 ```json
 {"type":"heartbeat","time":"2026-07-21T18:41:00Z"}
@@ -102,8 +104,8 @@ Authorization: Bearer <device-token>
 
 The `device_id` must match the identity authenticated by the Bearer token. The
 server stores the greatest cursor acknowledged by each device. An older
-acknowledgement never moves a device cursor backward. Success returns
-`204 No Content`.
+acknowledgement never moves a device cursor backward, and a cursor beyond the
+latest journal event is rejected. Success returns `204 No Content`.
 
 ## Health
 

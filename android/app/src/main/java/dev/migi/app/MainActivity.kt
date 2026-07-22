@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.Button
@@ -25,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var certificatePin: EditText
     private lateinit var status: TextView
 	private lateinit var pagerMessage: TextView
+	private lateinit var batteryButton: Button
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
 	}
@@ -48,6 +50,7 @@ class MainActivity : Activity() {
 		super.onStart()
 		preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
 		refreshPagerMessage()
+		refreshBatteryOptimizationState()
 	}
 
 	override fun onStop() {
@@ -92,10 +95,9 @@ class MainActivity : Activity() {
                 status.setText(R.string.service_stopped)
             }
         }
-        val battery = Button(this).apply {
-            text = getString(R.string.open_battery_settings)
+        batteryButton = Button(this).apply {
             setOnClickListener {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+				requestBatteryOptimizationExemption()
             }
         }
 
@@ -116,7 +118,7 @@ class MainActivity : Activity() {
             addView(certificatePin, matchWidth())
             addView(start, matchWidth())
             addView(stop, matchWidth())
-            addView(battery, matchWidth())
+            addView(batteryButton, matchWidth())
             addView(status, matchWidth())
         })
     }
@@ -125,6 +127,29 @@ class MainActivity : Activity() {
 		pagerMessage.text = preferences.getString(KEY_PAGER_MESSAGE, null)
 			?.takeIf { it.isNotBlank() }
 			?: getString(R.string.pager_empty)
+	}
+
+	private fun refreshBatteryOptimizationState() {
+		val exempt = getSystemService(PowerManager::class.java)
+			.isIgnoringBatteryOptimizations(packageName)
+		batteryButton.isEnabled = !exempt
+		batteryButton.setText(
+			if (exempt) R.string.battery_optimization_disabled
+			else R.string.allow_reliable_background_delivery,
+		)
+	}
+
+	private fun requestBatteryOptimizationExemption() {
+		if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) {
+			refreshBatteryOptimizationState()
+			return
+		}
+		startActivity(
+			Intent(
+				Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+				Uri.parse("package:$packageName"),
+			),
+		)
 	}
 
     private fun startConfiguredConnection() {
@@ -199,6 +224,7 @@ class MainActivity : Activity() {
                     getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
                         .putString(KEY_ENDPOINT, invitation.endpoint)
                         .putString(KEY_CERTIFICATE_PIN, invitation.pin)
+                        .remove(EventStreamClient.KEY_LAST_EVENT_ID)
                         .commit(),
                 ) { "Failed to save paired server" }
             }
@@ -211,6 +237,7 @@ class MainActivity : Activity() {
                             .setAction(ConnectionService.ACTION_RECONFIGURE),
                     )
                     status.setText(R.string.pairing_complete)
+					requestBatteryOptimizationExemption()
                 }.onFailure {
                     status.text = getString(R.string.pairing_failed, it.message ?: "unknown error")
                 }

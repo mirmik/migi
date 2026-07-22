@@ -145,17 +145,44 @@ func TestExpiredPairingCodeIsRejected(t *testing.T) {
 func TestAcknowledgementNeverMovesBackward(t *testing.T) {
 	journal := openTestJournal(t)
 	ctx := context.Background()
-	if err := journal.Acknowledge(ctx, "phone-1", 42); err != nil {
+	first, err := journal.Append(ctx, Input{Kind: "test", Title: "first"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := journal.Acknowledge(ctx, "phone-1", 12); err != nil {
+	second, err := journal.Append(ctx, Input{Kind: "test", Title: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Acknowledge(ctx, "phone-1", second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Acknowledge(ctx, "phone-1", first.ID); err != nil {
 		t.Fatal(err)
 	}
 	through, err := journal.Acknowledged(ctx, "phone-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if through != 42 {
-		t.Fatalf("acknowledged cursor is %d, want 42", through)
+	if through != second.ID {
+		t.Fatalf("acknowledged cursor is %d, want %d", through, second.ID)
+	}
+}
+
+func TestAcknowledgementCannotSkipFutureEvents(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	event, err := journal.Append(ctx, Input{Kind: "test", Title: "existing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Acknowledge(ctx, "phone-1", event.ID+1); !errors.Is(err, ErrInvalidAcknowledgement) {
+		t.Fatalf("future acknowledgement returned %v", err)
+	}
+	through, err := journal.Acknowledged(ctx, "phone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 0 {
+		t.Fatalf("future acknowledgement persisted cursor %d", through)
 	}
 }

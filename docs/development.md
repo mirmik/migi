@@ -94,8 +94,9 @@ ssh -L 8788:127.0.0.1:8788 user@home-server
 
 Then open the same local URL in the workstation browser. All listener ports are
 configurable. `-listen` is the internal UDP bind; `-public-endpoint` is the
-external HTTPS address written into QR invitations and may use a different port
-when the router translates it. `-admin-listen ''` disables the panel. See
+default external HTTPS address offered by the QR form and may use a different
+port when the router translates it. The administrator can override it for each
+invitation. `-admin-listen ''` disables the panel. See
 [`administration.md`](administration.md) for the complete boundary.
 
 The SQLite driver uses CGO. A fresh Linux build host therefore needs a C

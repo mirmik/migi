@@ -24,7 +24,6 @@ internal object NativeQuicClient {
 
     external fun run(
         endpoint: String,
-        after: Long,
         deviceID: String,
         certificatePin: String,
         credential: String,
@@ -109,9 +108,8 @@ class EventStreamClient(
             lineConsumer = ::consumeLine,
         )
         callbacks = runCallbacks
-        val cursor = preferences.getLong(KEY_LAST_EVENT_ID, 0)
         val error = runCatching {
-            NativeQuicClient.run(endpoint, cursor, deviceID, certificatePin, credential, runCallbacks)
+            NativeQuicClient.run(endpoint, deviceID, certificatePin, credential, runCallbacks)
         }.getOrElse {
             Log.e(TAG, "Native QUIC client failed", it)
             it.message ?: it.javaClass.simpleName
@@ -172,7 +170,7 @@ class EventStreamClient(
     }
 
     companion object {
-        private const val KEY_LAST_EVENT_ID = "last_event_id"
+        const val KEY_LAST_EVENT_ID = "last_event_id"
         private const val TAG = "MigiEventStream"
     }
 }

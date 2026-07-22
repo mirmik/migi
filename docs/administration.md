@@ -24,13 +24,12 @@ returns.
   -key /path/to/server.key
 ```
 
-Open `http://127.0.0.1:8788/admin/`. The four relevant network values are
-independent:
+Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent:
 
 | Option | Transport | Purpose |
 | --- | --- | --- |
 | `-listen` | UDP | Local bind for public HTTP/3/QUIC traffic |
-| `-public-endpoint` | HTTPS URL | Internet address and port placed in pairing QR codes |
+| `-public-endpoint` | HTTPS URL | Default address offered by the pairing form |
 | `-ingest-listen` | TCP | Trusted agent event submission |
 | `-admin-listen` | TCP | Local administration panel |
 
@@ -39,7 +38,9 @@ that case use `-listen :8443` and
 `-public-endpoint https://PUBLIC_IP:10443`. HTTP/3 uses UDP, so the router rule
 must not be TCP-only.
 
-The public endpoint is required only to create pairing invitations. An empty
+The pairing form lets the administrator edit the endpoint for each QR. It must
+be a plain `https://host[:port]` URL reachable by the phone over UDP. The
+`-public-endpoint` value only pre-fills that field; it may be empty. An empty
 `-admin-listen` disables the web panel.
 
 ## Public endpoint resource limits
@@ -101,6 +102,15 @@ While that command is connected, open `http://127.0.0.1:8788/admin/` on the
 client machine. SSH supplies authentication and encryption. If direct exposure
 is ever needed, an explicit authentication and authorization layer must be
 implemented first.
+
+It may instead listen on a trusted LAN address behind an authenticated reverse
+proxy. The panel uses relative asset, form and redirect URLs, so the proxy can
+own an external prefix without teaching Migi about it. For an external
+`/migi/`, redirect exact `/migi` to `/migi/admin/` and rewrite
+`/migi/(.*)` to the upstream `/$1`. Thus the direct `/admin/` panel is available
+as `/migi/admin/` through the proxy. Apply the same authentication policy to
+both proxy rules. The prefix is routing, not authentication; the upstream TCP
+listener must remain unreachable from untrusted networks.
 
 Administrative forms are protected by an in-memory CSRF token. Responses use
 `Cache-Control: no-store` and a restrictive Content Security Policy. A pairing

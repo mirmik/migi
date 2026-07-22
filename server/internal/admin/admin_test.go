@@ -37,7 +37,11 @@ func TestDashboardAndPairing(t *testing.T) {
 		t.Fatal("dashboard has no Content-Security-Policy")
 	}
 
-	form := url.Values{"csrf_token": {handler.csrfToken}, "ttl": {"10m"}}
+	form := url.Values{
+		"csrf_token": {handler.csrfToken},
+		"endpoint":   {"https://198.51.100.20:10443"},
+		"ttl":        {"10m"},
+	}
 	request = httptest.NewRequest(http.MethodPost, "/admin/pair", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response = httptest.NewRecorder()
@@ -49,6 +53,9 @@ func TestDashboardAndPairing(t *testing.T) {
 	body := response.Body.String()
 	if !strings.Contains(body, "data:image/png;base64,") {
 		t.Fatal("pairing page has no embedded QR image")
+	}
+	if !strings.Contains(body, "Endpoint: <code>https://198.51.100.20:10443</code>") {
+		t.Fatal("pairing page does not show the selected endpoint")
 	}
 	if strings.Contains(body, "migi://pair") || strings.Contains(body, "secret=") {
 		t.Fatal("pairing secret leaked into the HTML response")
@@ -92,7 +99,7 @@ func TestAdminSendsTestNotification(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusSeeOther, response.Body.String())
 	}
-	if location := response.Header().Get("Location"); location != "/admin/?notice=Test+notification+sent" {
+	if location := response.Header().Get("Location"); location != "../?notice=Test+notification+sent" {
 		t.Fatalf("Location = %q", location)
 	}
 	stats, err := broker.Stats(context.Background())
@@ -120,6 +127,9 @@ func TestAdminUpdatesAndClearsPager(t *testing.T) {
 	response := postPager("  Agent needs a decision  ")
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("set pager status = %d: %s", response.Code, response.Body.String())
+	}
+	if location := response.Header().Get("Location"); location != "./?notice=Pager+message+updated" {
+		t.Fatalf("pager Location = %q", location)
 	}
 	state, err := broker.PagerState(context.Background())
 	if err != nil {
@@ -168,6 +178,9 @@ func TestAdminRevokesDevice(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusSeeOther, response.Body.String())
 	}
+	if location := response.Header().Get("Location"); location != "../?notice=Device+revoked" {
+		t.Fatalf("revoke Location = %q", location)
+	}
 	if _, err := broker.AuthenticateDevice(context.Background(), tokenHash[:]); !errors.Is(err, events.ErrUnauthorized) {
 		t.Fatalf("authenticate revoked device error = %v, want %v", err, events.ErrUnauthorized)
 	}
@@ -182,6 +195,114 @@ func TestPublicEndpointValidation(t *testing.T) {
 		if _, err := parsePublicEndpoint(value); err == nil {
 			t.Errorf("parsePublicEndpoint(%q) succeeded", value)
 		}
+	}
+}
+
+func TestPairingEndpointIsRequiredAndValidatedByTheForm(t *testing.T) {
+	for _, endpoint := range []string{"", "http://192.0.2.1:10443", "https://host/path"} {
+		handler, broker := newTestHandler(t)
+		form := url.Values{
+			"csrf_token": {handler.csrfToken},
+			"endpoint":   {endpoint},
+			"ttl":        {"10m"},
+		}
+		request := httptest.NewRequest(http.MethodPost, "/admin/pair", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("endpoint %q status = %d, want 400", endpoint, response.Code)
+		}
+		stats, err := broker.Stats(context.Background())
+		if err != nil || stats.ActivePairingCodes != 0 {
+			t.Errorf("endpoint %q created pairing code: %#v, %v", endpoint, stats, err)
+		}
+	}
+}
+
+func TestPairingEndpointCanBeEnteredWithoutAConfiguredDefault(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	handler.config.PublicEndpoint = ""
+	form := url.Values{
+		"csrf_token": {handler.csrfToken},
+		"endpoint":   {"https://192.0.2.44:8443"},
+		"ttl":        {"10m"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/pair", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("pairing without default status = %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Endpoint: <code>https://192.0.2.44:8443</code>") {
+		t.Fatal("pairing response does not contain the entered endpoint")
+	}
+}
+
+func TestAdminURLsSurviveARewritingProxy(t *testing.T) {
+	handler, broker := newTestHandler(t)
+	routes := handler.Routes()
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/migi/") {
+			http.NotFound(w, r)
+			return
+		}
+		upstream := r.Clone(r.Context())
+		upstream.URL.Path = "/" + strings.TrimPrefix(r.URL.Path, "/migi/")
+		routes.ServeHTTP(w, upstream)
+	})
+
+	dashboard := httptest.NewRecorder()
+	proxy.ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/migi/admin/", nil))
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("proxied dashboard status = %d", dashboard.Code)
+	}
+	body := dashboard.Body.String()
+	for _, expected := range []string{
+		`href="assets/style.css"`,
+		`action="pager"`,
+		`action="notifications/test"`,
+		`action="pair"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("proxied dashboard is missing %s", expected)
+		}
+	}
+
+	asset := httptest.NewRecorder()
+	proxy.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/migi/admin/assets/style.css", nil))
+	if asset.Code != http.StatusOK {
+		t.Fatalf("proxied asset status = %d", asset.Code)
+	}
+
+	form := url.Values{"csrf_token": {handler.csrfToken}}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/migi/admin/notifications/test",
+		strings.NewReader(form.Encode()),
+	)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "../?notice=Test+notification+sent" {
+		t.Fatalf("prefixed POST = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	externalAction, err := url.Parse("http://example.test/migi/admin/notifications/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect, err := url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved := externalAction.ResolveReference(redirect).RequestURI(); resolved != "/migi/admin/?notice=Test+notification+sent" {
+		t.Fatalf("external redirect resolves to %q", resolved)
+	}
+	stats, err := broker.Stats(context.Background())
+	if err != nil || stats.EventCount != 1 {
+		t.Fatalf("prefixed POST stats = %#v, %v", stats, err)
 	}
 }
 

@@ -384,16 +384,25 @@ func (j *SQLiteJournal) Acknowledge(ctx context.Context, deviceID string, throug
 	if through > math.MaxInt64 {
 		return errors.New("ack cursor exceeds sqlite integer range")
 	}
-	_, err := j.db.ExecContext(ctx, `
-INSERT INTO device_acks(device_id, through_id, updated_at) VALUES(?, ?, ?)
+	result, err := j.db.ExecContext(ctx, `
+INSERT INTO device_acks(device_id, through_id, updated_at)
+SELECT ?, ?, ?
+WHERE ? <= COALESCE((SELECT max(id) FROM events), 0)
 ON CONFLICT(device_id) DO UPDATE SET
     through_id = max(device_acks.through_id, excluded.through_id),
     updated_at = CASE
         WHEN excluded.through_id >= device_acks.through_id THEN excluded.updated_at
         ELSE device_acks.updated_at
-    END`, deviceID, through, time.Now().UTC().Format(time.RFC3339Nano))
+    END`, deviceID, through, time.Now().UTC().Format(time.RFC3339Nano), through)
 	if err != nil {
 		return fmt.Errorf("acknowledge cursor: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read acknowledgement result: %w", err)
+	}
+	if changed == 0 {
+		return ErrInvalidAcknowledgement
 	}
 	return nil
 }

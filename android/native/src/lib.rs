@@ -1,6 +1,6 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JObject, JString, JValue};
-use jni::sys::{jlong, jstring};
+use jni::sys::jstring;
 use quiche::h3::NameValue;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -20,7 +20,6 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_run(
     mut env: JNIEnv,
     _class: JClass,
     endpoint: JString,
-    after: jlong,
     device_id: JString,
     certificate_pin: JString,
     credential: JString,
@@ -37,7 +36,6 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_run(
             &mut env,
             &callback,
             &endpoint,
-            after.max(0) as u64,
             &device_id,
             &expected_pin,
             &credential,
@@ -92,7 +90,6 @@ fn run_client(
     env: &mut JNIEnv,
     callback: &JObject,
     endpoint: &str,
-    after: u64,
     device_id: &str,
     expected_pin: &[u8; 32],
     credential: &str,
@@ -137,7 +134,8 @@ fn run_client(
 
     loop {
         if callback_closed(env, callback)? {
-            let _ = connection.close(true, 0, b"client stopped");
+			let _ = connection.close(true, 0, b"client stopped");
+			flush_packets(&socket, &mut connection, &mut output)?;
             return Ok(());
         }
 
@@ -198,8 +196,7 @@ fn run_client(
         }
 
         if certificate_checked && event_stream.is_none() {
-            let path = format!("/v1/events?after={after}");
-            let headers = request_headers("GET", &url, &path, None, Some(credential));
+            let headers = request_headers("GET", &url, "/v1/events", None, Some(credential));
             event_stream = Some(
                 h3_connection
                     .as_mut()
@@ -337,7 +334,12 @@ fn single_request(
             Err(error) => return Err(error.into()),
         }
         if connection.is_closed() {
-            return Err("QUIC connection closed during pairing".into());
+            return Err(format!(
+                "QUIC connection closed during pairing: local={:?}, peer={:?}",
+                connection.local_error(),
+                connection.peer_error()
+            )
+            .into());
         }
         if connection.is_established() && !certificate_checked {
             verify_certificate_pin(&connection, expected_pin)?;

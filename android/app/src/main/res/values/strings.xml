@@ -10,7 +10,8 @@
     <string name="certificate_pin_required">Enter the 64-digit SHA-256 certificate fingerprint</string>
     <string name="start_connection">Start connection</string>
     <string name="stop_connection">Stop connection</string>
-    <string name="open_battery_settings">Open battery settings</string>
+    <string name="allow_reliable_background_delivery">Allow reliable background delivery</string>
+    <string name="battery_optimization_disabled">Reliable background delivery enabled</string>
     <string name="service_running">Connection service is running</string>
     <string name="service_stopped">Connection service is stopped</string>
     <string name="service_starting">Connection service is starting</string>

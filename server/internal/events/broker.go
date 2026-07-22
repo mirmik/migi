@@ -85,6 +85,10 @@ func (b *Broker) Acknowledge(ctx context.Context, deviceID string, through uint6
 	return b.journal.Acknowledge(ctx, deviceID, through)
 }
 
+func (b *Broker) Acknowledged(ctx context.Context, deviceID string) (uint64, error) {
+	return b.journal.Acknowledged(ctx, deviceID)
+}
+
 func (b *Broker) CreatePairingCode(ctx context.Context, secretHash []byte, expiresAt time.Time) error {
 	return b.journal.CreatePairingCode(ctx, secretHash, expiresAt)
 }
