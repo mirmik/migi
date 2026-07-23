@@ -12,6 +12,9 @@
     <string name="stop_connection">Stop connection</string>
     <string name="allow_reliable_background_delivery">Allow reliable background delivery</string>
     <string name="battery_optimization_disabled">Reliable background delivery enabled</string>
+    <string name="allow_dnd_override">Allow sounds during Do Not Disturb</string>
+    <string name="dnd_override_enabled">Sounds allowed during Do Not Disturb</string>
+    <string name="dnd_settings_unavailable">Do Not Disturb access settings are unavailable</string>
     <string name="service_running">Connection service is running</string>
     <string name="service_stopped">Connection service is stopped</string>
     <string name="service_starting">Connection service is starting</string>

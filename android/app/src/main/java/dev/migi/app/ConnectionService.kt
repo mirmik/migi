@@ -5,10 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -146,6 +149,44 @@ class ConnectionService : Service() {
                 setSound(null, null)
             },
         )
+        if (manager.isNotificationPolicyAccessGranted) {
+            createDndBypassChannels(manager)
+        }
+    }
+
+    private fun createDndBypassChannels(manager: NotificationManager) {
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        for (cue in EventAudioPlayer.Cue.entries) {
+            val sound = Uri.Builder()
+                .scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
+                .authority(packageName)
+                .appendPath("raw")
+                .appendPath(cue.resourceName)
+                .build()
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    cue.bypassChannelID,
+                    cue.bypassChannelName,
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Migi alert allowed through Do Not Disturb"
+                    setSound(sound, audioAttributes)
+                    setBypassDnd(true)
+                },
+            )
+        }
+    }
+
+    private fun bypassChannelFor(cue: EventAudioPlayer.Cue): String? {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (!manager.isNotificationPolicyAccessGranted) return null
+        createDndBypassChannels(manager)
+        return cue.bypassChannelID.takeIf {
+            manager.getNotificationChannel(it)?.canBypassDnd() == true
+        }
     }
 
     private fun connectionNotification(text: String): Notification =
@@ -174,8 +215,12 @@ class ConnectionService : Service() {
 			) { "Failed to persist pager message" }
 			if (event.body.isBlank()) return
 		}
-        eventAudioPlayer.play(event)
-        val notification = Notification.Builder(this, EVENT_CHANNEL)
+        val cue = eventAudioPlayer.cueFor(event)
+        val bypassChannel = cue?.let(::bypassChannelFor)
+        if (cue != null && bypassChannel == null) {
+            eventAudioPlayer.play(cue, event.id)
+        }
+        val notification = Notification.Builder(this, bypassChannel ?: EVENT_CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_more)
             .setContentTitle(event.title)
             .setContentText(event.body.ifBlank { event.agent })

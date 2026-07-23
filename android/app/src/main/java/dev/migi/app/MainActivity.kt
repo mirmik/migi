@@ -3,6 +3,7 @@ package dev.migi.app
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -27,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
 	private lateinit var pagerMessage: TextView
 	private lateinit var batteryButton: Button
+	private lateinit var dndOverrideButton: Button
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
 	}
@@ -51,6 +53,7 @@ class MainActivity : Activity() {
 		preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
 		refreshPagerMessage()
 		refreshBatteryOptimizationState()
+		refreshDndOverrideState()
 	}
 
 	override fun onStop() {
@@ -100,6 +103,9 @@ class MainActivity : Activity() {
 				requestBatteryOptimizationExemption()
             }
         }
+        dndOverrideButton = Button(this).apply {
+            setOnClickListener { requestDndOverrideAccess() }
+        }
 
         val padding = (20 * resources.displayMetrics.density).toInt()
         setContentView(LinearLayout(this).apply {
@@ -119,6 +125,7 @@ class MainActivity : Activity() {
             addView(start, matchWidth())
             addView(stop, matchWidth())
             addView(batteryButton, matchWidth())
+            addView(dndOverrideButton, matchWidth())
             addView(status, matchWidth())
         })
     }
@@ -150,6 +157,24 @@ class MainActivity : Activity() {
 				Uri.parse("package:$packageName"),
 			),
 		)
+	}
+
+	private fun refreshDndOverrideState() {
+		val enabled = getSystemService(NotificationManager::class.java)
+			.isNotificationPolicyAccessGranted
+		dndOverrideButton.setText(
+			if (enabled) R.string.dnd_override_enabled
+			else R.string.allow_dnd_override,
+		)
+	}
+
+	private fun requestDndOverrideAccess() {
+		val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+		if (intent.resolveActivity(packageManager) != null) {
+			startActivity(intent)
+		} else {
+			status.setText(R.string.dnd_settings_unavailable)
+		}
 	}
 
     private fun startConfiguredConnection() {

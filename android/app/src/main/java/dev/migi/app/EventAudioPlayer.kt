@@ -22,10 +22,34 @@ import java.util.concurrent.TimeUnit
  * audio implementation.
  */
 internal class EventAudioPlayer(context: Context) : AutoCloseable {
-    private enum class Cue(val resource: Int, val durationMillis: Long) {
-        COMPLETED(R.raw.cue_completed, 830),
-        ATTENTION(R.raw.cue_attention, 950),
-        PAGER(R.raw.cue_pager, 1_030),
+    internal enum class Cue(
+        val resource: Int,
+        val resourceName: String,
+        val durationMillis: Long,
+        val bypassChannelID: String,
+        val bypassChannelName: String,
+    ) {
+        COMPLETED(
+            R.raw.cue_completed,
+            "cue_completed",
+            830,
+            "agent-completed-dnd-v1",
+            "Agent completed (urgent)",
+        ),
+        ATTENTION(
+            R.raw.cue_attention,
+            "cue_attention",
+            950,
+            "agent-attention-dnd-v1",
+            "Agent needs attention (urgent)",
+        ),
+        PAGER(
+            R.raw.cue_pager,
+            "cue_pager",
+            1_030,
+            "pager-message-dnd-v1",
+            "Pager messages (urgent)",
+        ),
     }
 
     private val lock = Any()
@@ -60,6 +84,10 @@ internal class EventAudioPlayer(context: Context) : AutoCloseable {
 
     fun play(event: AgentEvent) {
         val cue = cueFor(event) ?: return
+        play(cue, event.id)
+    }
+
+    internal fun play(cue: Cue, eventID: Long) {
         val delay = synchronized(lock) {
             if (closed) return
             val now = SystemClock.elapsedRealtime()
@@ -68,7 +96,7 @@ internal class EventAudioPlayer(context: Context) : AutoCloseable {
             scheduledAt - now
         }
         playbackExecutor.schedule(
-            { playWhenLoaded(cue, event.id, LOAD_RETRIES) },
+            { playWhenLoaded(cue, eventID, LOAD_RETRIES) },
             delay,
             TimeUnit.MILLISECONDS,
         )
@@ -109,7 +137,7 @@ internal class EventAudioPlayer(context: Context) : AutoCloseable {
         }
     }
 
-    private fun cueFor(event: AgentEvent): Cue? {
+    internal fun cueFor(event: AgentEvent): Cue? {
         val age = Duration.between(event.createdAt, Instant.now())
         if (age.isNegative || age > MAX_CUE_AGE) return null
         return when (event.kind) {
