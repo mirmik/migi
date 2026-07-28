@@ -36,6 +36,10 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-agent-listen` | TLS/TCP | Authenticated event submission by remote agents; empty disables it |
 | `-agent-endpoint` | HTTPS URL | Default external address offered when creating agent credentials |
 | `-admin-listen` | TCP | Local administration panel |
+| `-artifact-dir` | filesystem | Immutable APK storage and staging directory |
+| `-artifact-max-bytes` | bytes | Maximum accepted APK size |
+| `-artifact-total-bytes` | bytes | Stop publication above this committed-storage limit |
+| `-apksigner`, `-aapt2` | filesystem | Pinned Android Build Tools; both enable release delivery |
 
 For example, a router can forward public UDP `10443` to server UDP `8443`; in
 that case use `-listen :8443` and
@@ -53,6 +57,15 @@ ordinary HTTPS over TCP. Forward it as a separate TCP router rule; do not
 expose the unauthenticated `-ingest-listen` port. Agent tokens are shown once,
 stored only as hashes, and can be revoked independently. See
 [`agent-hooks.md`](agent-hooks.md) for the client contract.
+
+Release publishers are a separate credential namespace. Creating one binds it
+to exactly one package and signing-certificate SHA-256; an ordinary agent token
+cannot publish APKs. A paired device also needs an explicit package/signer
+authorization before it can resolve or download a release. Plain publisher
+tokens are shown once and should be saved in a mode-0600 file. See
+[`development.md`](development.md#publish-the-pilot-apk) for the pinned
+publisher client and [`android-app-delivery-test.md`](android-app-delivery-test.md)
+for the device acceptance runbook.
 
 ## Public endpoint resource limits
 

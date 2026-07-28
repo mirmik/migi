@@ -16,6 +16,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import java.time.Instant
@@ -26,8 +27,10 @@ class MainActivity : Activity() {
 	private lateinit var preferences: SharedPreferences
     private lateinit var endpoint: EditText
     private lateinit var certificatePin: EditText
+    private lateinit var pilotSignerPin: EditText
     private lateinit var status: TextView
 	private lateinit var pagerMessage: TextView
+	private lateinit var releaseList: LinearLayout
 	private lateinit var batteryButton: Button
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
@@ -48,14 +51,20 @@ class MainActivity : Activity() {
         handlePairingIntent(intent)
     }
 
-	override fun onStart() {
-		super.onStart()
-		preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
-		refreshPagerMessage()
+		override fun onStart() {
+			super.onStart()
+			ReleaseInstaller.foregroundActivity = this
+			preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
+			refreshPagerMessage()
+			ReleaseInstaller(this).reconcileSessions()
+			refreshReleases()
 		refreshBatteryOptimizationState()
 	}
 
-	override fun onStop() {
+		override fun onStop() {
+			if (ReleaseInstaller.foregroundActivity === this) {
+				ReleaseInstaller.foregroundActivity = null
+			}
 		preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
 		super.onStop()
 	}
@@ -67,11 +76,16 @@ class MainActivity : Activity() {
             setText(preferences.getString(KEY_ENDPOINT, ""))
             inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
         }
-        certificatePin = EditText(this).apply {
+	        certificatePin = EditText(this).apply {
             hint = getString(R.string.certificate_pin_hint)
             setText(preferences.getString(KEY_CERTIFICATE_PIN, ""))
             inputType = android.text.InputType.TYPE_CLASS_TEXT
-        }
+	        }
+	        pilotSignerPin = EditText(this).apply {
+	            hint = getString(R.string.pilot_signer_hint)
+	            setText(preferences.getString(KEY_PILOT_SIGNER_SHA256, ""))
+	            inputType = android.text.InputType.TYPE_CLASS_TEXT
+	        }
         status = TextView(this).apply {
             text = when {
                 ConnectionService.isRunning -> getString(R.string.service_running)
@@ -132,7 +146,7 @@ class MainActivity : Activity() {
         }
 
         val padding = (20 * resources.displayMetrics.density).toInt()
-        setContentView(LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
             addView(TextView(this@MainActivity).apply {
@@ -144,8 +158,17 @@ class MainActivity : Activity() {
 				textSize = 13f
 			})
 			addView(pagerMessage, matchWidth())
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.releases_title)
+				textSize = 20f
+			})
+			releaseList = LinearLayout(this@MainActivity).apply {
+				orientation = LinearLayout.VERTICAL
+			}
+			addView(releaseList, matchWidth())
             addView(endpoint, matchWidth())
-            addView(certificatePin, matchWidth())
+			addView(certificatePin, matchWidth())
+			addView(pilotSignerPin, matchWidth())
             addView(start, matchWidth())
             addView(stop, matchWidth())
             addView(batteryButton, matchWidth())
@@ -153,6 +176,9 @@ class MainActivity : Activity() {
             addView(audioVolumeLabel, matchWidth())
             addView(audioVolume, matchWidth())
             addView(status, matchWidth())
+        }
+        setContentView(ScrollView(this).apply {
+            addView(content, matchWidth())
         })
     }
 
@@ -160,6 +186,92 @@ class MainActivity : Activity() {
 		pagerMessage.text = preferences.getString(KEY_PAGER_MESSAGE, null)
 			?.takeIf { it.isNotBlank() }
 			?: getString(R.string.pager_empty)
+	}
+
+	private fun refreshReleases() {
+		releaseList.removeAllViews()
+		val releases = ReleaseRepository(this).listReleases()
+		if (releases.isEmpty()) {
+			releaseList.addView(TextView(this).apply {
+				setText(R.string.releases_empty)
+			})
+			return
+		}
+		for (release in releases) {
+			val item = LinearLayout(this).apply {
+				orientation = LinearLayout.VERTICAL
+				setPadding(0, 8, 0, 12)
+			}
+			item.addView(TextView(this).apply {
+				text = buildString {
+					append(release.artifact.packageName)
+					append(" ")
+					append(release.artifact.versionName)
+					append(" (")
+					append(release.artifact.versionCode)
+					append(") — ")
+					append(release.state)
+					release.error?.let { append("\n").append(it) }
+				}
+				setTextIsSelectable(true)
+			})
+			when (release.state) {
+				ReleaseRepository.STATE_PENDING,
+				ReleaseRepository.STATE_DISMISSED -> item.addView(Button(this).apply {
+					setText(R.string.download_release)
+					setOnClickListener {
+						isEnabled = false
+						ReleaseInstaller(this@MainActivity).download(release.artifact.id) { result ->
+							runOnUiThread {
+								status.text = result.fold(
+									onSuccess = { getString(R.string.release_downloaded) },
+									onFailure = { getString(R.string.release_failed, it.message ?: "unknown error") },
+								)
+								refreshReleases()
+							}
+						}
+					}
+				})
+				ReleaseRepository.STATE_DOWNLOADED,
+				ReleaseRepository.STATE_INSTALLING,
+				ReleaseRepository.STATE_FAILED -> item.addView(Button(this).apply {
+					if (release.tempPath == null) {
+						setText(R.string.download_release)
+						setOnClickListener {
+							isEnabled = false
+							ReleaseInstaller(this@MainActivity).download(release.artifact.id) { result ->
+								runOnUiThread {
+									status.text = result.fold(
+										onSuccess = { getString(R.string.release_downloaded) },
+										onFailure = { getString(R.string.release_failed, it.message ?: "unknown error") },
+									)
+									refreshReleases()
+								}
+							}
+						}
+						return@apply
+					}
+					setText(R.string.install_release)
+					setOnClickListener {
+						val installer = ReleaseInstaller(this@MainActivity)
+						if (!packageManager.canRequestPackageInstalls()) {
+							startActivity(installer.unknownSourcesSettingsIntent())
+							status.setText(R.string.allow_unknown_source)
+							return@setOnClickListener
+						}
+						isEnabled = false
+						installer.install(this@MainActivity, release.artifact.id) { result ->
+							status.text = result.fold(
+								onSuccess = { getString(R.string.install_submitted) },
+								onFailure = { getString(R.string.release_failed, it.message ?: "unknown error") },
+							)
+							refreshReleases()
+						}
+					}
+				})
+			}
+			releaseList.addView(item, matchWidth())
+		}
 	}
 
 	private fun refreshBatteryOptimizationState() {
@@ -191,18 +303,24 @@ class MainActivity : Activity() {
             endpoint.error = getString(R.string.endpoint_required)
             return
         }
-        val pin = normalizePin(certificatePin.text.toString())
+	        val pin = normalizePin(certificatePin.text.toString())
         if (pin == null) {
             certificatePin.error = getString(R.string.certificate_pin_required)
             return
-        }
+	        }
+	        val pilotSigner = normalizePin(pilotSignerPin.text.toString())
+	        if (pilotSignerPin.text.isNotBlank() && pilotSigner == null) {
+	            pilotSignerPin.error = getString(R.string.pilot_signer_invalid)
+	            return
+	        }
         if (CredentialStore(this).load() == null) {
             status.setText(R.string.device_not_paired)
             return
         }
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
             .putString(KEY_ENDPOINT, value)
-            .putString(KEY_CERTIFICATE_PIN, pin)
+	            .putString(KEY_CERTIFICATE_PIN, pin)
+	            .putString(KEY_PILOT_SIGNER_SHA256, pilotSigner ?: "")
             .apply()
         startForegroundService(
             Intent(this, ConnectionService::class.java).setAction(ConnectionService.ACTION_RECONFIGURE),
@@ -257,9 +375,9 @@ class MainActivity : Activity() {
                     getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
                         .putString(KEY_ENDPOINT, invitation.endpoint)
                         .putString(KEY_CERTIFICATE_PIN, invitation.pin)
-                        .remove(EventStreamClient.KEY_LAST_EVENT_ID)
-                        .commit(),
-                ) { "Failed to save paired server" }
+	                        .commit(),
+	                ) { "Failed to save paired server" }
+	                ReleaseRepository(this).resetForPairing()
             }
             runOnUiThread {
                 result.onSuccess {
@@ -310,7 +428,8 @@ class MainActivity : Activity() {
         const val KEY_CERTIFICATE_PIN = "certificate_pin"
 		const val KEY_PAGER_MESSAGE = "pager_message"
 		const val KEY_DND_OVERRIDE = "dnd_override"
-		const val KEY_AUDIO_VOLUME = "audio_volume"
+			const val KEY_AUDIO_VOLUME = "audio_volume"
+			const val KEY_PILOT_SIGNER_SHA256 = "pilot_signer_sha256"
 		const val DEFAULT_AUDIO_VOLUME = 100
 
         private fun normalizePin(raw: String?): String? {

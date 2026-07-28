@@ -17,6 +17,7 @@ data class AgentEvent(
     val title: String,
     val body: String,
     val createdAt: Instant,
+    val artifact: ArtifactReference? = null,
 )
 
 internal object NativeQuicClient {
@@ -38,6 +39,22 @@ internal object NativeQuicClient {
         secret: String,
         deviceID: String,
         deviceName: String,
+    ): String
+
+    external fun releaseMetadata(
+        endpoint: String,
+        certificatePin: String,
+        credential: String,
+        artifactID: String,
+    ): String
+
+    external fun downloadRelease(
+        endpoint: String,
+        certificatePin: String,
+        credential: String,
+        artifactID: String,
+        fileDescriptor: Int,
+        maxBytes: Long,
     ): String
 }
 
@@ -72,7 +89,7 @@ class EventStreamClient(
     private val onEvent: (AgentEvent) -> Unit,
 ) : AutoCloseable {
     private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-    private val preferences = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
+    private val releases = ReleaseRepository(context)
     private val deviceID = DeviceIdentity.get(context)
 
     @Volatile
@@ -139,15 +156,28 @@ class EventStreamClient(
                 title = json.getString("title"),
                 body = json.optString("body"),
                 createdAt = Instant.parse(json.getString("created_at")),
+                artifact = json.optJSONObject("artifact")?.let {
+                    ArtifactReference(
+                        id = it.getString("id"),
+                        packageName = it.getString("package_name"),
+                        versionCode = it.getLong("version_code"),
+                        versionName = it.getString("version_name"),
+                    )
+                },
             )
-            val lastID = preferences.getLong(KEY_LAST_EVENT_ID, 0)
-            if (event.id <= lastID) return 0
-            onEvent(event)
-            if (preferences.edit().putLong(KEY_LAST_EVENT_ID, event.id).commit()) {
+            val lastID = releases.lastEventID()
+            if (event.id <= lastID) return event.id
+            if (event.kind == FILTERED_EVENT_KIND) {
+                if (releases.advanceEventCursor(event.id)) event.id else 0
+            } else if (event.kind == RELEASE_EVENT_KIND) {
+                require(event.artifact != null) { "Release event has no artifact reference" }
+                releases.recordReleaseAndAdvance(event)
+                runCatching { onEvent(event) }
+                    .onFailure { Log.e(TAG, "Failed to notify for durable release ${event.artifact.id}", it) }
                 event.id
             } else {
-                onState("Failed to persist event cursor ${event.id}")
-                0
+                onEvent(event)
+                if (releases.advanceEventCursor(event.id)) event.id else 0
             }
         }.getOrElse {
             onState("Ignored malformed event: ${it.message}")
@@ -173,7 +203,8 @@ class EventStreamClient(
     }
 
     companion object {
-        const val KEY_LAST_EVENT_ID = "last_event_id"
+        private const val RELEASE_EVENT_KIND = "app.update_available"
+        private const val FILTERED_EVENT_KIND = "internal.filtered"
         private const val TAG = "MigiEventStream"
     }
 }

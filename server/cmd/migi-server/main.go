@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mirmik/migi/server/internal/admin"
+	"github.com/mirmik/migi/server/internal/apkinspect"
 	"github.com/mirmik/migi/server/internal/events"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -37,6 +38,10 @@ func main() {
 }
 
 func run() error {
+	artifactDirectoryDefault := os.Getenv("MIGI_ARTIFACT_DIRECTORY")
+	if artifactDirectoryDefault == "" {
+		artifactDirectoryDefault = "migi-artifacts"
+	}
 	listen := flag.String("listen", ":8443", "UDP address for the HTTP/3 server")
 	ingestListen := flag.String("ingest-listen", "127.0.0.1:8787", "trusted local TCP address for event submission")
 	agentListen := flag.String("agent-listen", "", "public TLS/TCP address for authenticated agent event submission; empty disables it")
@@ -44,6 +49,11 @@ func run() error {
 	publicEndpoint := flag.String("public-endpoint", "", "default public https://host[:port] for pairing invitations")
 	agentEndpoint := flag.String("agent-endpoint", "", "public https://host[:port] advertised to agent hooks")
 	databasePath := flag.String("db", "migi.db", "SQLite event journal path")
+	artifactDirectory := flag.String("artifact-dir", artifactDirectoryDefault, "immutable APK artifact directory")
+	artifactMaxBytes := flag.Int64("artifact-max-bytes", defaultMaxAPKBytes, "maximum bytes per uploaded APK")
+	artifactTotalBytes := flag.Int64("artifact-total-bytes", defaultMaxArtifactBytes, "maximum total artifact bytes before publication stops")
+	apksignerPath := flag.String("apksigner", os.Getenv("MIGI_APKSIGNER"), "path to pinned Android build-tools apksigner; empty disables release delivery")
+	aapt2Path := flag.String("aapt2", os.Getenv("MIGI_AAPT2"), "path to pinned Android build-tools aapt2; empty disables release delivery")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")
 	key := flag.String("key", "", "TLS private key in PEM format")
 	flag.Parse()
@@ -58,6 +68,34 @@ func run() error {
 	}
 	broker := events.NewBroker(journal)
 	defer broker.Close()
+	var releases *releaseStore
+	if *apksignerPath != "" || *aapt2Path != "" {
+		inspector, err := apkinspect.New(apkinspect.Config{
+			APKSIGNER: *apksignerPath,
+			AAPT2:     *aapt2Path,
+		})
+		if err != nil {
+			return fmt.Errorf("configure APK inspector: %w", err)
+		}
+		releases, err = newReleaseStore(
+			broker, inspector, *artifactDirectory, *artifactMaxBytes, *artifactTotalBytes,
+		)
+		if err != nil {
+			return fmt.Errorf("configure artifact storage: %w", err)
+		}
+		versions, err := inspector.Versions(context.Background())
+		if err != nil {
+			return fmt.Errorf("read APK verifier versions: %w", err)
+		}
+		slog.Info("release delivery enabled",
+			"artifact_directory", releases.root,
+			"max_apk_bytes", releases.maxAPKBytes,
+			"max_total_bytes", releases.maxTotalBytes,
+			"verifier", versions,
+		)
+	} else {
+		slog.Info("release delivery disabled; configure both -apksigner and -aapt2 to enable it")
+	}
 	startedAt := time.Now()
 	fingerprint, err := certificateFingerprint(*cert)
 	if err != nil {
@@ -74,7 +112,7 @@ func run() error {
 	}
 
 	publicSecurity := newPublicSecurity()
-	publicMux := newPublicMuxWithSecurity(broker, publicSecurity)
+	publicMux := newPublicMuxWithReleases(broker, releases, publicSecurity)
 	quicConfig := newPublicQUICConfig()
 	if os.Getenv("QLOGDIR") != "" {
 		quicConfig.Tracer = qlog.DefaultConnectionTracer
@@ -125,10 +163,8 @@ func run() error {
 	if *agentListen != "" {
 		agentServer = &http.Server{
 			Addr:              *agentListen,
-			Handler:           newAgentMux(broker),
+			Handler:           newAgentMuxWithReleases(broker, releases, newAgentSecurity()),
 			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      10 * time.Second,
 			IdleTimeout:       30 * time.Second,
 			MaxHeaderBytes:    16 << 10,
 			TLSConfig: &tls.Config{
@@ -249,11 +285,19 @@ func newPublicMux(broker *events.Broker) http.Handler {
 }
 
 func newPublicMuxWithSecurity(broker *events.Broker, security *publicSecurity) http.Handler {
+	return newPublicMuxWithReleases(broker, nil, security)
+}
+
+func newPublicMuxWithReleases(broker *events.Broker, releases *releaseStore, security *publicSecurity) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/pair", security.rateLimit("pair", security.pairRequests, pairHandler(broker)))
 	mux.Handle("GET /v1/events", authenticateDevice(broker, security, security.limitDeviceStreams(streamHandler(broker))))
 	mux.Handle("POST /v1/ack", authenticateDevice(broker, security, acknowledgeHandler(broker)))
+	if releases != nil {
+		mux.Handle("GET /v1/releases/{artifactID}", authenticateDevice(broker, security, releases.releaseHandler(false)))
+		mux.Handle("GET /v1/releases/{artifactID}/apk", authenticateDevice(broker, security, releases.releaseHandler(true)))
+	}
 	return security.limitConcurrency(mux)
 }
 
@@ -532,6 +576,12 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 					disconnectReason = "credential revoked"
 					return
 				}
+				event, err = eventForDevice(r.Context(), broker, device.ID, event)
+				if err != nil {
+					disconnectReason = "release authorization failed"
+					disconnectErr = err
+					return
+				}
 				if err := writeLine(w, flusher, event); err != nil {
 					disconnectReason = "write failed"
 					disconnectErr = err
@@ -567,6 +617,12 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 					disconnectReason = "credential revoked"
 					return
 				}
+				event, err = eventForDevice(r.Context(), broker, device.ID, event)
+				if err != nil {
+					disconnectReason = "release authorization failed"
+					disconnectErr = err
+					return
+				}
 				if err := writeLine(w, flusher, event); err != nil {
 					disconnectReason = "write failed"
 					disconnectErr = err
@@ -590,6 +646,29 @@ func streamHandler(broker *events.Broker) http.HandlerFunc {
 			}
 		}
 	}
+}
+
+func eventForDevice(
+	ctx context.Context,
+	broker *events.Broker,
+	deviceID string,
+	event events.Event,
+) (events.Event, error) {
+	if event.Artifact == nil {
+		return event, nil
+	}
+	if _, err := broker.ReleaseForDevice(ctx, deviceID, event.Artifact.ID); err != nil {
+		if errors.Is(err, events.ErrReleaseNotFound) {
+			return events.Event{
+				ID:        event.ID,
+				Kind:      "internal.filtered",
+				Title:     "Filtered event",
+				CreatedAt: event.CreatedAt,
+			}, nil
+		}
+		return events.Event{}, err
+	}
+	return event, nil
 }
 
 func deviceStillAuthorized(ctx context.Context, broker *events.Broker) bool {

@@ -125,6 +125,53 @@ func (b *Broker) ListAgentTokens(ctx context.Context) ([]AgentTokenInfo, error) 
 	return b.journal.ListAgentTokens(ctx)
 }
 
+func (b *Broker) CreatePublisherToken(ctx context.Context, tokenID, name string, tokenHash []byte) error {
+	return b.journal.CreatePublisherToken(ctx, tokenID, name, tokenHash)
+}
+
+func (b *Broker) AuthenticatePublisher(ctx context.Context, tokenID string, tokenHash []byte) (PublisherTokenInfo, error) {
+	return b.journal.AuthenticatePublisher(ctx, tokenID, tokenHash)
+}
+
+func (b *Broker) RevokePublisherToken(ctx context.Context, tokenID string) error {
+	return b.journal.RevokePublisherToken(ctx, tokenID)
+}
+
+func (b *Broker) ListPublisherTokens(ctx context.Context) ([]PublisherTokenInfo, error) {
+	return b.journal.ListPublisherTokens(ctx)
+}
+
+func (b *Broker) SetPublisherPackage(ctx context.Context, tokenID, packageName, signerSHA256 string) error {
+	return b.journal.SetPublisherPackage(ctx, tokenID, packageName, signerSHA256)
+}
+
+func (b *Broker) SetDevicePackage(ctx context.Context, deviceID, packageName, signerSHA256 string) error {
+	return b.journal.SetDevicePackage(ctx, deviceID, packageName, signerSHA256)
+}
+
+func (b *Broker) ReplayRelease(ctx context.Context, draft ReleaseDraft) (Release, bool, error) {
+	return b.journal.ReplayRelease(ctx, draft)
+}
+
+func (b *Broker) PublishRelease(ctx context.Context, draft ReleaseDraft) (Release, bool, error) {
+	release, event, created, err := b.journal.PublishRelease(ctx, draft)
+	if err != nil {
+		return Release{}, false, err
+	}
+	if created {
+		b.broadcast(event)
+	}
+	return release, created, nil
+}
+
+func (b *Broker) ReleaseForDevice(ctx context.Context, deviceID, artifactID string) (Release, error) {
+	return b.journal.ReleaseForDevice(ctx, deviceID, artifactID)
+}
+
+func (b *Broker) ListReleaseStorage(ctx context.Context) (map[string]int64, error) {
+	return b.journal.ListReleaseStorage(ctx)
+}
+
 func (b *Broker) Stats(ctx context.Context) (ServerStats, error) {
 	return b.journal.Stats(ctx)
 }

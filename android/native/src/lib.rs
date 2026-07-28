@@ -1,17 +1,23 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JObject, JString, JValue};
-use jni::sys::jstring;
+use jni::sys::{jint, jlong, jstring};
 use quiche::h3::NameValue;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::error::Error;
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::os::fd::{FromRawFd, RawFd};
 use std::time::{Duration, Instant};
 use url::Url;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 const CALLBACK_POLL: Duration = Duration::from_millis(100);
+
+unsafe extern "C" {
+    fn dup(oldfd: RawFd) -> RawFd;
+}
 
 type AnyError = Box<dyn Error + Send + Sync>;
 
@@ -74,9 +80,98 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_pair(
             "name": device_name,
         })
         .to_string();
-        single_request(&endpoint, &expected_pin, "POST", "/v1/pair", &body)
+        small_request(
+            &endpoint,
+            &expected_pin,
+            "POST",
+            "/v1/pair",
+            Some(body.as_bytes()),
+            None,
+            "201",
+        )
     })();
 
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_releaseMetadata(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    artifact_id: JString,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let artifact_id: String = env.get_string(&artifact_id)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_artifact_id(&artifact_id)?;
+        small_request(
+            &endpoint,
+            &expected_pin,
+            "GET",
+            &format!("/v1/releases/{artifact_id}"),
+            None,
+            Some(&credential),
+            "200",
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadRelease(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    artifact_id: JString,
+    file_descriptor: jint,
+    max_bytes: jlong,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let artifact_id: String = env.get_string(&artifact_id)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_artifact_id(&artifact_id)?;
+        if file_descriptor < 0 || max_bytes <= 0 {
+            return Err(invalid("valid destination descriptor and size limit are required"));
+        }
+        let duplicated = unsafe { dup(file_descriptor) };
+        if duplicated < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let mut destination = unsafe { File::from_raw_fd(duplicated) };
+        download_request(
+            &endpoint,
+            &expected_pin,
+            &credential,
+            &artifact_id,
+            &mut destination,
+            max_bytes as u64,
+        )
+    })();
     let response = match result {
         Ok(body) => body,
         Err(error) => format!("MIGI_ERROR:{error}"),
@@ -264,12 +359,14 @@ fn run_client(
     }
 }
 
-fn single_request(
+fn small_request(
     endpoint: &str,
     expected_pin: &[u8; 32],
     method: &str,
     path: &str,
-    body: &str,
+    body: Option<&[u8]>,
+    bearer: Option<&str>,
+    expected_status: &str,
 ) -> Result<String, AnyError> {
     let url = Url::parse(endpoint)?;
     if url.scheme() != "https" {
@@ -307,7 +404,7 @@ fn single_request(
 
     loop {
         if Instant::now() >= deadline {
-            return Err("pairing request timed out".into());
+            return Err("request timed out".into());
         }
         flush_packets(&socket, &mut connection, &mut output)?;
         match socket.recv_from(&mut input) {
@@ -335,7 +432,7 @@ fn single_request(
         }
         if connection.is_closed() {
             return Err(format!(
-                "QUIC connection closed during pairing: local={:?}, peer={:?}",
+                "QUIC connection closed during request: local={:?}, peer={:?}",
                 connection.local_error(),
                 connection.peer_error()
             )
@@ -350,15 +447,17 @@ fn single_request(
             )?);
         }
         if certificate_checked && request_stream.is_none() {
-            let headers = request_headers(method, &url, path, Some(body.len()), None);
+            let headers = request_headers(method, &url, path, body.map(|value| value.len()), bearer);
             let stream = http3
                 .as_mut()
                 .unwrap()
-                .send_request(&mut connection, &headers, false)?;
-            http3
-                .as_mut()
-                .unwrap()
-                .send_body(&mut connection, stream, body.as_bytes(), true)?;
+                .send_request(&mut connection, &headers, body.is_none())?;
+            if let Some(body) = body {
+                http3
+                    .as_mut()
+                    .unwrap()
+                    .send_body(&mut connection, stream, body, true)?;
+            }
             request_stream = Some(stream);
         }
         if let Some(http3) = http3.as_mut() {
@@ -375,8 +474,8 @@ fn single_request(
                     }
                     Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
                         while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
-                            if response_body.len() + read > 64 * 1024 {
-                                return Err("pairing response is too large".into());
+                            if response_body.len() + read > 256 * 1024 {
+                                return Err("response is too large".into());
                             }
                             response_body.extend_from_slice(&input[..read]);
                         }
@@ -384,9 +483,9 @@ fn single_request(
                     Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
                         let status = response_status.as_deref().unwrap_or("unknown");
                         let body = String::from_utf8(response_body)?;
-                        if status != "201" {
+                        if status != expected_status {
                             return Err(
-                                format!("pairing returned HTTP {status}: {}", body.trim()).into()
+                                format!("request returned HTTP {status}: {}", body.trim()).into()
                             );
                         }
                         return Ok(body);
@@ -394,11 +493,178 @@ fn single_request(
                     Ok((stream, quiche::h3::Event::Reset(code)))
                         if Some(stream) == request_stream =>
                     {
-                        return Err(format!("pairing stream was reset ({code})").into());
+                        return Err(format!("request stream was reset ({code})").into());
                     }
                     Ok((_, _)) => {}
                     Err(quiche::h3::Error::Done) => break,
-                    Err(error) => return Err(format!("HTTP/3 pairing failed: {error:?}").into()),
+                    Err(error) => return Err(format!("HTTP/3 request failed: {error:?}").into()),
+                }
+            }
+        }
+    }
+}
+
+fn download_request(
+    endpoint: &str,
+    expected_pin: &[u8; 32],
+    credential: &str,
+    artifact_id: &str,
+    destination: &mut File,
+    max_bytes: u64,
+) -> Result<String, AnyError> {
+    let url = Url::parse(endpoint)?;
+    if url.scheme() != "https" {
+        return Err(invalid("endpoint must use https"));
+    }
+    let host = url.host_str().ok_or_else(|| invalid("endpoint has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let peer_addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| invalid("endpoint host did not resolve"))?;
+    let bind_addr = match peer_addr {
+        SocketAddr::V4(_) => "0.0.0.0:0",
+        SocketAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_addr)?;
+    socket.set_read_timeout(Some(CALLBACK_POLL))?;
+    let local_addr = socket.local_addr()?;
+    let mut config = quic_config()?;
+    let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
+    rand::rng().fill_bytes(&mut scid_bytes);
+    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
+    let h3_config = quiche::h3::Config::new()?;
+    let mut http3 = None;
+    let mut certificate_checked = false;
+    let mut request_stream = None;
+    let mut expected_length = None::<u64>;
+    let mut expected_digest = None::<String>;
+    let mut received = 0_u64;
+    let mut digest = Sha256::new();
+    let mut input = [0_u8; 65_535];
+    let mut output = [0_u8; MAX_DATAGRAM_SIZE];
+    let deadline = Instant::now() + Duration::from_secs(15 * 60);
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err("artifact download timed out".into());
+        }
+        flush_packets(&socket, &mut connection, &mut output)?;
+        match socket.recv_from(&mut input) {
+            Ok((length, from)) => {
+                let info = quiche::RecvInfo {
+                    from,
+                    to: local_addr,
+                };
+                match connection.recv(&mut input[..length], info) {
+                    Ok(_) | Err(quiche::Error::Done) => {}
+                    Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if connection.timeout() == Some(Duration::ZERO) {
+                    connection.on_timeout();
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if connection.is_closed() {
+            return Err("QUIC connection closed during artifact download".into());
+        }
+        if connection.is_established() && !certificate_checked {
+            verify_certificate_pin(&connection, expected_pin)?;
+            certificate_checked = true;
+            http3 = Some(quiche::h3::Connection::with_transport(
+                &mut connection,
+                &h3_config,
+            )?);
+        }
+        if certificate_checked && request_stream.is_none() {
+            let headers = request_headers(
+                "GET",
+                &url,
+                &format!("/v1/releases/{artifact_id}/apk"),
+                None,
+                Some(credential),
+            );
+            request_stream = Some(
+                http3
+                    .as_mut()
+                    .unwrap()
+                    .send_request(&mut connection, &headers, true)?,
+            );
+        }
+        if let Some(http3) = http3.as_mut() {
+            loop {
+                match http3.poll(&mut connection) {
+                    Ok((stream, quiche::h3::Event::Headers { list, .. }))
+                        if Some(stream) == request_stream =>
+                    {
+                        let response_status = header_value(&list, b":status");
+                        expected_length = header_value(&list, b"content-length")
+                            .map(|value| value.parse::<u64>())
+                            .transpose()?;
+                        expected_digest = header_value(&list, b"x-content-sha256");
+                        if response_status.as_deref() != Some("200") {
+                            return Err(format!(
+                                "artifact download returned HTTP {}",
+                                response_status.as_deref().unwrap_or("unknown")
+                            )
+                            .into());
+                        }
+                        let length = expected_length
+                            .ok_or_else(|| invalid("artifact response has no content length"))?;
+                        if length == 0 || length > max_bytes {
+                            return Err(invalid("artifact response exceeds configured size"));
+                        }
+                    }
+                    Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
+                        while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                            received += read as u64;
+                            if received > max_bytes
+                                || expected_length.is_some_and(|value| received > value)
+                            {
+                                return Err(invalid("artifact body exceeds declared size"));
+                            }
+                            destination.write_all(&input[..read])?;
+                            digest.update(&input[..read]);
+                        }
+                    }
+                    Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
+                        let length = expected_length
+                            .ok_or_else(|| invalid("artifact response has no content length"))?;
+                        if received != length {
+                            return Err(invalid(
+                                "artifact byte count differs from content length",
+                            ));
+                        }
+                        destination.sync_all()?;
+                        let actual_digest = hex_lower(&digest.finalize());
+                        if expected_digest.as_deref() != Some(actual_digest.as_str()) {
+                            return Err(invalid("artifact digest differs from response header"));
+                        }
+                        return Ok(serde_json::json!({
+                            "bytes": received,
+                            "sha256": actual_digest,
+                        })
+                        .to_string());
+                    }
+                    Ok((stream, quiche::h3::Event::Reset(code)))
+                        if Some(stream) == request_stream =>
+                    {
+                        return Err(format!("artifact stream was reset ({code})").into());
+                    }
+                    Ok((_, _)) => {}
+                    Err(quiche::h3::Error::Done) => break,
+                    Err(error) => {
+                        return Err(format!("HTTP/3 download failed: {error:?}").into());
+                    }
                 }
             }
         }
@@ -414,9 +680,9 @@ fn quic_config() -> Result<quiche::Config, quiche::Error> {
     config.set_max_idle_timeout(90_000);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-    config.set_initial_max_data(10_000_000);
+    config.set_initial_max_data(512 * 1024 * 1024);
     config.set_initial_max_stream_data_bidi_local(1_000_000);
-    config.set_initial_max_stream_data_bidi_remote(1_000_000);
+    config.set_initial_max_stream_data_bidi_remote(512 * 1024 * 1024);
     config.set_initial_max_stream_data_uni(1_000_000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
@@ -497,6 +763,14 @@ fn request_headers<'a>(
         ));
     }
     headers
+}
+
+fn header_value(headers: &[quiche::h3::Header], name: &[u8]) -> Option<String> {
+    headers
+        .iter()
+        .find(|header| header.name() == name)
+        .and_then(|header| std::str::from_utf8(header.value()).ok())
+        .map(str::to_owned)
 }
 
 fn send_ack(
@@ -600,6 +874,21 @@ fn validate_token(token: &str) -> Result<(), AnyError> {
         return Err(invalid("device credential is malformed"));
     }
     Ok(())
+}
+
+fn validate_artifact_id(value: &str) -> Result<(), AnyError> {
+    if value.len() != 32
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        return Err(invalid("artifact ID is malformed"));
+    }
+    Ok(())
+}
+
+fn hex_lower(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn invalid(message: &str) -> AnyError {

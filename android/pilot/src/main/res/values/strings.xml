@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Migi Pilot</string>
+    <string name="pilot_ready">Migi pilot package is running</string>
+    <string name="version_format">Version %1$s (%2$d)</string>
+</resources>

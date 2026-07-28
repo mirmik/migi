@@ -32,6 +32,31 @@ cd android
 ./gradlew assembleDebug
 ```
 
+### Pilot package
+
+`android/pilot` is the deliberately minimal non-Migi application used to
+exercise release delivery. Its package name is `dev.migi.pilot`. A debug APK
+can be built without secrets:
+
+```bash
+cd android
+./gradlew :pilot:assembleDebug
+```
+
+Release signing is enabled only when all four variables are present:
+
+```bash
+export MIGI_PILOT_VERSION_CODE=2
+export MIGI_PILOT_VERSION_NAME=0.0.2
+export MIGI_PILOT_KEYSTORE=/secure/path/migi-pilot.jks
+export MIGI_PILOT_KEY_ALIAS=migi-pilot
+export MIGI_PILOT_STORE_PASSWORD='...'
+export MIGI_PILOT_KEY_PASSWORD='...'
+./gradlew :pilot:assembleRelease
+```
+
+The keystore and passwords must remain outside the repository and logs.
+
 Install on a connected device:
 
 ```bash
@@ -70,9 +95,51 @@ go run ./cmd/migi-server \
   -public-endpoint https://203.0.113.10:443 \
   -agent-endpoint https://203.0.113.10:10444 \
   -db ./migi.db \
+  -artifact-dir ./migi-artifacts \
+  -apksigner "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+  -aapt2 "$ANDROID_HOME/build-tools/36.0.0/aapt2" \
   -cert /path/to/fullchain.pem \
   -key /path/to/privkey.pem
 ```
+
+Both Android Build Tools paths are required to enable release delivery. The
+server refuses to start if the configured tools cannot report their versions or
+if committed release metadata references a missing artifact file.
+
+### Publish the pilot APK
+
+Build the small pinned publisher client:
+
+```bash
+cd server
+go build -o ./bin/migi-publish ./cmd/migi-publish
+```
+
+After building a signed pilot release, inspect the certificate digest:
+
+```bash
+"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify \
+  --verbose --print-certs \
+  ../android/pilot/build/outputs/apk/release/pilot-release.apk
+```
+
+In the local administration panel, create a **Release publisher** for
+`dev.migi.pilot` and that exact SHA-256 signer, then authorize the same package
+and signer for the paired device. Copy the one-time publisher JSON into a
+mode-0600 file outside the repository. Publish the APK with:
+
+```bash
+./bin/migi-publish \
+  -config /secure/path/pilot-publisher.json \
+  -apk ../android/pilot/build/outputs/apk/release/pilot-release.apk \
+  -version-code "$MIGI_PILOT_VERSION_CODE" \
+  -notes "Pilot delivery test" \
+  -source-revision "$(git -C .. rev-parse HEAD)"
+```
+
+The client hashes and streams the APK, pins the exact server leaf certificate,
+refuses redirects, and uses the APK digest as its default idempotency key.
+Re-running the same command safely returns the existing release.
 
 Submit a local bootstrap event over an HTTP-capable local ingress or test
 client:
@@ -114,6 +181,7 @@ cd server
 go test -race ./...
 go vet ./...
 go build -o ./bin/migi-server ./cmd/migi-server
+go build -o ./bin/migi-publish ./cmd/migi-publish
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -mode binary ./bin/migi-server
 go version -m ./bin/migi-server

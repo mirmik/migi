@@ -57,11 +57,17 @@ tool.
 | server certificate | `/etc/migi/server.crt` | `0644 root:root` |
 | server private key | `/etc/migi/server.key` | `0600 root:root` |
 | SQLite journal | `/var/lib/migi/migi.db` | `0600 migi:migi` |
+| APK artifacts | `/var/lib/migi/artifacts` | `0700 migi:migi` |
 
 The private key is not placed in the environment file and is not made readable
 to the service account at rest. systemd copies it into the service credential
 directory for the process. `UMask=0077` and `StateDirectoryMode=0700` protect
 the SQLite journal and its parent directory.
+
+Release delivery additionally requires pinned Android Build Tools `apksigner`
+and `aapt2` paths in `migi.env`. Keep both values empty to disable the feature.
+The server fails closed when only one tool is configured or when committed
+release metadata references a missing artifact.
 
 ## Validate and build locally
 

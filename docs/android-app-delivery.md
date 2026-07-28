@@ -2,9 +2,11 @@
 
 ## Status
 
-This document is an implementation plan and protocol sketch, not yet a wire
-protocol commitment. It describes a small, trusted application-delivery feature
-built on top of Migi's existing paired server-to-device channel.
+The first implementation slice is present in the server, Android client, native
+QUIC bridge, and the `dev.migi.pilot` module. Its remaining acceptance gate is
+the physical Samsung test matrix in
+[`android-app-delivery-test.md`](android-app-delivery-test.md). The narrow trust
+profile and deferred items below remain intentional protocol constraints.
 
 ## Purpose
 
@@ -94,10 +96,14 @@ Uploading another build creates another artifact ID.
 
 ### Version 1 trust profile is deliberately narrow
 
-The first version supports one current signing certificate per package. APKs
-with multiple current signers or proof-of-rotation history are rejected until a
-separate signer-transition policy is designed and tested. Both the server and
-Android pin the accepted certificate digest for each package.
+The first version supports one current signing certificate per package and
+requires APK Signature Scheme v2 without a v3/v3.1 signing block. APKs with
+multiple current signers, v3 signing, or proof-of-rotation history are rejected
+until a separate signer-transition policy is designed and tested. The v2-only
+restriction is deliberate: the pinned `apksigner` CLI verifies current signers
+but does not expose certificate lineage, while v3 is the scheme that can carry
+proof of rotation. Android independently checks `SigningInfo`. Both the server
+and Android pin the accepted certificate digest for each package.
 
 Publisher and device policy are separate:
 
@@ -172,10 +178,11 @@ finalized, a spike must prove package, long version code, version name, current
 signer set, signing history, and signature validity extraction against real
 v1/v2/v3-signed fixtures and malformed inputs.
 
-Version 1 should use a pinned Android SDK Build Tools verifier in an isolated
-subprocess with no network access, a timeout, bounded output, and restricted
-resources. A self-written partial APK or ZIP signature parser is not acceptable.
-An embedded library may replace the subprocess only if the spike demonstrates
+Version 1 uses pinned Android SDK Build Tools `apksigner` and `aapt2` in
+subprocesses with a minimal environment, timeout, and bounded output. The
+server accepts exactly one current signer with a valid v2 signature and rejects
+v3/v3.1. A self-written partial APK or ZIP signature parser is not acceptable.
+An embedded library may replace the subprocess only if it demonstrates
 equivalent signature-scheme and signer-history handling.
 
 ## Protocol sketch

@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -44,7 +45,8 @@ CREATE TABLE IF NOT EXISTS events (
     agent TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
     body TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS device_acks (
     device_id TEXT PRIMARY KEY,
@@ -74,6 +76,48 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agent_tokens_active_name
 ON agent_tokens(name) WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS publisher_tokens (
+    token_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS publisher_tokens_active_name
+ON publisher_tokens(name) WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS publisher_packages (
+    token_id TEXT NOT NULL REFERENCES publisher_tokens(token_id) ON DELETE CASCADE,
+    package_name TEXT NOT NULL,
+    signer_sha256 TEXT NOT NULL,
+    PRIMARY KEY(token_id, package_name)
+);
+CREATE TABLE IF NOT EXISTS device_packages (
+    device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+    package_name TEXT NOT NULL,
+    signer_sha256 TEXT NOT NULL,
+    PRIMARY KEY(device_id, package_name)
+);
+CREATE TABLE IF NOT EXISTS releases (
+    artifact_id TEXT PRIMARY KEY,
+    publisher_token_id TEXT NOT NULL REFERENCES publisher_tokens(token_id),
+    publisher_name TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    version_code INTEGER NOT NULL CHECK(version_code > 0),
+    version_name TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size > 0),
+    sha256 TEXT NOT NULL,
+    signer_sha256 TEXT NOT NULL,
+    storage_name TEXT NOT NULL UNIQUE,
+    release_notes TEXT NOT NULL DEFAULT '',
+    source_revision TEXT NOT NULL DEFAULT '',
+    build_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL,
+    event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
+    created_at TEXT NOT NULL,
+    UNIQUE(publisher_token_id, idempotency_key),
+    UNIQUE(package_name, version_code)
+);
 CREATE TABLE IF NOT EXISTS pager_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     message TEXT NOT NULL,
@@ -82,6 +126,37 @@ CREATE TABLE IF NOT EXISTS pager_state (
 );`
 	if _, err := j.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
+	}
+	if err := j.ensureColumn(ctx, "events", "artifact_json",
+		`ALTER TABLE events ADD COLUMN artifact_json TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) ensureColumn(ctx context.Context, table, column, statement string) error {
+	rows, err := j.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, valueType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &valueType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	if _, err := j.db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -410,7 +485,7 @@ func (j *SQLiteJournal) SetPagerMessage(ctx context.Context, message string) (Ev
 		CreatedAt: createdAt,
 	}
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO events(kind, agent, title, body, created_at) VALUES(?, ?, ?, ?, ?)`,
+		`INSERT INTO events(kind, agent, title, body, created_at, artifact_json) VALUES(?, ?, ?, ?, ?, '')`,
 		event.Kind,
 		event.Agent,
 		event.Title,
@@ -465,7 +540,7 @@ func (j *SQLiteJournal) Append(ctx context.Context, input Input) (Event, error) 
 	createdAt := time.Now().UTC()
 	result, err := j.db.ExecContext(
 		ctx,
-		`INSERT INTO events(kind, agent, title, body, created_at) VALUES(?, ?, ?, ?, ?)`,
+		`INSERT INTO events(kind, agent, title, body, created_at, artifact_json) VALUES(?, ?, ?, ?, ?, '')`,
 		input.Kind,
 		input.Agent,
 		input.Title,
@@ -498,7 +573,7 @@ func (j *SQLiteJournal) After(ctx context.Context, after uint64, limit int) ([]E
 	}
 	rows, err := j.db.QueryContext(
 		ctx,
-		`SELECT id, kind, agent, title, body, created_at FROM events WHERE id > ? ORDER BY id LIMIT ?`,
+		`SELECT id, kind, agent, title, body, created_at, artifact_json FROM events WHERE id > ? ORDER BY id LIMIT ?`,
 		after, limit,
 	)
 	if err != nil {
@@ -509,13 +584,20 @@ func (j *SQLiteJournal) After(ctx context.Context, after uint64, limit int) ([]E
 	result := make([]Event, 0)
 	for rows.Next() {
 		var event Event
-		var createdAt string
-		if err := rows.Scan(&event.ID, &event.Kind, &event.Agent, &event.Title, &event.Body, &createdAt); err != nil {
+		var createdAt, artifactJSON string
+		if err := rows.Scan(&event.ID, &event.Kind, &event.Agent, &event.Title, &event.Body, &createdAt, &artifactJSON); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		event.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse event timestamp: %w", err)
+		}
+		if artifactJSON != "" {
+			var artifact ArtifactReference
+			if err := json.Unmarshal([]byte(artifactJSON), &artifact); err != nil {
+				return nil, fmt.Errorf("parse event artifact: %w", err)
+			}
+			event.Artifact = &artifact
 		}
 		result = append(result, event)
 	}
