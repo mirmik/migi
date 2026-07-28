@@ -3,7 +3,6 @@ package dev.migi.app
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.NotificationManager
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -14,8 +13,10 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import java.time.Instant
 import kotlin.concurrent.thread
@@ -28,7 +29,6 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
 	private lateinit var pagerMessage: TextView
 	private lateinit var batteryButton: Button
-	private lateinit var dndOverrideButton: Button
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
 	}
@@ -53,7 +53,6 @@ class MainActivity : Activity() {
 		preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
 		refreshPagerMessage()
 		refreshBatteryOptimizationState()
-		refreshDndOverrideState()
 	}
 
 	override fun onStop() {
@@ -103,8 +102,33 @@ class MainActivity : Activity() {
 				requestBatteryOptimizationExemption()
             }
         }
-        dndOverrideButton = Button(this).apply {
-            setOnClickListener { requestDndOverrideAccess() }
+        val dndOverride = CheckBox(this).apply {
+            text = getString(R.string.play_sounds_during_dnd)
+            isChecked = preferences.getBoolean(KEY_DND_OVERRIDE, false)
+            setOnCheckedChangeListener { _, enabled ->
+                preferences.edit().putBoolean(KEY_DND_OVERRIDE, enabled).apply()
+            }
+        }
+        val audioVolumeLabel = TextView(this).apply {
+            textSize = 14f
+        }
+        val audioVolume = SeekBar(this).apply {
+            max = 100
+            progress = preferences.getInt(KEY_AUDIO_VOLUME, DEFAULT_AUDIO_VOLUME)
+                .coerceIn(0, 100)
+            audioVolumeLabel.text = getString(R.string.migi_volume, progress)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, value: Int, fromUser: Boolean) {
+                    audioVolumeLabel.text = getString(R.string.migi_volume, value)
+                    if (fromUser) {
+                        preferences.edit().putInt(KEY_AUDIO_VOLUME, value).apply()
+                    }
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
         }
 
         val padding = (20 * resources.displayMetrics.density).toInt()
@@ -125,7 +149,9 @@ class MainActivity : Activity() {
             addView(start, matchWidth())
             addView(stop, matchWidth())
             addView(batteryButton, matchWidth())
-            addView(dndOverrideButton, matchWidth())
+            addView(dndOverride, matchWidth())
+            addView(audioVolumeLabel, matchWidth())
+            addView(audioVolume, matchWidth())
             addView(status, matchWidth())
         })
     }
@@ -157,24 +183,6 @@ class MainActivity : Activity() {
 				Uri.parse("package:$packageName"),
 			),
 		)
-	}
-
-	private fun refreshDndOverrideState() {
-		val enabled = getSystemService(NotificationManager::class.java)
-			.isNotificationPolicyAccessGranted
-		dndOverrideButton.setText(
-			if (enabled) R.string.dnd_override_enabled
-			else R.string.allow_dnd_override,
-		)
-	}
-
-	private fun requestDndOverrideAccess() {
-		val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-		if (intent.resolveActivity(packageManager) != null) {
-			startActivity(intent)
-		} else {
-			status.setText(R.string.dnd_settings_unavailable)
-		}
 	}
 
     private fun startConfiguredConnection() {
@@ -301,6 +309,9 @@ class MainActivity : Activity() {
         const val KEY_ENDPOINT = "endpoint"
         const val KEY_CERTIFICATE_PIN = "certificate_pin"
 		const val KEY_PAGER_MESSAGE = "pager_message"
+		const val KEY_DND_OVERRIDE = "dnd_override"
+		const val KEY_AUDIO_VOLUME = "audio_volume"
+		const val DEFAULT_AUDIO_VOLUME = 100
 
         private fun normalizePin(raw: String?): String? {
             if (raw == null) return null

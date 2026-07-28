@@ -5,13 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -48,6 +45,7 @@ class ConnectionService : Service() {
         eventAudioPlayer = EventAudioPlayer(this)
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
         createChannels()
+        getSystemService(NotificationManager::class.java).cancelAll()
         startForeground(
             CONNECTION_NOTIFICATION_ID,
             connectionNotification("Starting QUIC connection"),
@@ -149,43 +147,8 @@ class ConnectionService : Service() {
                 setSound(null, null)
             },
         )
-        if (manager.isNotificationPolicyAccessGranted) {
-            createDndBypassChannels(manager)
-        }
-    }
-
-    private fun createDndBypassChannels(manager: NotificationManager) {
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
         for (cue in EventAudioPlayer.Cue.entries) {
-            val sound = Uri.Builder()
-                .scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
-                .authority(packageName)
-                .appendPath("raw")
-                .appendPath(cue.resourceName)
-                .build()
-            manager.createNotificationChannel(
-                NotificationChannel(
-                    cue.bypassChannelID,
-                    cue.bypassChannelName,
-                    NotificationManager.IMPORTANCE_HIGH,
-                ).apply {
-                    description = "Migi alert allowed through Do Not Disturb"
-                    setSound(sound, audioAttributes)
-                    setBypassDnd(true)
-                },
-            )
-        }
-    }
-
-    private fun bypassChannelFor(cue: EventAudioPlayer.Cue): String? {
-        val manager = getSystemService(NotificationManager::class.java)
-        if (!manager.isNotificationPolicyAccessGranted) return null
-        createDndBypassChannels(manager)
-        return cue.bypassChannelID.takeIf {
-            manager.getNotificationChannel(it)?.canBypassDnd() == true
+            manager.deleteNotificationChannel(cue.legacyBypassChannelID)
         }
     }
 
@@ -214,13 +177,12 @@ class ConnectionService : Service() {
 					.commit(),
 			) { "Failed to persist pager message" }
 			if (event.body.isBlank()) return
-		}
+        }
         val cue = eventAudioPlayer.cueFor(event)
-        val bypassChannel = cue?.let(::bypassChannelFor)
-        if (cue != null && bypassChannel == null) {
+        if (cue != null) {
             eventAudioPlayer.play(cue, event.id)
         }
-        val notification = Notification.Builder(this, bypassChannel ?: EVENT_CHANNEL)
+        val notification = Notification.Builder(this, EVENT_CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_more)
             .setContentTitle(event.title)
             .setContentText(event.body.ifBlank { event.agent })
@@ -229,7 +191,8 @@ class ConnectionService : Service() {
             .setContentIntent(mainActivityIntent())
             .build()
         getSystemService(NotificationManager::class.java).notify(
-            nextEventNotification.incrementAndGet(),
+            EVENT_NOTIFICATION_BASE +
+                Math.floorMod(nextEventNotification.incrementAndGet(), MAX_ACTIVE_EVENT_NOTIFICATIONS),
             notification,
         )
     }
@@ -247,6 +210,8 @@ class ConnectionService : Service() {
         // the old system sound to app-rendered cues requires a new channel ID.
         private const val EVENT_CHANNEL = "agent-events-v2"
         private const val CONNECTION_NOTIFICATION_ID = 1
+        private const val EVENT_NOTIFICATION_BASE = 1000
+        private const val MAX_ACTIVE_EVENT_NOTIFICATIONS = 16
 		private const val PAGER_EVENT_KIND = "pager.message"
         private const val TAG = "MigiConnection"
         private val nextEventNotification = AtomicInteger(1000)
