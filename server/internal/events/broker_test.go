@@ -6,6 +6,20 @@ import (
 	"time"
 )
 
+type delayedFirstAppendJournal struct {
+	Journal
+	firstAppended chan struct{}
+}
+
+func (j *delayedFirstAppendJournal) Append(ctx context.Context, input Input) (Event, error) {
+	event, err := j.Journal.Append(ctx, input)
+	if err == nil && event.ID == 1 {
+		close(j.firstAppended)
+		time.Sleep(100 * time.Millisecond)
+	}
+	return event, err
+}
+
 func TestBrokerReplaysAndStreamsInOrder(t *testing.T) {
 	journal := openTestJournal(t)
 	b := NewBroker(journal)
@@ -40,6 +54,56 @@ func TestBrokerReplaysAndStreamsInOrder(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for streamed event")
+	}
+}
+
+func TestBrokerSerializesConcurrentAppendAndBroadcast(t *testing.T) {
+	journal := openTestJournal(t)
+	delayed := &delayedFirstAppendJournal{
+		Journal:       journal,
+		firstAppended: make(chan struct{}),
+	}
+	b := NewBroker(delayed)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, stream, err := b.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan Event, 2)
+	errors := make(chan error, 2)
+	go func() {
+		event, publishErr := b.Publish(ctx, Input{Kind: "agent.completed", Title: "first"})
+		results <- event
+		errors <- publishErr
+	}()
+	select {
+	case <-delayed.firstAppended:
+	case <-time.After(time.Second):
+		t.Fatal("first append did not start")
+	}
+	go func() {
+		event, publishErr := b.Publish(ctx, Input{Kind: "agent.completed", Title: "second"})
+		results <- event
+		errors <- publishErr
+	}()
+
+	for range 2 {
+		if publishErr := <-errors; publishErr != nil {
+			t.Fatal(publishErr)
+		}
+		<-results
+	}
+	for want := uint64(1); want <= 2; want++ {
+		select {
+		case got := <-stream:
+			if got.ID != want {
+				t.Fatalf("streamed id %d, want %d", got.ID, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for event %d", want)
+		}
 	}
 }
 

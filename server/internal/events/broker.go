@@ -9,9 +9,10 @@ import (
 const ReplayBatchSize = 64
 
 type Broker struct {
-	mu          sync.Mutex
-	journal     Journal
-	subscribers map[chan Event]struct{}
+	mu            sync.Mutex
+	publicationMu sync.Mutex
+	journal       Journal
+	subscribers   map[chan Event]struct{}
 }
 
 func NewBroker(journal Journal) *Broker {
@@ -22,6 +23,9 @@ func NewBroker(journal Journal) *Broker {
 }
 
 func (b *Broker) Publish(ctx context.Context, input Input) (Event, error) {
+	b.publicationMu.Lock()
+	defer b.publicationMu.Unlock()
+
 	event, err := b.journal.Append(ctx, input)
 	if err != nil {
 		return Event{}, err
@@ -154,6 +158,9 @@ func (b *Broker) ReplayRelease(ctx context.Context, draft ReleaseDraft) (Release
 }
 
 func (b *Broker) PublishRelease(ctx context.Context, draft ReleaseDraft) (Release, bool, error) {
+	b.publicationMu.Lock()
+	defer b.publicationMu.Unlock()
+
 	release, event, created, err := b.journal.PublishRelease(ctx, draft)
 	if err != nil {
 		return Release{}, false, err
@@ -177,6 +184,9 @@ func (b *Broker) Stats(ctx context.Context) (ServerStats, error) {
 }
 
 func (b *Broker) SetPagerMessage(ctx context.Context, message string) (Event, error) {
+	b.publicationMu.Lock()
+	defer b.publicationMu.Unlock()
+
 	event, err := b.journal.SetPagerMessage(ctx, message)
 	if err != nil {
 		return Event{}, err
