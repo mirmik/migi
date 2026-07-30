@@ -20,7 +20,6 @@ data class PendingRelease(
     val state: String,
     val size: Long?,
     val sha256: String?,
-    val signerSHA256: String?,
     val publisher: String?,
     val releaseNotes: String?,
     val tempPath: String?,
@@ -54,7 +53,6 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
                 state TEXT NOT NULL,
                 size INTEGER,
                 sha256 TEXT,
-                signer_sha256 TEXT,
                 publisher TEXT,
                 release_notes TEXT,
                 source_revision TEXT,
@@ -143,7 +141,7 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
     fun listReleases(): List<PendingRelease> = readableDatabase.rawQuery(
         """
         SELECT artifact_id, event_id, package_name, version_code, version_name,
-               state, size, sha256, signer_sha256, publisher, release_notes,
+               state, size, sha256, publisher, release_notes,
                temp_path, session_id, error
         FROM releases
         ORDER BY event_id DESC
@@ -164,12 +162,11 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
                         state = cursor.getString(5),
                         size = cursor.nullableLong(6),
                         sha256 = cursor.nullableString(7),
-                        signerSHA256 = cursor.nullableString(8),
-                        publisher = cursor.nullableString(9),
-                        releaseNotes = cursor.nullableString(10),
-                        tempPath = cursor.nullableString(11),
-                        sessionID = cursor.nullableInt(12),
-                        error = cursor.nullableString(13),
+                        publisher = cursor.nullableString(8),
+                        releaseNotes = cursor.nullableString(9),
+                        tempPath = cursor.nullableString(10),
+                        sessionID = cursor.nullableInt(11),
+                        error = cursor.nullableString(12),
                     ),
                 )
             }
@@ -184,7 +181,6 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
         val values = ContentValues().apply {
             put("size", release.size)
             put("sha256", release.sha256)
-            put("signer_sha256", release.signerSHA256)
             put("publisher", release.publisher)
             put("release_notes", release.releaseNotes)
             put("source_revision", release.sourceRevision)
@@ -297,7 +293,6 @@ data class ReleaseMetadata(
     val versionName: String,
     val size: Long,
     val sha256: String,
-    val signerSHA256: String,
     val publisher: String,
     val releaseNotes: String,
     val sourceRevision: String,

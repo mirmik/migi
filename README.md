@@ -47,7 +47,8 @@ Android can upload through the system share sheet and save verified downloads;
 agents use the loopback-only `migi-file` command, and the administration panel
 can upload, list, and download the same objects. File bodies stay outside the
 event journal, while `file.available` events announce committed objects.
-Codex agents can install the repository-owned `migi-file-exchange` skill with
+Codex agents can install the repository-owned `migi-file-exchange` and
+`migi-android-publisher` skills with
 `./scripts/install-migi-file-exchange-skill`.
 
 Remote agent hooks need no resident client or tunnel. The administration panel

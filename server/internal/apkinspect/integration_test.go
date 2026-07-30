@@ -38,8 +38,8 @@ func TestAndroidBuildToolsIntegration(t *testing.T) {
 			continue
 		}
 		_, err := inspector.Inspect(context.Background(), rejected)
-		if !errors.Is(err, ErrInvalidAPK) && !errors.Is(err, ErrUnsupportedSigner) {
-			t.Errorf("%s error = %v, want invalid APK or unsupported signer", filepath.Base(rejected), err)
+		if !errors.Is(err, ErrInvalidAPK) {
+			t.Errorf("%s error = %v, want invalid APK", filepath.Base(rejected), err)
 		}
 	}
 }

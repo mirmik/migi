@@ -14,9 +14,7 @@ var (
 	ErrAgentExists            = errors.New("agent token id or name already exists")
 	ErrPublisherUnauthorized  = errors.New("release publisher credential is invalid or revoked")
 	ErrPublisherExists        = errors.New("release publisher token id or name already exists")
-	ErrPackageUnauthorized    = errors.New("package or signer is not authorized")
 	ErrReleaseConflict        = errors.New("release idempotency key conflicts with existing content")
-	ErrReleaseVersion         = errors.New("release version code is not newer")
 	ErrReleaseNotFound        = errors.New("release does not exist")
 )
 
@@ -76,7 +74,7 @@ type Release struct {
 	VersionName    string    `json:"version_name"`
 	Size           int64     `json:"size"`
 	SHA256         string    `json:"sha256"`
-	SignerSHA256   string    `json:"signer_sha256"`
+	SignerSHA256   string    `json:"signer_sha256,omitempty"`
 	Publisher      string    `json:"publisher"`
 	CreatedAt      time.Time `json:"created_at"`
 	ReleaseNotes   string    `json:"release_notes,omitempty"`
@@ -124,8 +122,6 @@ type Journal interface {
 	AuthenticatePublisher(context.Context, string, []byte) (PublisherTokenInfo, error)
 	RevokePublisherToken(context.Context, string) error
 	ListPublisherTokens(context.Context) ([]PublisherTokenInfo, error)
-	SetPublisherPackage(context.Context, string, string, string) error
-	SetDevicePackage(context.Context, string, string, string) error
 	ReplayRelease(context.Context, ReleaseDraft) (Release, bool, error)
 	PublishRelease(context.Context, ReleaseDraft) (Release, Event, bool, error)
 	ReleaseForDevice(context.Context, string, string) (Release, error)

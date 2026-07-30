@@ -170,46 +170,14 @@ class ReleaseInstaller(private val context: Context) {
     private fun verifyAPK(file: File, metadata: ReleaseMetadata) {
         check(file.isFile && file.length() == metadata.size) { "APK size differs" }
         check(file.sha256().equals(metadata.sha256, ignoreCase = true)) { "APK digest differs" }
-        val pilotPin = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
-            .getString(MainActivity.KEY_PILOT_SIGNER_SHA256, null)
-        val localPin = resolveReleaseSignerPin(
-            packageName = metadata.packageName,
-            pilotPin = pilotPin,
-            selfPackageName = BuildConfig.APPLICATION_ID,
-            selfPin = BuildConfig.SELF_UPDATE_SIGNER_SHA256,
-        )
-        check(localPin == metadata.signerSHA256.lowercase()) { "Release signer is not locally pinned" }
-
         val packageInfo = requireNotNull(
             context.packageManager.getPackageArchiveInfo(
                 file.absolutePath,
-                PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong()),
+                PackageManager.PackageInfoFlags.of(0),
             ),
         ) { "Android could not parse APK" }
         check(packageInfo.packageName == metadata.packageName) { "APK package differs" }
         check(packageInfo.longVersionCode == metadata.versionCode) { "APK version differs" }
-        val signing = requireNotNull(packageInfo.signingInfo) { "APK has no signing information" }
-        check(!signing.hasMultipleSigners()) { "Multiple APK signers are not supported" }
-        val history = requireNotNull(signing.signingCertificateHistory)
-        check(history.size == 1) { "Signing certificate rotation is not supported" }
-        check(history.single().toByteArray().sha256() == localPin) { "APK signer differs" }
-
-        val installed = runCatching {
-            context.packageManager.getPackageInfo(
-                metadata.packageName,
-                PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong()),
-            )
-        }.getOrNull()
-        if (installed != null) {
-            check(metadata.versionCode > installed.longVersionCode) { "Same-version or downgrade install rejected" }
-            check(
-                context.packageManager.hasSigningCertificate(
-                    metadata.packageName,
-                    localPin.hexBytes(),
-                    PackageManager.CERT_INPUT_SHA256,
-                ),
-            ) { "Installed package has a different signer" }
-        }
     }
 
     private fun parseMetadata(raw: String): ReleaseMetadata {
@@ -221,7 +189,6 @@ class ReleaseInstaller(private val context: Context) {
             versionName = json.getString("version_name"),
             size = json.getLong("size"),
             sha256 = json.getString("sha256").lowercase(),
-            signerSHA256 = json.getString("signer_sha256").lowercase(),
             publisher = json.getString("publisher"),
             releaseNotes = json.optString("release_notes"),
             sourceRevision = json.optString("source_revision"),
@@ -236,7 +203,6 @@ class ReleaseInstaller(private val context: Context) {
         versionName = artifact.versionName,
         size = requireNotNull(size),
         sha256 = requireNotNull(sha256),
-        signerSHA256 = requireNotNull(signerSHA256),
         publisher = publisher.orEmpty(),
         releaseNotes = releaseNotes.orEmpty(),
         sourceRevision = "",
@@ -283,37 +249,6 @@ class ReleaseInstaller(private val context: Context) {
         var foregroundActivity: Activity? = null
     }
 }
-
-internal fun resolveReleaseSignerPin(
-    packageName: String,
-    pilotPin: String?,
-    selfPackageName: String,
-    selfPin: String,
-): String {
-    val (candidate, missingMessage) = when (packageName) {
-        PILOT_PACKAGE -> pilotPin to "Configure the pilot signer SHA-256 in Migi"
-        selfPackageName -> selfPin to "Migi self-update signer pin is not configured"
-        else -> error("Package is not locally allowlisted")
-    }
-    check(!candidate.isNullOrBlank()) { missingMessage }
-    val normalized = candidate
-        .filterNot { it == ':' || it.isWhitespace() }
-        .lowercase()
-    check(
-        candidate.all {
-            it.isDigit() || it.lowercaseChar() in 'a'..'f' || it == ':' || it.isWhitespace()
-        } && normalized.matches(Regex("[0-9a-f]{64}")),
-    ) {
-        if (packageName == PILOT_PACKAGE) {
-            "Configure the pilot signer SHA-256 in Migi"
-        } else {
-            "Migi self-update signer pin is malformed"
-        }
-    }
-    return normalized
-}
-
-private const val PILOT_PACKAGE = "dev.migi.pilot"
 
 class InstallResultReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -367,9 +302,3 @@ private fun File.sha256(): String = FileInputStream(this).use { input ->
     }
     digest.digest().joinToString("") { "%02x".format(it) }
 }
-
-private fun ByteArray.sha256(): String =
-    MessageDigest.getInstance("SHA-256").digest(this).joinToString("") { "%02x".format(it) }
-
-private fun String.hexBytes(): ByteArray =
-    chunked(2).map { it.toInt(16).toByte() }.toByteArray()

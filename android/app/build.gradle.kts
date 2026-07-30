@@ -43,7 +43,6 @@ fun validVersionName(value: String, source: String): String {
 
 val releaseVersionCode = providers.environmentVariable("MIGI_VERSION_CODE")
 val releaseVersionName = providers.environmentVariable("MIGI_VERSION_NAME")
-val releaseSignerPin = providers.environmentVariable("MIGI_RELEASE_SIGNER_SHA256")
 val releaseKeystore = providers.environmentVariable("MIGI_KEYSTORE")
 val releaseKeyAlias = providers.environmentVariable("MIGI_KEY_ALIAS")
 val releaseStorePassword = providers.environmentVariable("MIGI_STORE_PASSWORD")
@@ -61,7 +60,6 @@ val configuredVersionCode = releaseVersionCode.orNull?.let {
 val configuredVersionName = releaseVersionName.orNull?.let {
     validVersionName(it, "MIGI_VERSION_NAME")
 } ?: "0.1.0"
-val configuredSignerPin = releaseSignerPin.orNull?.let(::normalizedSignerPin).orEmpty()
 
 android {
     namespace = "dev.migi.app"
@@ -77,7 +75,6 @@ android {
         targetSdk = 36
         versionCode = configuredVersionCode
         versionName = configuredVersionName
-        buildConfigField("String", "SELF_UPDATE_SIGNER_SHA256", "\"$configuredSignerPin\"")
     }
 
     ndkVersion = "27.2.12479018"

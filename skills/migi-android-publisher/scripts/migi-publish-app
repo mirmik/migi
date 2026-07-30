@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+migi_publisher_script=$(readlink -f "$0")
+migi_publisher_repo=$(cd "$(dirname "$migi_publisher_script")/../../.." && pwd -P)
+
+if [ -n "${MIGI_PUBLISH:-}" ]; then
+	if [ ! -x "$MIGI_PUBLISH" ]; then
+		echo "MIGI_PUBLISH is not an executable file: $MIGI_PUBLISH" >&2
+		exit 1
+	fi
+	exec "$MIGI_PUBLISH" "$@"
+fi
+
+if command -v migi-publish >/dev/null 2>&1; then
+	exec migi-publish "$@"
+fi
+
+if [ -x "$migi_publisher_repo/server/bin/migi-publish" ]; then
+	exec "$migi_publisher_repo/server/bin/migi-publish" "$@"
+fi
+
+if command -v go >/dev/null 2>&1 &&
+	[ -f "$migi_publisher_repo/server/go.mod" ] &&
+	[ -d "$migi_publisher_repo/server/cmd/migi-publish" ]; then
+	cd "$migi_publisher_repo/server"
+	exec go run ./cmd/migi-publish "$@"
+fi
+
+echo "migi-publish is unavailable; install it or use a Migi repository checkout with Go" >&2
+exit 1

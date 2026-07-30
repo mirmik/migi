@@ -23,17 +23,14 @@ import (
 const maxResponseBytes = 64 << 10
 
 type publisherConfig struct {
-	Endpoint       string `json:"endpoint"`
-	Token          string `json:"token"`
-	PackageName    string `json:"package_name"`
-	SignerSHA256   string `json:"signer_sha256"`
-	TLSFingerprint string `json:"tls_fingerprint"`
+	Endpoint           string `json:"endpoint"`
+	Token              string `json:"token"`
+	LegacyPackageName  string `json:"package_name,omitempty"`
+	LegacySignerSHA256 string `json:"signer_sha256,omitempty"`
+	TLSFingerprint     string `json:"tls_fingerprint"`
 }
 
 type releaseMetadata struct {
-	PackageName    string `json:"package_name"`
-	VersionCode    int64  `json:"version_code"`
-	SHA256         string `json:"sha256"`
 	ReleaseNotes   string `json:"release_notes,omitempty"`
 	SourceRevision string `json:"source_revision,omitempty"`
 	BuildID        string `json:"build_id,omitempty"`
@@ -49,14 +46,13 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "", "publisher JSON configuration from the Migi admin panel")
 	apkPath := flag.String("apk", "", "signed APK to publish")
-	versionCode := flag.Int64("version-code", 0, "APK long version code asserted by the build")
 	notes := flag.String("notes", "", "release notes")
 	sourceRevision := flag.String("source-revision", "", "source revision")
 	buildID := flag.String("build-id", "", "build identifier")
 	idempotencyKey := flag.String("idempotency-key", "", "stable retry key; defaults to the APK SHA-256")
 	flag.Parse()
-	if *configPath == "" || *apkPath == "" || *versionCode <= 0 {
-		return errors.New("-config, -apk, and a positive -version-code are required")
+	if *configPath == "" || *apkPath == "" {
+		return errors.New("-config and -apk are required")
 	}
 	config, pin, err := loadConfig(*configPath)
 	if err != nil {
@@ -83,9 +79,6 @@ func run() error {
 		return errors.New("idempotency key must be 1-128 non-surrounding-whitespace characters")
 	}
 	metadata := releaseMetadata{
-		PackageName:    config.PackageName,
-		VersionCode:    *versionCode,
-		SHA256:         digestText,
 		ReleaseNotes:   *notes,
 		SourceRevision: *sourceRevision,
 		BuildID:        *buildID,
@@ -142,9 +135,8 @@ func loadConfig(path string) (publisherConfig, [sha256.Size]byte, error) {
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" ||
 		endpoint.User != nil || endpoint.Path != "/v1/releases" ||
 		endpoint.RawQuery != "" || endpoint.Fragment != "" ||
-		!strings.HasPrefix(config.Token, "migi_at_") || len(config.Token) > 256 ||
-		config.PackageName == "" {
-		return config, pin, errors.New("publisher config has invalid endpoint, token, or package")
+		!strings.HasPrefix(config.Token, "migi_at_") || len(config.Token) > 256 {
+		return config, pin, errors.New("publisher config has invalid endpoint or token")
 	}
 	normalized := strings.ReplaceAll(strings.TrimSpace(config.TLSFingerprint), ":", "")
 	raw, err := hex.DecodeString(normalized)

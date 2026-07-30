@@ -82,16 +82,16 @@ export MIGI_KEY_PASSWORD='...'
 ```
 
 The keystore path must be absolute, must name an existing file, and must stay
-outside this repository. Release signing enables APK Signature Scheme v2 only;
-v1, v3, v3.1, and v4 are disabled to match the server's deliberately narrow
-release verifier. The certificate SHA-256 is public and is compiled into the
-APK for the self-update policy; passwords and private key material must never
-enter Git, shell history, build logs, or Migi publisher configuration.
+outside this repository. Migi's own release task currently enables APK
+Signature Scheme v2 only. The server accepts Android-verifiable signing
+profiles and exposes the certificate SHA-256 only as legacy compatibility
+metadata; it is not an authorization policy. Passwords and private key material
+must never enter Git, shell history, build logs, or publisher configuration.
 
-`MIGI_VERSION_CODE` is an explicit positive monotonic release number. Never
-derive it implicitly from a local clock or silently auto-increment it: the
-reviewed publication command must name the intended version, and the server
-rejects a version that is not newer than the latest published package release.
+`MIGI_VERSION_CODE` is an explicit positive release number. Never derive it
+implicitly from a local clock or silently auto-increment it: the reviewed
+publication command must name the intended version. For an update it must be
+greater than the installed version or Android may reject the installation.
 
 The currently deployed `dev.migi.app` is debug-signed. Android cannot replace
 it with an APK signed by a new stable release key. Enabling self-update
@@ -186,7 +186,7 @@ cd server
 go build -o ./bin/migi-publish ./cmd/migi-publish
 ```
 
-After building a signed pilot release, inspect the certificate digest:
+After building a signed pilot release, verify the APK:
 
 ```bash
 "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify \
@@ -194,22 +194,22 @@ After building a signed pilot release, inspect the certificate digest:
   ../android/pilot/build/outputs/apk/release/pilot-release.apk
 ```
 
-In the local administration panel, create a **Release publisher** for
-`dev.migi.pilot` and that exact SHA-256 signer, then authorize the same package
-and signer for the paired device. Copy the one-time publisher JSON into a
-mode-0600 file outside the repository. Publish the APK with:
+In the local administration panel, create a **Release publisher**. The same
+credential can publish any application, and every active paired device receives
+its releases. Copy the one-time publisher JSON into a mode-0600 file outside
+the repository. Publish the APK with:
 
 ```bash
 ./bin/migi-publish \
   -config /secure/path/pilot-publisher.json \
   -apk ../android/pilot/build/outputs/apk/release/pilot-release.apk \
-  -version-code "$MIGI_PILOT_VERSION_CODE" \
   -notes "Pilot delivery test" \
   -source-revision "$(git -C .. rev-parse HEAD)"
 ```
 
 The client hashes and streams the APK, pins the exact server leaf certificate,
-refuses redirects, and uses the APK digest as its default idempotency key.
+refuses redirects, and uses the APK digest as its default idempotency key. The
+server derives package and version metadata from the uploaded APK.
 Re-running the same command safely returns the existing release.
 
 Submit a local bootstrap event over an HTTP-capable local ingress or test
@@ -247,24 +247,25 @@ listener and must not be exposed publicly. On Android, use **Share → Migi** or
 the **Share a file** button. Downloads are written through Android's system
 document picker.
 
-### Install the Codex file-exchange skill
+### Install the Codex Migi skills
 
-The repository contains `skills/migi-file-exchange`. Install it for the current
-user with:
+The repository contains `skills/migi-file-exchange` for ordinary file transfer
+and `skills/migi-android-publisher` for installable APK releases. Install both
+for the current user with:
 
 ```bash
 ./scripts/install-migi-file-exchange-skill
 ```
 
-The script creates the idempotent symlink
-`~/.agents/skills/migi-file-exchange` pointing at the repository copy. It
-refuses to replace an existing directory or a link to another target. Codex
-normally detects skill changes automatically; restart the session if
-`$migi-file-exchange` does not appear.
+The script creates idempotent symlinks under `~/.agents/skills` pointing at the
+repository copies. It refuses to replace an existing directory or a link to
+another target. Codex normally detects skill changes automatically; restart
+the session if either skill does not appear.
 
-The skill's wrapper prefers `migi-file` from `PATH`, then
+The file-exchange wrapper prefers `migi-file` from `PATH`, then
 `server/bin/migi-file`, and finally runs `go run ./cmd/migi-file` from this
-repository.
+repository. The Android publisher wrapper follows the same lookup order for
+`migi-publish`.
 
 Open `http://127.0.0.1:8788/admin/` on the server to view status, create a
 pairing QR, and revoke devices. From another trusted machine, forward it over

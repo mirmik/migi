@@ -115,8 +115,6 @@ type agentCredentialView struct {
 }
 
 var agentNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-var packageNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$`)
-var sha256Pattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 func New(config Config) (*Handler, error) {
 	if config.Broker == nil {
@@ -189,7 +187,6 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/agents/revoke", h.revokeAgentToken)
 	mux.HandleFunc("POST /admin/publishers/create", h.createPublisherToken)
 	mux.HandleFunc("POST /admin/publishers/revoke", h.revokePublisherToken)
-	mux.HandleFunc("POST /admin/devices/package", h.setDevicePackage)
 	mux.HandleFunc("POST /admin/files", h.uploadFile)
 	mux.HandleFunc("GET /admin/files/{fileID}/content", h.downloadFile)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
@@ -357,11 +354,8 @@ func (h *Handler) createPublisherToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
-	packageName := strings.TrimSpace(r.FormValue("package_name"))
-	signer := strings.ToLower(strings.TrimSpace(r.FormValue("signer_sha256")))
-	if !agentNamePattern.MatchString(name) || !packageNamePattern.MatchString(packageName) ||
-		!sha256Pattern.MatchString(signer) {
-		http.Error(w, "valid publisher name, package name, and signer SHA-256 are required", http.StatusBadRequest)
+	if !agentNamePattern.MatchString(name) {
+		http.Error(w, "valid publisher name is required", http.StatusBadRequest)
 		return
 	}
 	tokenID, plain, tokenHash, err := agentauth.Generate()
@@ -377,22 +371,13 @@ func (h *Handler) createPublisherToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to persist publisher token", http.StatusInternalServerError)
 		return
 	}
-	if err := h.config.Broker.SetPublisherPackage(r.Context(), tokenID, packageName, signer); err != nil {
-		_ = h.config.Broker.RevokePublisherToken(r.Context(), tokenID)
-		http.Error(w, "failed to persist publisher package policy", http.StatusInternalServerError)
-		return
-	}
 	clientConfig := struct {
 		Endpoint       string `json:"endpoint"`
 		Token          string `json:"token"`
-		PackageName    string `json:"package_name"`
-		SignerSHA256   string `json:"signer_sha256"`
 		TLSFingerprint string `json:"tls_fingerprint"`
 	}{
 		Endpoint:       endpoint.String() + "/v1/releases",
 		Token:          plain,
-		PackageName:    packageName,
-		SignerSHA256:   signer,
 		TLSFingerprint: h.config.CertificateFingerprint,
 	}
 	encoded, err := json.MarshalIndent(clientConfig, "", "  ")
@@ -401,7 +386,7 @@ func (h *Handler) createPublisherToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("release publisher created",
-		"publisher", name, "token_id", tokenID, "package", packageName, "signer_sha256", signer,
+		"publisher", name, "token_id", tokenID,
 	)
 	h.renderDashboard(w, r, nil, nil, &agentCredentialView{
 		Name: name, Config: string(encoded),
@@ -422,28 +407,6 @@ func (h *Handler) revokePublisherToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.redirectToDashboard(w, r, "Publisher token revoked")
-}
-
-func (h *Handler) setDevicePackage(w http.ResponseWriter, r *http.Request) {
-	if !h.validForm(w, r) {
-		return
-	}
-	deviceID := strings.TrimSpace(r.FormValue("device_id"))
-	packageName := strings.TrimSpace(r.FormValue("package_name"))
-	signer := strings.ToLower(strings.TrimSpace(r.FormValue("signer_sha256")))
-	if deviceID == "" || !packageNamePattern.MatchString(packageName) || !sha256Pattern.MatchString(signer) {
-		http.Error(w, "valid device, package, and signer SHA-256 are required", http.StatusBadRequest)
-		return
-	}
-	if err := h.config.Broker.SetDevicePackage(r.Context(), deviceID, packageName, signer); err != nil {
-		if errors.Is(err, events.ErrUnauthorized) {
-			http.Error(w, "device is unknown or revoked", http.StatusConflict)
-			return
-		}
-		http.Error(w, "failed to set device package policy", http.StatusInternalServerError)
-		return
-	}
-	h.redirectToDashboard(w, r, "Device package policy updated")
 }
 
 func (h *Handler) revokeAgentToken(w http.ResponseWriter, r *http.Request) {

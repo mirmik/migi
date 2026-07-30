@@ -33,7 +33,6 @@ class MainActivity : Activity() {
 	private lateinit var preferences: SharedPreferences
     private lateinit var endpoint: EditText
     private lateinit var certificatePin: EditText
-    private lateinit var pilotSignerPin: EditText
     private lateinit var status: TextView
 	private lateinit var settingsStatus: TextView
 	private lateinit var pagerMessage: TextView
@@ -111,11 +110,6 @@ class MainActivity : Activity() {
         certificatePin = EditText(this).apply {
             hint = getString(R.string.certificate_pin_hint)
             setText(preferences.getString(KEY_CERTIFICATE_PIN, ""))
-            inputType = android.text.InputType.TYPE_CLASS_TEXT
-        }
-        pilotSignerPin = EditText(this).apply {
-            hint = getString(R.string.pilot_signer_hint)
-            setText(preferences.getString(KEY_PILOT_SIGNER_SHA256, ""))
             inputType = android.text.InputType.TYPE_CLASS_TEXT
         }
         status = TextView(this).apply {
@@ -250,7 +244,6 @@ class MainActivity : Activity() {
 			visibility = View.GONE
 			addView(endpoint, matchWidth())
 			addView(certificatePin, matchWidth())
-			addView(pilotSignerPin, matchWidth())
 		}
 		val settingsPage = LinearLayout(this).apply {
 			orientation = LinearLayout.VERTICAL
@@ -708,11 +701,6 @@ class MainActivity : Activity() {
             certificatePin.error = getString(R.string.certificate_pin_required)
             return
         }
-        val pilotSigner = normalizePin(pilotSignerPin.text.toString())
-        if (pilotSignerPin.text.isNotBlank() && pilotSigner == null) {
-            pilotSignerPin.error = getString(R.string.pilot_signer_invalid)
-            return
-        }
         if (CredentialStore(this).load() == null) {
             updateStatus(R.string.device_not_paired)
             return
@@ -720,7 +708,6 @@ class MainActivity : Activity() {
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
             .putString(KEY_ENDPOINT, value)
 	            .putString(KEY_CERTIFICATE_PIN, pin)
-	            .putString(KEY_PILOT_SIGNER_SHA256, pilotSigner ?: "")
             .apply()
         startForegroundService(
             Intent(this, ConnectionService::class.java).setAction(ConnectionService.ACTION_RECONFIGURE),
@@ -839,7 +826,6 @@ class MainActivity : Activity() {
 		const val KEY_FILES_GENERATION = "files_generation"
 		const val KEY_DND_OVERRIDE = "dnd_override"
 			const val KEY_AUDIO_VOLUME = "audio_volume"
-			const val KEY_PILOT_SIGNER_SHA256 = "pilot_signer_sha256"
 			const val KEY_CONNECTION_RECOVERY_ERROR = "connection_recovery_error"
 			const val DEFAULT_AUDIO_VOLUME = 100
 			private const val REQUEST_CHOOSE_FILE = 20

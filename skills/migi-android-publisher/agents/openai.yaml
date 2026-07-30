@@ -1,0 +1,4 @@
+interface:
+  display_name: "Migi Android Publisher"
+  short_description: "Build and deliver Android apps through Migi"
+  default_prompt: "Use $migi-android-publisher to build this Android app and publish it to my phone through Migi."

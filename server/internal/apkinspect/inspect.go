@@ -22,11 +22,8 @@ const (
 )
 
 var (
-	ErrInvalidAPK        = errors.New("APK is invalid or its signature does not verify")
-	ErrUnsupportedSigner = errors.New("APK signer profile is not supported")
-
+	ErrInvalidAPK       = errors.New("APK is invalid or its signature does not verify")
 	packageLinePattern  = regexp.MustCompile(`(?m)^package: name='([^']+)' versionCode='([0-9]+)' versionName='([^']*)'`)
-	signerCountPattern  = regexp.MustCompile(`(?m)^Number of signers: ([0-9]+)$`)
 	signerDigestPattern = regexp.MustCompile(`(?m)^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})$`)
 )
 
@@ -106,12 +103,7 @@ func (i *Inspector) Inspect(ctx context.Context, path string) (Info, error) {
 		return Info{}, fmt.Errorf("close APK: %w", err)
 	}
 
-	signatureOutput, err := i.run(ctx, i.apksigner,
-		"verify", "--verbose", "--print-certs", "--Werr", path)
-	if err != nil {
-		return Info{}, fmt.Errorf("%w: %v", ErrInvalidAPK, err)
-	}
-	signer, err := parseSigner(signatureOutput)
+	signerSHA256, err := i.SigningCertificateSHA256(ctx, path)
 	if err != nil {
 		return Info{}, err
 	}
@@ -129,8 +121,24 @@ func (i *Inspector) Inspect(ctx context.Context, path string) (Info, error) {
 		VersionName:  versionName,
 		Size:         stat.Size(),
 		SHA256:       hex.EncodeToString(digest.Sum(nil)),
-		SignerSHA256: signer,
+		SignerSHA256: signerSHA256,
 	}, nil
+}
+
+// SigningCertificateSHA256 verifies the APK and returns its first current
+// signing certificate for legacy-client metadata. It does not impose a signer
+// allowlist or reject additional signers and signing schemes.
+func (i *Inspector) SigningCertificateSHA256(ctx context.Context, path string) (string, error) {
+	output, err := i.run(ctx, i.apksigner,
+		"verify", "--verbose", "--print-certs", "--Werr", path)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidAPK, err)
+	}
+	match := signerDigestPattern.FindStringSubmatch(output)
+	if match == nil {
+		return "", ErrInvalidAPK
+	}
+	return strings.ToLower(match[1]), nil
 }
 
 func (i *Inspector) Versions(ctx context.Context) (string, error) {
@@ -171,26 +179,6 @@ func (i *Inspector) run(parent context.Context, executable string, arguments ...
 			filepath.Base(executable), err, strings.TrimSpace(output.String()))
 	}
 	return output.String(), nil
-}
-
-func parseSigner(output string) (string, error) {
-	countMatch := signerCountPattern.FindStringSubmatch(output)
-	if countMatch == nil || countMatch[1] != "1" {
-		return "", ErrUnsupportedSigner
-	}
-	// apksigner does not expose signing-certificate lineage through its CLI.
-	// Requiring v2 and rejecting v3/v3.1 is the conservative version-1 policy:
-	// v3 is the only accepted scheme here that can carry proof-of-rotation.
-	if !strings.Contains(output, "Verified using v2 scheme (APK Signature Scheme v2): true") ||
-		strings.Contains(output, "Verified using v3 scheme (APK Signature Scheme v3): true") ||
-		strings.Contains(output, "Verified using v3.1 scheme (APK Signature Scheme v3.1): true") {
-		return "", ErrUnsupportedSigner
-	}
-	digestMatch := signerDigestPattern.FindStringSubmatch(output)
-	if digestMatch == nil {
-		return "", ErrInvalidAPK
-	}
-	return strings.ToLower(digestMatch[1]), nil
 }
 
 func parsePackage(output string) (string, int64, string, error) {

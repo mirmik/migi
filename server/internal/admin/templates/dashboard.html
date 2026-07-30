@@ -152,7 +152,7 @@
 
     <section class="panel agents">
       <h2>Release publishers</h2>
-      <p>Create a code-publishing credential bound to one package and one v2 signing certificate. The plain token is shown only once.</p>
+      <p>Create a credential that can publish any valid APK. The plain token is shown only once.</p>
       <form method="post" action="publishers/create">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <label>Public HTTPS endpoint
@@ -160,12 +160,6 @@
         </label>
         <label>Publisher name
           <input type="text" name="name" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required placeholder="pilot-builder" autocomplete="off" spellcheck="false">
-        </label>
-        <label>Package
-          <input type="text" name="package_name" required value="dev.migi.pilot" autocomplete="off" spellcheck="false">
-        </label>
-        <label>Signer certificate SHA-256
-          <input type="text" name="signer_sha256" minlength="64" maxlength="64" pattern="[0-9A-Fa-f]{64}" required autocomplete="off" spellcheck="false">
         </label>
         <button type="submit">Create publisher</button>
       </form>
@@ -195,20 +189,7 @@
 
     <section class="panel devices">
       <h2>Paired devices</h2>
-      <p>Authorize a package and exact signer for one paired device before it can resolve or download releases.</p>
-      <form method="post" action="devices/package">
-        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <label>Device ID
-          <input type="text" name="device_id" required autocomplete="off" spellcheck="false">
-        </label>
-        <label>Package
-          <input type="text" name="package_name" required value="dev.migi.pilot" autocomplete="off" spellcheck="false">
-        </label>
-        <label>Signer certificate SHA-256
-          <input type="text" name="signer_sha256" minlength="64" maxlength="64" pattern="[0-9A-Fa-f]{64}" required autocomplete="off" spellcheck="false">
-        </label>
-        <button type="submit">Authorize package</button>
-      </form>
+      <p>All active paired devices can receive application releases.</p>
       {{if .Devices}}
       <div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Device ID</th><th>Last seen</th><th>ACK cursor</th><th>Status</th><th></th></tr></thead>

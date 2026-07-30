@@ -36,8 +36,6 @@
     <string name="file_selection_cancelled">Selection cancelled</string>
     <string name="releases_title">Application releases</string>
     <string name="releases_empty">No pending releases</string>
-    <string name="pilot_signer_hint">Pilot signer certificate SHA-256</string>
-    <string name="pilot_signer_invalid">Enter exactly 64 hexadecimal digits</string>
     <string name="download_release">Download and verify</string>
     <string name="install_release">Install</string>
     <string name="install_migi_update">Install Migi update</string>

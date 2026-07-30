@@ -145,14 +145,6 @@ func (b *Broker) ListPublisherTokens(ctx context.Context) ([]PublisherTokenInfo,
 	return b.journal.ListPublisherTokens(ctx)
 }
 
-func (b *Broker) SetPublisherPackage(ctx context.Context, tokenID, packageName, signerSHA256 string) error {
-	return b.journal.SetPublisherPackage(ctx, tokenID, packageName, signerSHA256)
-}
-
-func (b *Broker) SetDevicePackage(ctx context.Context, deviceID, packageName, signerSHA256 string) error {
-	return b.journal.SetDevicePackage(ctx, deviceID, packageName, signerSHA256)
-}
-
 func (b *Broker) ReplayRelease(ctx context.Context, draft ReleaseDraft) (Release, bool, error) {
 	return b.journal.ReplayRelease(ctx, draft)
 }

@@ -23,8 +23,23 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.PackageName != "dev.migi.pilot" || pin[0] != 0xaa || pin[31] != 0xaa {
+	if config.LegacyPackageName != "dev.migi.pilot" || pin[0] != 0xaa || pin[31] != 0xaa {
 		t.Fatalf("unexpected config %#v pin %x", config, pin)
+	}
+}
+
+func TestLoadConfigAcceptsReusablePublisherCredential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publisher.json")
+	body := `{
+  "endpoint": "https://migi.example:10444/v1/releases",
+  "token": "migi_at_id_secret",
+  "tls_fingerprint": "` + strings.Repeat("aa", 32) + `"
+}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadConfig(path); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -312,15 +312,12 @@ func TestAdminCreatesOneTimeAgentConfigurationAndRevokesIt(t *testing.T) {
 	}
 }
 
-func TestAdminCreatesPublisherAndAuthorizesDevicePackage(t *testing.T) {
+func TestAdminCreatesReusablePublisher(t *testing.T) {
 	handler, broker := newTestHandler(t)
-	const signer = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	form := url.Values{
-		"csrf_token":    {handler.csrfToken},
-		"endpoint":      {"https://203.0.113.10:10444"},
-		"name":          {"pilot-builder"},
-		"package_name":  {"dev.migi.pilot"},
-		"signer_sha256": {signer},
+		"csrf_token": {handler.csrfToken},
+		"endpoint":   {"https://203.0.113.10:10444"},
+		"name":       {"app-builder"},
 	}
 	request := httptest.NewRequest(
 		http.MethodPost, "/admin/publishers/create", strings.NewReader(form.Encode()),
@@ -332,38 +329,13 @@ func TestAdminCreatesPublisherAndAuthorizesDevicePackage(t *testing.T) {
 		t.Fatalf("create publisher returned %d: %s", response.Code, response.Body.String())
 	}
 	if body := response.Body.String(); !strings.Contains(body, "/v1/releases") ||
-		!strings.Contains(body, "dev.migi.pilot") || !strings.Contains(body, "migi_at_") {
+		!strings.Contains(body, "migi_at_") ||
+		strings.Contains(body, "package_name") || strings.Contains(body, "signer_sha256") {
 		t.Fatal("created publisher configuration is incomplete")
 	}
 	publishers, err := broker.ListPublisherTokens(t.Context())
-	if err != nil || len(publishers) != 1 || publishers[0].Name != "pilot-builder" {
+	if err != nil || len(publishers) != 1 || publishers[0].Name != "app-builder" {
 		t.Fatalf("publisher tokens %#v, error %v", publishers, err)
-	}
-
-	secretHash := sha256.Sum256([]byte("publisher test pairing secret"))
-	tokenHash := sha256.Sum256([]byte("publisher test device token"))
-	if err := broker.CreatePairingCode(t.Context(), secretHash[:], time.Now().Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if err := broker.RedeemPairingCode(
-		t.Context(), secretHash[:], "phone-1", "Samsung", tokenHash[:],
-	); err != nil {
-		t.Fatal(err)
-	}
-	policy := url.Values{
-		"csrf_token":    {handler.csrfToken},
-		"device_id":     {"phone-1"},
-		"package_name":  {"dev.migi.pilot"},
-		"signer_sha256": {signer},
-	}
-	request = httptest.NewRequest(
-		http.MethodPost, "/admin/devices/package", strings.NewReader(policy.Encode()),
-	)
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response = httptest.NewRecorder()
-	handler.Routes().ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("authorize device package returned %d: %s", response.Code, response.Body.String())
 	}
 }
 

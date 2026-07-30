@@ -3,31 +3,34 @@ set -eu
 
 migi_installer_path=$(readlink -f "$0")
 migi_repo_root=$(cd "$(dirname "$migi_installer_path")/.." && pwd -P)
-migi_skill_source="$migi_repo_root/skills/migi-file-exchange"
 migi_skill_parent="${MIGI_SKILL_HOME:-$HOME/.agents/skills}"
-migi_skill_target="$migi_skill_parent/migi-file-exchange"
-
-if [ ! -f "$migi_skill_source/SKILL.md" ]; then
-	echo "Migi skill source is missing: $migi_skill_source" >&2
-	exit 1
-fi
 
 mkdir -p "$migi_skill_parent"
 
-if [ -L "$migi_skill_target" ]; then
-	migi_existing_target=$(readlink -f "$migi_skill_target" || true)
-	if [ "$migi_existing_target" = "$migi_skill_source" ]; then
-		echo "Migi file-exchange skill is already installed: $migi_skill_target"
-		exit 0
+for migi_skill_name in migi-file-exchange migi-android-publisher; do
+	migi_skill_source="$migi_repo_root/skills/$migi_skill_name"
+	migi_skill_target="$migi_skill_parent/$migi_skill_name"
+
+	if [ ! -f "$migi_skill_source/SKILL.md" ]; then
+		echo "Migi skill source is missing: $migi_skill_source" >&2
+		exit 1
 	fi
-	echo "Refusing to replace an existing symlink: $migi_skill_target -> $(readlink "$migi_skill_target")" >&2
-	exit 1
-fi
 
-if [ -e "$migi_skill_target" ]; then
-	echo "Refusing to replace an existing path: $migi_skill_target" >&2
-	exit 1
-fi
+	if [ -L "$migi_skill_target" ]; then
+		migi_existing_target=$(readlink -f "$migi_skill_target" || true)
+		if [ "$migi_existing_target" = "$migi_skill_source" ]; then
+			echo "Migi skill is already installed: $migi_skill_target"
+			continue
+		fi
+		echo "Refusing to replace an existing symlink: $migi_skill_target -> $(readlink "$migi_skill_target")" >&2
+		exit 1
+	fi
 
-ln -s "$migi_skill_source" "$migi_skill_target"
-echo "Installed Migi file-exchange skill: $migi_skill_target -> $migi_skill_source"
+	if [ -e "$migi_skill_target" ]; then
+		echo "Refusing to replace an existing path: $migi_skill_target" >&2
+		exit 1
+	fi
+
+	ln -s "$migi_skill_source" "$migi_skill_target"
+	echo "Installed Migi skill: $migi_skill_target -> $migi_skill_source"
+done

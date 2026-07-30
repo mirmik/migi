@@ -86,18 +86,6 @@ CREATE TABLE IF NOT EXISTS publisher_tokens (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS publisher_tokens_active_name
 ON publisher_tokens(name) WHERE revoked_at IS NULL;
-CREATE TABLE IF NOT EXISTS publisher_packages (
-    token_id TEXT NOT NULL REFERENCES publisher_tokens(token_id) ON DELETE CASCADE,
-    package_name TEXT NOT NULL,
-    signer_sha256 TEXT NOT NULL,
-    PRIMARY KEY(token_id, package_name)
-);
-CREATE TABLE IF NOT EXISTS device_packages (
-    device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
-    package_name TEXT NOT NULL,
-    signer_sha256 TEXT NOT NULL,
-    PRIMARY KEY(device_id, package_name)
-);
 CREATE TABLE IF NOT EXISTS releases (
     artifact_id TEXT PRIMARY KEY,
     publisher_token_id TEXT NOT NULL REFERENCES publisher_tokens(token_id),
@@ -107,7 +95,6 @@ CREATE TABLE IF NOT EXISTS releases (
     version_name TEXT NOT NULL,
     size INTEGER NOT NULL CHECK(size > 0),
     sha256 TEXT NOT NULL,
-    signer_sha256 TEXT NOT NULL,
     storage_name TEXT NOT NULL UNIQUE,
     release_notes TEXT NOT NULL DEFAULT '',
     source_revision TEXT NOT NULL DEFAULT '',
@@ -115,8 +102,7 @@ CREATE TABLE IF NOT EXISTS releases (
     idempotency_key TEXT NOT NULL,
     event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
     created_at TEXT NOT NULL,
-    UNIQUE(publisher_token_id, idempotency_key),
-    UNIQUE(package_name, version_code)
+    UNIQUE(publisher_token_id, idempotency_key)
 );
 CREATE TABLE IF NOT EXISTS pager_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -131,7 +117,89 @@ CREATE TABLE IF NOT EXISTS pager_state (
 		`ALTER TABLE events ADD COLUMN artifact_json TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := j.migrateOpenReleasePolicy(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (j *SQLiteJournal) migrateOpenReleasePolicy(ctx context.Context) error {
+	legacy, err := j.hasColumn(ctx, "releases", "signer_sha256")
+	if err != nil {
+		return err
+	}
+	if legacy {
+		tx, err := j.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin release policy migration: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `
+CREATE TABLE releases_open (
+    artifact_id TEXT PRIMARY KEY,
+    publisher_token_id TEXT NOT NULL REFERENCES publisher_tokens(token_id),
+    publisher_name TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    version_code INTEGER NOT NULL CHECK(version_code > 0),
+    version_name TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size > 0),
+    sha256 TEXT NOT NULL,
+    storage_name TEXT NOT NULL UNIQUE,
+    release_notes TEXT NOT NULL DEFAULT '',
+    source_revision TEXT NOT NULL DEFAULT '',
+    build_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL,
+    event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
+    created_at TEXT NOT NULL,
+    UNIQUE(publisher_token_id, idempotency_key)
+);
+INSERT INTO releases_open(
+    artifact_id, publisher_token_id, publisher_name, package_name,
+    version_code, version_name, size, sha256, storage_name,
+    release_notes, source_revision, build_id, idempotency_key, event_id, created_at
+)
+SELECT artifact_id, publisher_token_id, publisher_name, package_name,
+       version_code, version_name, size, sha256, storage_name,
+       release_notes, source_revision, build_id, idempotency_key, event_id, created_at
+FROM releases;
+DROP TABLE releases;
+ALTER TABLE releases_open RENAME TO releases;`); err != nil {
+			return fmt.Errorf("migrate release records: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit release policy migration: %w", err)
+		}
+	}
+	if _, err := j.db.ExecContext(ctx, `
+DROP TABLE IF EXISTS publisher_packages;
+DROP TABLE IF EXISTS device_packages;`); err != nil {
+		return fmt.Errorf("drop obsolete package policies: %w", err)
+	}
+	if _, err := j.db.ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
+		return fmt.Errorf("record release schema version: %w", err)
+	}
+	return nil
+}
+
+func (j *SQLiteJournal) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := j.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, valueType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &valueType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (j *SQLiteJournal) ensureColumn(ctx context.Context, table, column, statement string) error {

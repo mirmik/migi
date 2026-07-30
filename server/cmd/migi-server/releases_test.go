@@ -41,6 +41,10 @@ func (fakeAPKInspector) Inspect(_ context.Context, path string) (apkinspect.Info
 	}, nil
 }
 
+func (fakeAPKInspector) SigningCertificateSHA256(_ context.Context, _ string) (string, error) {
+	return handlerTestSigner, nil
+}
+
 func TestReleaseUploadAndAuthorizedDownload(t *testing.T) {
 	journal, err := events.OpenSQLite(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
@@ -59,9 +63,6 @@ func TestReleaseUploadAndAuthorizedDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := broker.CreatePublisherToken(t.Context(), tokenID, "pilot-builder", tokenHash[:]); err != nil {
-		t.Fatal(err)
-	}
-	if err := broker.SetPublisherPackage(t.Context(), tokenID, "dev.migi.pilot", handlerTestSigner); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,27 +104,26 @@ func TestReleaseUploadAndAuthorizedDownload(t *testing.T) {
 	if err := broker.RedeemPairingCode(t.Context(), secret[:], "phone-1", "Samsung", deviceHash[:]); err != nil {
 		t.Fatal(err)
 	}
-	filtered, err := eventForDevice(t.Context(), broker, "phone-1", replay[0])
+	visible, err := eventForDevice(t.Context(), broker, "phone-1", replay[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Kind != "internal.filtered" || filtered.ID != replay[0].ID ||
-		filtered.Artifact != nil || filtered.Body != "" {
-		t.Fatalf("unauthorized release event was exposed: %#v", filtered)
+	if visible.Artifact == nil || visible.Artifact.ID != release.ArtifactID {
+		t.Fatalf("release event = %#v", visible)
 	}
-	denied := httptest.NewRequest(http.MethodGet, "/v1/releases/"+release.ArtifactID, nil)
-	denied.Header.Set("Authorization", "Bearer "+base64.RawURLEncoding.EncodeToString(deviceToken))
-	deniedResponse := httptest.NewRecorder()
-	newPublicMuxWithReleases(broker, store, newPublicSecurity()).ServeHTTP(deniedResponse, denied)
-	if deniedResponse.Code != http.StatusNotFound {
-		t.Fatalf("disallowed device metadata status = %d", deniedResponse.Code)
+	metadataRequest := httptest.NewRequest(http.MethodGet, "/v1/releases/"+release.ArtifactID, nil)
+	metadataRequest.Header.Set("Authorization", "Bearer "+base64.RawURLEncoding.EncodeToString(deviceToken))
+	metadataResponse := httptest.NewRecorder()
+	newPublicMuxWithReleases(broker, store, newPublicSecurity()).ServeHTTP(metadataResponse, metadataRequest)
+	if metadataResponse.Code != http.StatusOK {
+		t.Fatalf("metadata status=%d body=%q", metadataResponse.Code, metadataResponse.Body.String())
 	}
-	if err := broker.SetDevicePackage(t.Context(), "phone-1", "dev.migi.pilot", handlerTestSigner); err != nil {
+	var downloadedMetadata events.Release
+	if err := json.Unmarshal(metadataResponse.Body.Bytes(), &downloadedMetadata); err != nil {
 		t.Fatal(err)
 	}
-	visible, err := eventForDevice(t.Context(), broker, "phone-1", replay[0])
-	if err != nil || visible.Artifact == nil || visible.Artifact.ID != release.ArtifactID {
-		t.Fatalf("authorized release event = %#v, error %v", visible, err)
+	if downloadedMetadata.SignerSHA256 != handlerTestSigner {
+		t.Fatalf("legacy signer metadata=%q", downloadedMetadata.SignerSHA256)
 	}
 	get := httptest.NewRequest(http.MethodGet, "/v1/releases/"+release.ArtifactID+"/apk", nil)
 	get.Header.Set("Authorization", "Bearer "+base64.RawURLEncoding.EncodeToString(deviceToken))
@@ -162,8 +162,7 @@ func TestReleaseUploadAndAuthorizedDownload(t *testing.T) {
 	conflictBody, conflictContentType := releaseMultipartMetadata(
 		t,
 		[]byte("fake apk bytes"),
-		`{"package_name":"dev.migi.pilot","version_code":1,"sha256":"`+
-			handlerTestDigest+`","release_notes":"different"}`,
+		`{"release_notes":"different"}`,
 	)
 	conflict := httptest.NewRequest(http.MethodPost, "/v1/releases", conflictBody)
 	conflict.Header.Set("Content-Type", conflictContentType)
@@ -232,9 +231,6 @@ func TestReleaseUploadRejectsOversizeWithoutEvent(t *testing.T) {
 	if err := broker.CreatePublisherToken(t.Context(), tokenID, "pilot-builder", tokenHash[:]); err != nil {
 		t.Fatal(err)
 	}
-	if err := broker.SetPublisherPackage(t.Context(), tokenID, "dev.migi.pilot", handlerTestSigner); err != nil {
-		t.Fatal(err)
-	}
 	body, contentType := releaseMultipart(t, []byte("too large"))
 	request := httptest.NewRequest(http.MethodPost, "/v1/releases", body)
 	request.Header.Set("Content-Type", contentType)
@@ -283,8 +279,7 @@ func releaseMultipart(t *testing.T, apk []byte) (*bytes.Buffer, string) {
 	return releaseMultipartMetadata(
 		t,
 		apk,
-		`{"package_name":"dev.migi.pilot","version_code":1,"sha256":"`+
-			handlerTestDigest+`","release_notes":"first"}`,
+		`{"release_notes":"first"}`,
 	)
 }
 

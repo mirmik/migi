@@ -46,15 +46,16 @@ type releaseStore struct {
 
 type apkInspector interface {
 	Inspect(context.Context, string) (apkinspect.Info, error)
+	SigningCertificateSHA256(context.Context, string) (string, error)
 }
 
 type releaseMetadata struct {
-	PackageName    string `json:"package_name"`
-	VersionCode    int64  `json:"version_code"`
-	SHA256         string `json:"sha256"`
-	ReleaseNotes   string `json:"release_notes,omitempty"`
-	SourceRevision string `json:"source_revision,omitempty"`
-	BuildID        string `json:"build_id,omitempty"`
+	LegacyPackageName string `json:"package_name,omitempty"`
+	LegacyVersionCode int64  `json:"version_code,omitempty"`
+	LegacySHA256      string `json:"sha256,omitempty"`
+	ReleaseNotes      string `json:"release_notes,omitempty"`
+	SourceRevision    string `json:"source_revision,omitempty"`
+	BuildID           string `json:"build_id,omitempty"`
 }
 
 type publisherContextKey struct{}
@@ -240,12 +241,6 @@ func (s *releaseStore) publishHandler() http.HandlerFunc {
 			http.Error(w, "APK verification failed: "+err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		if metadata.PackageName != info.PackageName ||
-			metadata.VersionCode != info.VersionCode ||
-			!strings.EqualFold(metadata.SHA256, info.SHA256) {
-			http.Error(w, "publisher assertions do not match APK", http.StatusConflict)
-			return
-		}
 		draft := events.ReleaseDraft{
 			Release: events.Release{
 				PackageName:    info.PackageName,
@@ -268,7 +263,9 @@ func (s *releaseStore) publishHandler() http.HandlerFunc {
 		defer s.commitMu.Unlock()
 		replayed, found, err := s.broker.ReplayRelease(ctx, draft)
 		if err != nil {
-			if errors.Is(err, events.ErrReleaseConflict) {
+			if errors.Is(err, events.ErrPublisherUnauthorized) {
+				writePublisherUnauthorized(w)
+			} else if errors.Is(err, events.ErrReleaseConflict) {
 				http.Error(w, err.Error(), http.StatusConflict)
 			} else {
 				slog.Error("failed to replay release publication", "error", err)
@@ -277,6 +274,7 @@ func (s *releaseStore) publishHandler() http.HandlerFunc {
 			return
 		}
 		if found {
+			replayed.SignerSHA256 = info.SignerSHA256
 			writeJSON(w, http.StatusCreated, replayed)
 			return
 		}
@@ -302,9 +300,9 @@ func (s *releaseStore) publishHandler() http.HandlerFunc {
 		if err != nil {
 			_ = os.Remove(finalPath)
 			switch {
-			case errors.Is(err, events.ErrPackageUnauthorized):
-				http.Error(w, "publisher is not authorized for package or signer", http.StatusForbidden)
-			case errors.Is(err, events.ErrReleaseVersion), errors.Is(err, events.ErrReleaseConflict):
+			case errors.Is(err, events.ErrPublisherUnauthorized):
+				writePublisherUnauthorized(w)
+			case errors.Is(err, events.ErrReleaseConflict):
 				http.Error(w, err.Error(), http.StatusConflict)
 			default:
 				slog.Error("failed to publish release", "error", err)
@@ -448,6 +446,16 @@ func (s *releaseStore) releaseHandler(apk bool) http.HandlerFunc {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		if !apk {
+			path := filepath.Join(s.root, release.StorageName)
+			signerSHA256, err := s.inspector.SigningCertificateSHA256(r.Context(), path)
+			if err != nil {
+				slog.Error("failed to inspect committed APK signer",
+					"artifact_id", artifactID, "error", err,
+				)
+				http.Error(w, "artifact signature is unavailable", http.StatusInternalServerError)
+				return
+			}
+			release.SignerSHA256 = signerSHA256
 			writeJSON(w, http.StatusOK, release)
 			return
 		}

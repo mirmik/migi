@@ -121,7 +121,6 @@ trap 'rm -rf "$migi_publish_tmp"' EXIT HUP INT TERM
 "$migi_publish_tmp/migi-publish" \
 	-config "$migi_publisher_config" \
 	-apk "$migi_apk" \
-	-version-code "$migi_version_code" \
 	-notes "$migi_notes" \
 	-source-revision "$migi_source_revision" \
 	-build-id "$migi_build_id"

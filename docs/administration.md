@@ -69,11 +69,10 @@ expose the unauthenticated `-ingest-listen` port. Agent tokens are shown once,
 stored only as hashes, and can be revoked independently. See
 [`agent-hooks.md`](agent-hooks.md) for the client contract.
 
-Release publishers are a separate credential namespace. Creating one binds it
-to exactly one package and signing-certificate SHA-256; an ordinary agent token
-cannot publish APKs. A paired device also needs an explicit package/signer
-authorization before it can resolve or download a release. Plain publisher
-tokens are shown once and should be saved in a mode-0600 file. See
+Release publishers are a separate credential namespace. A valid publisher
+token may upload any valid signed APK; ordinary agent tokens cannot publish
+APKs. Every active paired device can resolve and download application releases.
+Plain publisher tokens are shown once and should be saved in a mode-0600 file. See
 [`development.md`](development.md#publish-the-pilot-apk) for the pinned
 publisher client and [`android-app-delivery-test.md`](android-app-delivery-test.md)
 for the device acceptance runbook.

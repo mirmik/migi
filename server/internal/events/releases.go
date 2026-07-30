@@ -142,60 +142,6 @@ ORDER BY created_at, token_id`)
 	return result, rows.Err()
 }
 
-func (j *SQLiteJournal) SetPublisherPackage(
-	ctx context.Context,
-	tokenID, packageName, signerSHA256 string,
-) error {
-	if !validPackagePolicy(packageName, signerSHA256) {
-		return ErrPackageUnauthorized
-	}
-	result, err := j.db.ExecContext(ctx, `
-INSERT INTO publisher_packages(token_id, package_name, signer_sha256)
-SELECT token_id, ?, ? FROM publisher_tokens
-WHERE token_id = ? AND revoked_at IS NULL
-ON CONFLICT(token_id, package_name) DO UPDATE SET signer_sha256 = excluded.signer_sha256`,
-		packageName, signerSHA256, tokenID,
-	)
-	if err != nil {
-		return fmt.Errorf("set publisher package: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read publisher package result: %w", err)
-	}
-	if changed != 1 {
-		return ErrPublisherUnauthorized
-	}
-	return nil
-}
-
-func (j *SQLiteJournal) SetDevicePackage(
-	ctx context.Context,
-	deviceID, packageName, signerSHA256 string,
-) error {
-	if !validPackagePolicy(packageName, signerSHA256) {
-		return ErrPackageUnauthorized
-	}
-	result, err := j.db.ExecContext(ctx, `
-INSERT INTO device_packages(device_id, package_name, signer_sha256)
-SELECT device_id, ?, ? FROM devices
-WHERE device_id = ? AND revoked_at IS NULL
-ON CONFLICT(device_id, package_name) DO UPDATE SET signer_sha256 = excluded.signer_sha256`,
-		packageName, signerSHA256, deviceID,
-	)
-	if err != nil {
-		return fmt.Errorf("set device package: %w", err)
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read device package result: %w", err)
-	}
-	if changed != 1 {
-		return ErrUnauthorized
-	}
-	return nil
-}
-
 func (j *SQLiteJournal) PublishRelease(
 	ctx context.Context,
 	draft ReleaseDraft,
@@ -209,6 +155,18 @@ func (j *SQLiteJournal) PublishRelease(
 	}
 	defer tx.Rollback()
 
+	var authorized int
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM publisher_tokens
+    WHERE token_id = ? AND revoked_at IS NULL
+)`, draft.PublisherTokenID).Scan(&authorized); err != nil {
+		return Release{}, Event{}, false, fmt.Errorf("authorize release publisher: %w", err)
+	}
+	if authorized == 0 {
+		return Release{}, Event{}, false, ErrPublisherUnauthorized
+	}
+
 	existing, event, found, err := releaseByIdempotency(ctx, tx, draft.PublisherTokenID, draft.IdempotencyKey)
 	if err != nil {
 		return Release{}, Event{}, false, err
@@ -218,31 +176,6 @@ func (j *SQLiteJournal) PublishRelease(
 			return existing, event, false, nil
 		}
 		return Release{}, Event{}, false, ErrReleaseConflict
-	}
-
-	var authorized int
-	if err := tx.QueryRowContext(ctx, `
-SELECT EXISTS(
-    SELECT 1
-    FROM publisher_tokens t
-    JOIN publisher_packages p ON p.token_id = t.token_id
-    WHERE t.token_id = ? AND t.revoked_at IS NULL
-      AND p.package_name = ? AND p.signer_sha256 = ?
-)`, draft.PublisherTokenID, draft.PackageName, draft.SignerSHA256).Scan(&authorized); err != nil {
-		return Release{}, Event{}, false, fmt.Errorf("authorize release package: %w", err)
-	}
-	if authorized == 0 {
-		return Release{}, Event{}, false, ErrPackageUnauthorized
-	}
-	var latest int64
-	if err := tx.QueryRowContext(ctx,
-		`SELECT coalesce(max(version_code), 0) FROM releases WHERE package_name = ?`,
-		draft.PackageName,
-	).Scan(&latest); err != nil {
-		return Release{}, Event{}, false, fmt.Errorf("read latest release version: %w", err)
-	}
-	if draft.VersionCode <= latest {
-		return Release{}, Event{}, false, ErrReleaseVersion
 	}
 
 	createdAt := time.Now().UTC()
@@ -259,7 +192,7 @@ SELECT EXISTS(
 	event = Event{
 		Kind:      "app.update_available",
 		Agent:     draft.Publisher,
-		Title:     "Application update available",
+		Title:     "Application release available",
 		Body:      fmt.Sprintf("%s (%d)", draft.VersionName, draft.VersionCode),
 		CreatedAt: createdAt,
 		Artifact:  &artifact,
@@ -285,13 +218,12 @@ VALUES(?, ?, ?, ?, ?, ?)`,
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO releases(
     artifact_id, publisher_token_id, publisher_name, package_name,
-    version_code, version_name, size, sha256, signer_sha256, storage_name,
+    version_code, version_name, size, sha256, storage_name,
     release_notes, source_revision, build_id, idempotency_key, event_id, created_at
-) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		release.ArtifactID, draft.PublisherTokenID, release.Publisher, release.PackageName,
 		release.VersionCode, release.VersionName, release.Size, release.SHA256,
-		release.SignerSHA256, release.StorageName, release.ReleaseNotes,
-		release.SourceRevision, release.BuildID, draft.IdempotencyKey,
+		release.StorageName, release.ReleaseNotes, release.SourceRevision, release.BuildID, draft.IdempotencyKey,
 		release.EventID, createdAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -307,6 +239,17 @@ func (j *SQLiteJournal) ReplayRelease(
 	ctx context.Context,
 	draft ReleaseDraft,
 ) (Release, bool, error) {
+	var authorized int
+	if err := j.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM publisher_tokens
+    WHERE token_id = ? AND revoked_at IS NULL
+)`, draft.PublisherTokenID).Scan(&authorized); err != nil {
+		return Release{}, false, fmt.Errorf("authorize release replay: %w", err)
+	}
+	if authorized == 0 {
+		return Release{}, false, ErrPublisherUnauthorized
+	}
 	existing, _, found, err := releaseByIdempotency(
 		ctx, j.db, draft.PublisherTokenID, draft.IdempotencyKey,
 	)
@@ -327,18 +270,16 @@ func (j *SQLiteJournal) ReleaseForDevice(
 	var createdAt string
 	err := j.db.QueryRowContext(ctx, `
 SELECT r.artifact_id, r.package_name, r.version_code, r.version_name,
-       r.size, r.sha256, r.signer_sha256, r.publisher_name, r.created_at,
+       r.size, r.sha256, r.publisher_name, r.created_at,
        r.release_notes, r.source_revision, r.build_id, r.storage_name, r.event_id
 FROM releases r
 JOIN devices d ON d.device_id = ?
-JOIN device_packages p ON p.device_id = d.device_id
-    AND p.package_name = r.package_name AND p.signer_sha256 = r.signer_sha256
 WHERE r.artifact_id = ? AND d.revoked_at IS NULL`,
 		deviceID, artifactID,
 	).Scan(
 		&release.ArtifactID, &release.PackageName, &release.VersionCode,
-		&release.VersionName, &release.Size, &release.SHA256, &release.SignerSHA256,
-		&release.Publisher, &createdAt, &release.ReleaseNotes,
+		&release.VersionName, &release.Size, &release.SHA256, &release.Publisher,
+		&createdAt, &release.ReleaseNotes,
 		&release.SourceRevision, &release.BuildID, &release.StorageName, &release.EventID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -387,7 +328,7 @@ func releaseByIdempotency(
 	var event Event
 	err := queryer.QueryRowContext(ctx, `
 SELECT r.artifact_id, r.package_name, r.version_code, r.version_name,
-       r.size, r.sha256, r.signer_sha256, r.publisher_name, r.created_at,
+       r.size, r.sha256, r.publisher_name, r.created_at,
        r.release_notes, r.source_revision, r.build_id, r.storage_name, r.event_id,
        e.kind, e.agent, e.title, e.body, e.created_at, e.artifact_json
 FROM releases r
@@ -396,8 +337,8 @@ WHERE r.publisher_token_id = ? AND r.idempotency_key = ?`,
 		publisherTokenID, key,
 	).Scan(
 		&release.ArtifactID, &release.PackageName, &release.VersionCode,
-		&release.VersionName, &release.Size, &release.SHA256, &release.SignerSHA256,
-		&release.Publisher, &createdAt, &release.ReleaseNotes,
+		&release.VersionName, &release.Size, &release.SHA256, &release.Publisher,
+		&createdAt, &release.ReleaseNotes,
 		&release.SourceRevision, &release.BuildID, &release.StorageName, &release.EventID,
 		&event.Kind, &event.Agent, &event.Title, &event.Body, &eventCreatedAt, &artifactJSON,
 	)
@@ -431,7 +372,6 @@ func validateReleaseDraft(draft ReleaseDraft) error {
 		draft.VersionName == "" || len(draft.VersionName) > 128 ||
 		draft.Size <= 0 ||
 		!digestPattern.MatchString(draft.SHA256) ||
-		!digestPattern.MatchString(draft.SignerSHA256) ||
 		draft.PublisherTokenID == "" || draft.Publisher == "" ||
 		draft.IdempotencyKey == "" || len(draft.IdempotencyKey) > 128 ||
 		draft.StorageName == "" || strings.ContainsAny(draft.StorageName, `/\`) ||
@@ -442,17 +382,12 @@ func validateReleaseDraft(draft ReleaseDraft) error {
 	return nil
 }
 
-func validPackagePolicy(packageName, signerSHA256 string) bool {
-	return packagePattern.MatchString(packageName) && digestPattern.MatchString(signerSHA256)
-}
-
 func sameReleaseAssertions(existing, proposed Release) bool {
 	return existing.PackageName == proposed.PackageName &&
 		existing.VersionCode == proposed.VersionCode &&
 		existing.VersionName == proposed.VersionName &&
 		existing.Size == proposed.Size &&
 		existing.SHA256 == proposed.SHA256 &&
-		existing.SignerSHA256 == proposed.SignerSHA256 &&
 		existing.ReleaseNotes == proposed.ReleaseNotes &&
 		existing.SourceRevision == proposed.SourceRevision &&
 		existing.BuildID == proposed.BuildID
