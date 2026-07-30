@@ -56,6 +56,31 @@ internal object NativeQuicClient {
         fileDescriptor: Int,
         maxBytes: Long,
     ): String
+
+    external fun listSharedFiles(
+        endpoint: String,
+        certificatePin: String,
+        credential: String,
+    ): String
+
+    external fun uploadSharedFile(
+        endpoint: String,
+        certificatePin: String,
+        credential: String,
+        name: String,
+        mime: String,
+        fileDescriptor: Int,
+        size: Long,
+    ): String
+
+    external fun downloadSharedFile(
+        endpoint: String,
+        certificatePin: String,
+        credential: String,
+        fileID: String,
+        fileDescriptor: Int,
+        maxBytes: Long,
+    ): String
 }
 
 internal class NativeCallbacks(
@@ -176,7 +201,15 @@ class EventStreamClient(
                     .onFailure { Log.e(TAG, "Failed to notify for durable release ${event.artifact.id}", it) }
                 event.id
             } else {
-                onEvent(event)
+                if (event.kind == FILE_EVENT_KIND) {
+                    context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
+                        .edit()
+                        .putLong(MainActivity.KEY_FILES_GENERATION, event.id)
+                        .apply()
+                }
+                if (event.kind != FILE_EVENT_KIND || event.agent != "device:$deviceID") {
+                    onEvent(event)
+                }
                 if (releases.advanceEventCursor(event.id)) event.id else 0
             }
         }.getOrElse {
@@ -205,6 +238,7 @@ class EventStreamClient(
     companion object {
         private const val RELEASE_EVENT_KIND = "app.update_available"
         private const val FILTERED_EVENT_KIND = "internal.filtered"
+        private const val FILE_EVENT_KIND = "file.available"
         private const val TAG = "MigiEventStream"
     }
 }

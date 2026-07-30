@@ -62,7 +62,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# Android Build Tools apksigner runs on the JVM, which requires executable
+# runtime code pages even for the version probe performed at server startup.
+MemoryDenyWriteExecute=no
 RemoveIPC=yes
 KeyringMode=private
 ReadOnlyPaths=%E/migi %h/.local/libexec/migi

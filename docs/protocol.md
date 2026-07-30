@@ -45,6 +45,10 @@ kinds are:
 
 Unknown kinds must remain displayable and must not terminate the stream.
 
+`file.available` announces that a file has been committed to the shared
+exchange. Its `body` is the file ID. File bytes and metadata are resolved
+through the file endpoints below; they are never embedded in the event stream.
+
 ### Pager message
 
 `pager.message` updates the single server-wide text line shown inside the Migi
@@ -137,3 +141,51 @@ GET /healthz
 
 Returns `200 OK` and a small JSON object after checking that the SQLite journal
 is reachable. Health does not imply that a particular device is connected.
+
+## Shared files
+
+Paired devices use these endpoints over authenticated HTTP/3. The same routes
+are available without authentication on the trusted loopback ingest listener
+for local agents.
+
+Upload a non-empty file as the request body:
+
+```http
+POST /v1/files
+Authorization: Bearer <device-token>
+Content-Type: image/png
+Content-Length: 483921
+X-Migi-Filename: screenshot.png
+```
+
+The server streams the body into staging storage, enforces the configured
+per-file and total limits, computes SHA-256, atomically commits the object and
+then appends a `file.available` event. Success returns `201 Created`:
+
+```json
+{
+  "id": "ed18f00dc8d94b33b43ff0cf5e87f1d0",
+  "name": "screenshot.png",
+  "mime": "image/png",
+  "size": 483921,
+  "sha256": "0123456789abcdef...",
+  "source": "device:phone-1",
+  "created_at": "2026-07-30T09:00:00Z",
+  "expires_at": "2026-08-06T09:00:00Z"
+}
+```
+
+The display name never becomes a filesystem path. Storage names are random
+IDs, and expired objects are removed while the store is reconciled or listed.
+The exchange holds at most 512 live objects in addition to its byte limits.
+
+```http
+GET /v1/files
+GET /v1/files/{fileID}
+GET /v1/files/{fileID}/content
+```
+
+The list is newest-first. Content responses carry exact `Content-Length`,
+`Content-Type`, `Content-Disposition`, and `X-Content-SHA256` headers. Clients
+must bound the download and verify both its length and digest before exposing
+it to another application.

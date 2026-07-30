@@ -69,6 +69,12 @@ and `aapt2` paths in `migi.env`. Keep both values empty to disable the feature.
 The server fails closed when only one tool is configured or when committed
 release metadata references a missing artifact.
 
+The service deliberately sets `MemoryDenyWriteExecute=no`: `apksigner` is a
+pinned Android SDK JAR and its JVM cannot initialize while executable runtime
+code pages are prohibited. The remaining namespace, filesystem, privilege,
+resource, syscall, and address-family restrictions stay enabled. Do not point
+the verifier options at publisher-controlled executables.
+
 ## Validate and build locally
 
 Run the repository-owned checks before preparing deployment artifacts:

@@ -96,6 +96,7 @@ go run ./cmd/migi-server \
   -agent-endpoint https://203.0.113.10:10444 \
   -db ./migi.db \
   -artifact-dir ./migi-artifacts \
+  -file-dir ./migi-files \
   -apksigner "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
   -aapt2 "$ANDROID_HOME/build-tools/36.0.0/aapt2" \
   -cert /path/to/fullchain.pem \
@@ -153,6 +154,48 @@ curl -X POST http://127.0.0.1:8787/v1/events \
 Production deployment must keep `/v1/events` submission on a trusted interface
 or add authentication before exposing it.
 
+### Exchange files with the phone
+
+Build the loopback-only agent client:
+
+```bash
+cd server
+go build -o ./bin/migi-file ./cmd/migi-file
+```
+
+Upload a result for the phone, inspect the common inbox, or download a phone
+upload:
+
+```bash
+./bin/migi-file -source builder-1 put ./result.png
+./bin/migi-file list
+./bin/migi-file -output ./phone-screenshot.png get FILE_ID
+```
+
+The default endpoint is `http://127.0.0.1:8787`. It is the trusted local
+listener and must not be exposed publicly. On Android, use **Share → Migi** or
+the **Share a file** button. Downloads are written through Android's system
+document picker.
+
+### Install the Codex file-exchange skill
+
+The repository contains `skills/migi-file-exchange`. Install it for the current
+user with:
+
+```bash
+./scripts/install-migi-file-exchange-skill
+```
+
+The script creates the idempotent symlink
+`~/.agents/skills/migi-file-exchange` pointing at the repository copy. It
+refuses to replace an existing directory or a link to another target. Codex
+normally detects skill changes automatically; restart the session if
+`$migi-file-exchange` does not appear.
+
+The skill's wrapper prefers `migi-file` from `PATH`, then
+`server/bin/migi-file`, and finally runs `go run ./cmd/migi-file` from this
+repository.
+
 Open `http://127.0.0.1:8788/admin/` on the server to view status, create a
 pairing QR, and revoke devices. From another trusted machine, forward it over
 SSH instead of exposing the panel:
@@ -182,6 +225,7 @@ go test -race ./...
 go vet ./...
 go build -o ./bin/migi-server ./cmd/migi-server
 go build -o ./bin/migi-publish ./cmd/migi-publish
+go build -o ./bin/migi-file ./cmd/migi-file
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -mode binary ./bin/migi-server
 go version -m ./bin/migi-server

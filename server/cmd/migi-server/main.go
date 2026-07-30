@@ -42,6 +42,10 @@ func run() error {
 	if artifactDirectoryDefault == "" {
 		artifactDirectoryDefault = "migi-artifacts"
 	}
+	transferDirectoryDefault := os.Getenv("MIGI_FILE_DIRECTORY")
+	if transferDirectoryDefault == "" {
+		transferDirectoryDefault = "migi-files"
+	}
 	listen := flag.String("listen", ":8443", "UDP address for the HTTP/3 server")
 	ingestListen := flag.String("ingest-listen", "127.0.0.1:8787", "trusted local TCP address for event submission")
 	agentListen := flag.String("agent-listen", "", "public TLS/TCP address for authenticated agent event submission; empty disables it")
@@ -52,6 +56,10 @@ func run() error {
 	artifactDirectory := flag.String("artifact-dir", artifactDirectoryDefault, "immutable APK artifact directory")
 	artifactMaxBytes := flag.Int64("artifact-max-bytes", defaultMaxAPKBytes, "maximum bytes per uploaded APK")
 	artifactTotalBytes := flag.Int64("artifact-total-bytes", defaultMaxArtifactBytes, "maximum total artifact bytes before publication stops")
+	transferDirectory := flag.String("file-dir", transferDirectoryDefault, "shared file directory")
+	transferMaxBytes := flag.Int64("file-max-bytes", defaultTransferMaxBytes, "maximum bytes per shared file")
+	transferTotalBytes := flag.Int64("file-total-bytes", defaultTransferTotalBytes, "maximum total shared file bytes")
+	transferTTL := flag.Duration("file-ttl", defaultTransferTTL, "shared file retention period")
 	apksignerPath := flag.String("apksigner", os.Getenv("MIGI_APKSIGNER"), "path to pinned Android build-tools apksigner; empty disables release delivery")
 	aapt2Path := flag.String("aapt2", os.Getenv("MIGI_AAPT2"), "path to pinned Android build-tools aapt2; empty disables release delivery")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")
@@ -68,6 +76,18 @@ func run() error {
 	}
 	broker := events.NewBroker(journal)
 	defer broker.Close()
+	transfers, err := newTransferStore(
+		broker, *transferDirectory, *transferMaxBytes, *transferTotalBytes, *transferTTL,
+	)
+	if err != nil {
+		return fmt.Errorf("configure shared file storage: %w", err)
+	}
+	slog.Info("shared file exchange enabled",
+		"directory", transfers.root,
+		"max_file_bytes", transfers.maxBytes,
+		"max_total_bytes", transfers.totalBytes,
+		"ttl", transfers.ttl,
+	)
 	var releases *releaseStore
 	if *apksignerPath != "" || *aapt2Path != "" {
 		inspector, err := apkinspect.New(apkinspect.Config{
@@ -112,7 +132,7 @@ func run() error {
 	}
 
 	publicSecurity := newPublicSecurity()
-	publicMux := newPublicMuxWithReleases(broker, releases, publicSecurity)
+	publicMux := newPublicMuxWithStores(broker, releases, transfers, publicSecurity)
 	quicConfig := newPublicQUICConfig()
 	if os.Getenv("QLOGDIR") != "" {
 		quicConfig.Tracer = qlog.DefaultConnectionTracer
@@ -154,7 +174,7 @@ func run() error {
 	}
 	ingestServer := http.Server{
 		Addr:              *ingestListen,
-		Handler:           newIngestMux(broker),
+		Handler:           newIngestMuxWithTransfers(broker, transfers),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
@@ -177,6 +197,7 @@ func run() error {
 	if *adminListen != "" {
 		adminHandler, err := admin.New(admin.Config{
 			Broker:                 broker,
+			Files:                  transfers,
 			PublicEndpoint:         *publicEndpoint,
 			CertificateFingerprint: fingerprint,
 			PublicListen:           *listen,
@@ -289,6 +310,15 @@ func newPublicMuxWithSecurity(broker *events.Broker, security *publicSecurity) h
 }
 
 func newPublicMuxWithReleases(broker *events.Broker, releases *releaseStore, security *publicSecurity) http.Handler {
+	return newPublicMuxWithStores(broker, releases, nil, security)
+}
+
+func newPublicMuxWithStores(
+	broker *events.Broker,
+	releases *releaseStore,
+	transfers *transferStore,
+	security *publicSecurity,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/pair", security.rateLimit("pair", security.pairRequests, pairHandler(broker)))
@@ -298,13 +328,34 @@ func newPublicMuxWithReleases(broker *events.Broker, releases *releaseStore, sec
 		mux.Handle("GET /v1/releases/{artifactID}", authenticateDevice(broker, security, releases.releaseHandler(false)))
 		mux.Handle("GET /v1/releases/{artifactID}/apk", authenticateDevice(broker, security, releases.releaseHandler(true)))
 	}
+	if transfers != nil {
+		transfers.routes(mux, func(next http.Handler) http.Handler {
+			return authenticateDevice(broker, security, next)
+		}, func(r *http.Request) string {
+			device, _ := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+			return "device:" + device.ID
+		})
+	}
 	return security.limitConcurrency(mux)
 }
 
 func newIngestMux(broker *events.Broker) http.Handler {
+	return newIngestMuxWithTransfers(broker, nil)
+}
+
+func newIngestMuxWithTransfers(broker *events.Broker, transfers *transferStore) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(broker))
 	mux.HandleFunc("POST /v1/events", publishHandler(broker))
+	if transfers != nil {
+		transfers.routes(mux, func(next http.Handler) http.Handler { return next }, func(r *http.Request) string {
+			source := r.Header.Get("X-Migi-Source")
+			if source == "" {
+				return "agent"
+			}
+			return "agent:" + source
+		})
+	}
 	return mux
 }
 

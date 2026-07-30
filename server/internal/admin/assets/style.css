@@ -22,6 +22,8 @@ select, input, button { border-radius: 8px; border: 1px solid #3a4760; padding: 
 input[type="text"] { width: min(520px, 70vw); }
 button { cursor: pointer; background: #4b70e2; border-color: #6688ef; font-weight: 650; }
 button:hover { filter: brightness(1.1); }.danger { background: #572d37; border-color: #8f4454; }
+.button-link { display: inline-block; padding: 8px 11px; border: 1px solid #6688ef; border-radius: 8px; background: #4b70e2; color: #edf2fa; font-weight: 650; text-decoration: none; }
+.button-link:hover { filter: brightness(1.1); }
 .pairing { margin-top: 20px; }.pairing img { display: block; width: min(384px, 100%); height: auto; background: white; border-radius: 12px; }
 dl { display: grid; grid-template-columns: 150px 1fr; gap: 10px 14px; margin: 0; }
 dt { color: #7f8da2; } dd { margin: 0; overflow-wrap: anywhere; }.fingerprint { font-family: ui-monospace, monospace; font-size: 12px; }

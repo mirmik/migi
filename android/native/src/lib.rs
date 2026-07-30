@@ -6,7 +6,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::{FromRawFd, RawFd};
 use std::time::{Duration, Instant};
@@ -167,7 +167,134 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadRelease(
             &endpoint,
             &expected_pin,
             &credential,
-            &artifact_id,
+            &format!("/v1/releases/{artifact_id}/apk"),
+            &mut destination,
+            max_bytes as u64,
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_listSharedFiles(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        small_request(
+            &endpoint,
+            &expected_pin,
+            "GET",
+            "/v1/files",
+            None,
+            Some(&credential),
+            "200",
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadSharedFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    name: JString,
+    mime: JString,
+    file_descriptor: jint,
+    size: jlong,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let name: String = env.get_string(&name)?.into();
+        let mime: String = env.get_string(&mime)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_shared_file_name(&name)?;
+        validate_mime(&mime)?;
+        if file_descriptor < 0 || size <= 0 {
+            return Err(invalid("valid source descriptor and file size are required"));
+        }
+        let duplicated = unsafe { dup(file_descriptor) };
+        if duplicated < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let mut source = unsafe { File::from_raw_fd(duplicated) };
+        upload_request(
+            &endpoint,
+            &expected_pin,
+            &credential,
+            &name,
+            &mime,
+            &mut source,
+            size as u64,
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadSharedFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    file_id: JString,
+    file_descriptor: jint,
+    max_bytes: jlong,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let file_id: String = env.get_string(&file_id)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_shared_file_id(&file_id)?;
+        if file_descriptor < 0 || max_bytes <= 0 {
+            return Err(invalid("valid destination descriptor and size limit are required"));
+        }
+        let duplicated = unsafe { dup(file_descriptor) };
+        if duplicated < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let mut destination = unsafe { File::from_raw_fd(duplicated) };
+        download_request(
+            &endpoint,
+            &expected_pin,
+            &credential,
+            &format!("/v1/files/{file_id}/content"),
             &mut destination,
             max_bytes as u64,
         )
@@ -504,11 +631,179 @@ fn small_request(
     }
 }
 
+fn upload_request(
+    endpoint: &str,
+    expected_pin: &[u8; 32],
+    credential: &str,
+    name: &str,
+    mime: &str,
+    source: &mut File,
+    size: u64,
+) -> Result<String, AnyError> {
+    let url = Url::parse(endpoint)?;
+    if url.scheme() != "https" {
+        return Err(invalid("endpoint must use https"));
+    }
+    let host = url.host_str().ok_or_else(|| invalid("endpoint has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let peer_addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| invalid("endpoint host did not resolve"))?;
+    let bind_addr = match peer_addr {
+        SocketAddr::V4(_) => "0.0.0.0:0",
+        SocketAddr::V6(_) => "[::]:0",
+    };
+    let socket = UdpSocket::bind(bind_addr)?;
+    socket.set_read_timeout(Some(CALLBACK_POLL))?;
+    let local_addr = socket.local_addr()?;
+    let mut config = quic_config()?;
+    let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
+    rand::rng().fill_bytes(&mut scid_bytes);
+    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
+    let h3_config = quiche::h3::Config::new()?;
+    let mut http3 = None;
+    let mut certificate_checked = false;
+    let mut request_stream = None;
+    let mut response_status = None::<String>;
+    let mut response_body = Vec::new();
+    let mut sent = 0_u64;
+    let mut pending = Vec::<u8>::new();
+    let mut pending_offset = 0_usize;
+    let mut input = [0_u8; 65_535];
+    let mut output = [0_u8; MAX_DATAGRAM_SIZE];
+    let deadline = Instant::now() + Duration::from_secs(15 * 60);
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err("file upload timed out".into());
+        }
+        flush_packets(&socket, &mut connection, &mut output)?;
+        match socket.recv_from(&mut input) {
+            Ok((length, from)) => {
+                let info = quiche::RecvInfo { from, to: local_addr };
+                match connection.recv(&mut input[..length], info) {
+                    Ok(_) | Err(quiche::Error::Done) => {}
+                    Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
+                }
+            }
+            Err(error)
+                if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+            {
+                if connection.timeout() == Some(Duration::ZERO) {
+                    connection.on_timeout();
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if connection.is_closed() {
+            return Err("QUIC connection closed during file upload".into());
+        }
+        if connection.is_established() && !certificate_checked {
+            verify_certificate_pin(&connection, expected_pin)?;
+            certificate_checked = true;
+            http3 = Some(quiche::h3::Connection::with_transport(
+                &mut connection,
+                &h3_config,
+            )?);
+        }
+        if certificate_checked && request_stream.is_none() {
+            let mut headers = request_headers(
+                "POST",
+                &url,
+                "/v1/files",
+                None,
+                Some(credential),
+            );
+            headers.push(quiche::h3::Header::new(b"content-type", mime.as_bytes()));
+            headers.push(quiche::h3::Header::new(
+                b"content-length",
+                size.to_string().as_bytes(),
+            ));
+            headers.push(quiche::h3::Header::new(
+                b"x-migi-filename",
+                name.as_bytes(),
+            ));
+            request_stream = Some(
+                http3
+                    .as_mut()
+                    .unwrap()
+                    .send_request(&mut connection, &headers, false)?,
+            );
+        }
+        if let (Some(http3), Some(stream)) = (http3.as_mut(), request_stream) {
+            if sent < size {
+                if pending_offset == pending.len() {
+                    let remaining = (size - sent).min(64 * 1024) as usize;
+                    pending.resize(remaining, 0);
+                    source.read_exact(&mut pending)?;
+                    pending_offset = 0;
+                }
+                let final_chunk = sent + (pending.len() - pending_offset) as u64 == size;
+                match http3.send_body(
+                    &mut connection,
+                    stream,
+                    &pending[pending_offset..],
+                    final_chunk,
+                ) {
+                    Ok(written) => {
+                        pending_offset += written;
+                        sent += written as u64;
+                    }
+                    Err(quiche::h3::Error::Done) => {}
+                    Err(error) => return Err(format!("HTTP/3 upload failed: {error:?}").into()),
+                }
+            }
+            loop {
+                match http3.poll(&mut connection) {
+                    Ok((event_stream, quiche::h3::Event::Headers { list, .. }))
+                        if event_stream == stream =>
+                    {
+                        response_status = header_value(&list, b":status");
+                    }
+                    Ok((event_stream, quiche::h3::Event::Data)) if event_stream == stream => {
+                        while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                            if response_body.len() + read > 256 * 1024 {
+                                return Err("response is too large".into());
+                            }
+                            response_body.extend_from_slice(&input[..read]);
+                        }
+                    }
+                    Ok((event_stream, quiche::h3::Event::Finished)) if event_stream == stream => {
+                        if sent != size {
+                            return Err(invalid("server finished before upload completed"));
+                        }
+                        let status = response_status.as_deref().unwrap_or("unknown");
+                        let body = String::from_utf8(response_body)?;
+                        if status != "201" {
+                            return Err(format!(
+                                "file upload returned HTTP {status}: {}",
+                                body.trim()
+                            )
+                            .into());
+                        }
+                        return Ok(body);
+                    }
+                    Ok((event_stream, quiche::h3::Event::Reset(code)))
+                        if event_stream == stream =>
+                    {
+                        return Err(format!("file upload stream was reset ({code})").into());
+                    }
+                    Ok((_, _)) => {}
+                    Err(quiche::h3::Error::Done) => break,
+                    Err(error) => return Err(format!("HTTP/3 upload failed: {error:?}").into()),
+                }
+            }
+        }
+    }
+}
+
 fn download_request(
     endpoint: &str,
     expected_pin: &[u8; 32],
     credential: &str,
-    artifact_id: &str,
+    request_path: &str,
     destination: &mut File,
     max_bytes: u64,
 ) -> Result<String, AnyError> {
@@ -589,7 +884,7 @@ fn download_request(
             let headers = request_headers(
                 "GET",
                 &url,
-                &format!("/v1/releases/{artifact_id}/apk"),
+                request_path,
                 None,
                 Some(credential),
             );
@@ -887,6 +1182,35 @@ fn validate_artifact_id(value: &str) -> Result<(), AnyError> {
     Ok(())
 }
 
+fn validate_shared_file_id(value: &str) -> Result<(), AnyError> {
+    if value.len() != 32 || !value.chars().all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()) {
+        return Err(invalid("shared file ID is malformed"));
+    }
+    Ok(())
+}
+
+fn validate_shared_file_name(value: &str) -> Result<(), AnyError> {
+    if value.is_empty()
+        || value.as_bytes().len() > 255
+        || value.chars().any(|character| character.is_control() || character == '/' || character == '\\')
+    {
+        return Err(invalid("shared file name is malformed"));
+    }
+    Ok(())
+}
+
+fn validate_mime(value: &str) -> Result<(), AnyError> {
+    if value.is_empty()
+        || value.len() > 127
+        || !value.is_ascii()
+        || value.chars().any(|character| character.is_control() || character.is_whitespace())
+        || !value.contains('/')
+    {
+        return Err(invalid("shared file MIME type is malformed"));
+    }
+    Ok(())
+}
+
 fn hex_lower(value: &[u8]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -908,5 +1232,15 @@ mod tests {
     #[test]
     fn rejects_short_pin() {
         assert!(parse_pin("cafe").is_err());
+    }
+
+    #[test]
+    fn validates_shared_file_identifiers_and_headers() {
+        assert!(validate_shared_file_id("0123456789abcdef0123456789abcdef").is_ok());
+        assert!(validate_shared_file_id("../../etc/passwd").is_err());
+        assert!(validate_shared_file_name("screenshot.png").is_ok());
+        assert!(validate_shared_file_name("../screenshot.png").is_err());
+        assert!(validate_mime("image/png").is_ok());
+        assert!(validate_mime("image/png\r\nx-evil: yes").is_err());
     }
 }

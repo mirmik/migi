@@ -1,9 +1,13 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +18,69 @@ import (
 
 	"github.com/mirmik/migi/server/internal/events"
 )
+
+type fakeFileExchange struct {
+	files   []SharedFile
+	content map[string][]byte
+	max     int64
+}
+
+func (f *fakeFileExchange) ListSharedFiles(context.Context) ([]SharedFile, error) {
+	return append([]SharedFile(nil), f.files...), nil
+}
+
+func (f *fakeFileExchange) ShareFile(
+	_ context.Context,
+	name string,
+	contentType string,
+	source string,
+	body io.Reader,
+	size int64,
+) (SharedFile, error) {
+	if size > f.max {
+		return SharedFile{}, ErrFileTooLarge
+	}
+	content, err := io.ReadAll(io.LimitReader(body, f.max+1))
+	if err != nil {
+		return SharedFile{}, err
+	}
+	if int64(len(content)) != size {
+		return SharedFile{}, ErrFileLengthMismatch
+	}
+	digest := sha256.Sum256(content)
+	file := SharedFile{
+		ID:        "0123456789abcdef0123456789abcdef",
+		Name:      name,
+		MIME:      contentType,
+		Size:      size,
+		SHA256:    fmt.Sprintf("%x", digest),
+		Source:    source,
+		CreatedAt: time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC),
+		ExpiresAt: time.Date(2026, 8, 6, 9, 0, 0, 0, time.UTC),
+	}
+	f.files = append([]SharedFile{file}, f.files...)
+	if f.content == nil {
+		f.content = make(map[string][]byte)
+	}
+	f.content[file.ID] = content
+	return file, nil
+}
+
+func (f *fakeFileExchange) OpenSharedFile(
+	_ context.Context,
+	id string,
+) (SharedFile, io.ReadCloser, error) {
+	for _, file := range f.files {
+		if file.ID == id {
+			return file, io.NopCloser(bytes.NewReader(f.content[id])), nil
+		}
+	}
+	return SharedFile{}, nil, ErrFileNotFound
+}
+
+func (f *fakeFileExchange) MaxSharedFileBytes() int64 {
+	return f.max
+}
 
 func TestDashboardAndPairing(t *testing.T) {
 	handler, broker := newTestHandler(t)
@@ -80,6 +147,93 @@ func TestAdminRejectsInvalidCSRF(t *testing.T) {
 
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestAdminListsUploadsAndDownloadsSharedFiles(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	exchange := &fakeFileExchange{max: 1024, content: make(map[string][]byte)}
+	handler.config.Files = exchange
+
+	dashboard := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/admin/", nil))
+	if dashboard.Code != http.StatusOK ||
+		!strings.Contains(dashboard.Body.String(), "Shared files") ||
+		!strings.Contains(dashboard.Body.String(), "No shared files") {
+		t.Fatalf("file exchange dashboard = %d: %s", dashboard.Code, dashboard.Body.String())
+	}
+
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	if err := writer.WriteField("csrf_token", handler.csrfToken); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("file", "browser-note.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("from the web panel")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upload := httptest.NewRequest(http.MethodPost, "/admin/files", body)
+	upload.Header.Set("Content-Type", writer.FormDataContentType())
+	uploaded := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(uploaded, upload)
+	if uploaded.Code != http.StatusSeeOther {
+		t.Fatalf("upload returned %d: %s", uploaded.Code, uploaded.Body.String())
+	}
+	if len(exchange.files) != 1 || exchange.files[0].Name != "browser-note.txt" ||
+		exchange.files[0].Source != "admin" {
+		t.Fatalf("uploaded files = %#v", exchange.files)
+	}
+
+	dashboard = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/admin/", nil))
+	if !strings.Contains(dashboard.Body.String(), "browser-note.txt") ||
+		!strings.Contains(dashboard.Body.String(), "files/"+exchange.files[0].ID+"/content") {
+		t.Fatalf("dashboard does not show uploaded file: %s", dashboard.Body.String())
+	}
+
+	download := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(
+		download,
+		httptest.NewRequest(http.MethodGet, "/admin/files/"+exchange.files[0].ID+"/content", nil),
+	)
+	if download.Code != http.StatusOK || download.Body.String() != "from the web panel" {
+		t.Fatalf("download returned %d: %q", download.Code, download.Body.String())
+	}
+	if download.Header().Get("X-Content-SHA256") != exchange.files[0].SHA256 ||
+		!strings.Contains(download.Header().Get("Content-Disposition"), "browser-note.txt") {
+		t.Fatalf("download headers = %#v", download.Header())
+	}
+}
+
+func TestAdminFileUploadRequiresCSRF(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	exchange := &fakeFileExchange{max: 1024}
+	handler.config.Files = exchange
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	if err := writer.WriteField("csrf_token", "wrong"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("file", "rejected.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("must not persist"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/files", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || len(exchange.files) != 0 {
+		t.Fatalf("CSRF upload returned %d, files %#v", response.Code, exchange.files)
 	}
 }
 

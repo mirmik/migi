@@ -1,0 +1,4 @@
+interface:
+  display_name: "Migi File Exchange"
+  short_description: "Share files between agents, phones, and Migi"
+  default_prompt: "Use $migi-file-exchange to list and retrieve the newest file from Migi."

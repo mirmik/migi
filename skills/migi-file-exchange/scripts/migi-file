@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${MIGI_FILE_BIN:-}" ]; then
+	if [ ! -x "$MIGI_FILE_BIN" ]; then
+		echo "migi-file: MIGI_FILE_BIN is not executable: $MIGI_FILE_BIN" >&2
+		exit 1
+	fi
+	exec "$MIGI_FILE_BIN" "$@"
+fi
+
+if command -v migi-file >/dev/null 2>&1; then
+	exec migi-file "$@"
+fi
+
+migi_wrapper_path=$(readlink -f "$0")
+migi_skill_dir=$(dirname "$(dirname "$migi_wrapper_path")")
+migi_repo_root=$(cd "$migi_skill_dir/../.." && pwd -P)
+migi_repo_binary="$migi_repo_root/server/bin/migi-file"
+
+if [ -x "$migi_repo_binary" ]; then
+	exec "$migi_repo_binary" "$@"
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+	echo "migi-file: neither migi-file nor Go is available" >&2
+	exit 1
+fi
+
+cd "$migi_repo_root/server"
+exec go run ./cmd/migi-file "$@"

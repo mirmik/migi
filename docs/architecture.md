@@ -96,6 +96,23 @@ The pager establishes a stateful server-to-device channel without treating
 large media as JSON. A later audio channel will define its own framing and flow
 control while reusing the authenticated HTTP/3 connection.
 
+### Shared file exchange
+
+Migi has a bounded, temporary file exchange rather than a general remote
+filesystem. Paired phones upload and download objects over the same pinned,
+authenticated HTTP/3 boundary as events. Local agents use matching HTTP routes
+on the trusted loopback listener through the `migi-file` command.
+
+File bodies are streamed into a staging directory, hashed, and atomically
+renamed. Metadata is stored in a sidecar under the random file ID; the submitted
+name is display-only and cannot select a server path. A `file.available` event
+is appended only after the object is committed. Files expire after a configured
+TTL and both per-object and aggregate byte limits bound disk consumption.
+
+The first version is one server-wide inbox. It deliberately does not claim to
+deliver an upload into a particular live agent session; session addressing and
+agent wake-up are a separate future protocol layer.
+
 ### Minimal Android surface
 
 The bootstrap UI uses platform Views rather than Compose. The application needs
@@ -118,6 +135,7 @@ embedded in the event JSON and do not pass through `SoundPool`.
 
 ```text
 local agents ---- HTTP POST /v1/events on loopback TCP ----+
+             +---- HTTP /v1/files on loopback TCP --------+
                                                           |
 remote agents -- HTTPS POST with per-agent token ----------> Go event server
                                                           |       |

@@ -42,6 +42,14 @@ one-time pairing QR codes, updates a persistent pager line in the Android app,
 and revokes paired devices. It is deliberately kept off the public listener;
 see [docs/administration.md](docs/administration.md).
 
+Paired phones and local agents also share a bounded temporary file inbox.
+Android can upload through the system share sheet and save verified downloads;
+agents use the loopback-only `migi-file` command, and the administration panel
+can upload, list, and download the same objects. File bodies stay outside the
+event journal, while `file.available` events announce committed objects.
+Codex agents can install the repository-owned `migi-file-exchange` skill with
+`./scripts/install-migi-file-exchange-skill`.
+
 Remote agent hooks need no resident client or tunnel. The administration panel
 creates their revocable credentials and one-time connection configuration; see
 [docs/agent-hooks.md](docs/agent-hooks.md).

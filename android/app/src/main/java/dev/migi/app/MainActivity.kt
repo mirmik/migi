@@ -31,9 +31,12 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
 	private lateinit var pagerMessage: TextView
 	private lateinit var releaseList: LinearLayout
+	private lateinit var fileList: LinearLayout
 	private lateinit var batteryButton: Button
+	private var pendingDownload: SharedFile? = null
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
+		if (key == KEY_FILES_GENERATION) runOnUiThread(::refreshFiles)
 	}
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,12 +46,14 @@ class MainActivity : Activity() {
         }
         buildContentView()
         handlePairingIntent(intent)
+        handleSharedFileIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handlePairingIntent(intent)
+        handleSharedFileIntent(intent)
     }
 
 		override fun onStart() {
@@ -58,6 +63,7 @@ class MainActivity : Activity() {
 			refreshPagerMessage()
 			ReleaseInstaller(this).reconcileSessions()
 			refreshReleases()
+			refreshFiles()
 		refreshBatteryOptimizationState()
 	}
 
@@ -76,16 +82,16 @@ class MainActivity : Activity() {
             setText(preferences.getString(KEY_ENDPOINT, ""))
             inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
         }
-	        certificatePin = EditText(this).apply {
+        certificatePin = EditText(this).apply {
             hint = getString(R.string.certificate_pin_hint)
             setText(preferences.getString(KEY_CERTIFICATE_PIN, ""))
             inputType = android.text.InputType.TYPE_CLASS_TEXT
-	        }
-	        pilotSignerPin = EditText(this).apply {
-	            hint = getString(R.string.pilot_signer_hint)
-	            setText(preferences.getString(KEY_PILOT_SIGNER_SHA256, ""))
-	            inputType = android.text.InputType.TYPE_CLASS_TEXT
-	        }
+        }
+        pilotSignerPin = EditText(this).apply {
+            hint = getString(R.string.pilot_signer_hint)
+            setText(preferences.getString(KEY_PILOT_SIGNER_SHA256, ""))
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
         status = TextView(this).apply {
             text = when {
                 ConnectionService.isRunning -> getString(R.string.service_running)
@@ -94,11 +100,11 @@ class MainActivity : Activity() {
             }
             textSize = 16f
         }
-		pagerMessage = TextView(this).apply {
-			textSize = 20f
-			setTextIsSelectable(true)
-			setPadding(0, 6, 0, 18)
-		}
+        pagerMessage = TextView(this).apply {
+            textSize = 20f
+            setTextIsSelectable(true)
+            setPadding(0, 6, 0, 18)
+        }
 
         val start = Button(this).apply {
             text = getString(R.string.start_connection)
@@ -153,22 +159,42 @@ class MainActivity : Activity() {
                 setText(R.string.server_title)
                 textSize = 24f
             })
-			addView(TextView(this@MainActivity).apply {
-				setText(R.string.pager_title)
-				textSize = 13f
-			})
-			addView(pagerMessage, matchWidth())
-			addView(TextView(this@MainActivity).apply {
-				setText(R.string.releases_title)
-				textSize = 20f
-			})
-			releaseList = LinearLayout(this@MainActivity).apply {
-				orientation = LinearLayout.VERTICAL
-			}
-			addView(releaseList, matchWidth())
+            addView(TextView(this@MainActivity).apply {
+                setText(R.string.pager_title)
+                textSize = 13f
+            })
+            addView(pagerMessage, matchWidth())
+            addView(TextView(this@MainActivity).apply {
+                setText(R.string.files_title)
+                textSize = 20f
+            })
+            addView(Button(this@MainActivity).apply {
+                setText(R.string.choose_file)
+                setOnClickListener {
+                    startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        },
+                        REQUEST_CHOOSE_FILE,
+                    )
+                }
+            }, matchWidth())
+            fileList = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            addView(fileList, matchWidth())
+            addView(TextView(this@MainActivity).apply {
+                setText(R.string.releases_title)
+                textSize = 20f
+            })
+            releaseList = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            addView(releaseList, matchWidth())
             addView(endpoint, matchWidth())
-			addView(certificatePin, matchWidth())
-			addView(pilotSignerPin, matchWidth())
+            addView(certificatePin, matchWidth())
+            addView(pilotSignerPin, matchWidth())
             addView(start, matchWidth())
             addView(stop, matchWidth())
             addView(batteryButton, matchWidth())
@@ -182,10 +208,115 @@ class MainActivity : Activity() {
         })
     }
 
+	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+		super.onActivityResult(requestCode, resultCode, data)
+		if (resultCode != RESULT_OK) return
+		when (requestCode) {
+			REQUEST_CHOOSE_FILE -> data?.data?.let(::uploadSharedFile)
+			REQUEST_SAVE_FILE -> {
+				val file = pendingDownload
+				.also { pendingDownload = null }
+				?: return
+				val destination = data?.data ?: return
+				status.setText(R.string.file_downloading)
+				thread(name = "migi-file-download") {
+					val result = runCatching { FileExchangeClient(this).download(file, destination) }
+					runOnUiThread {
+						status.text = result.fold(
+							onSuccess = { getString(R.string.file_downloaded, file.name) },
+							onFailure = { getString(R.string.file_transfer_failed, it.message ?: "unknown error") },
+						)
+					}
+				}
+			}
+		}
+	}
+
 	private fun refreshPagerMessage() {
 		pagerMessage.text = preferences.getString(KEY_PAGER_MESSAGE, null)
 			?.takeIf { it.isNotBlank() }
 			?: getString(R.string.pager_empty)
+	}
+
+	private fun refreshFiles() {
+		fileList.removeAllViews()
+		fileList.addView(TextView(this).apply { setText(R.string.files_loading) })
+		thread(name = "migi-file-list") {
+			val result = runCatching { FileExchangeClient(this).list() }
+			runOnUiThread {
+				fileList.removeAllViews()
+				result.onFailure {
+					fileList.addView(TextView(this).apply {
+						text = getString(R.string.files_failed, it.message ?: "unknown error")
+					})
+				}.onSuccess { files ->
+					if (files.isEmpty()) {
+						fileList.addView(TextView(this).apply { setText(R.string.files_empty) })
+					}
+					for (file in files) {
+						val item = LinearLayout(this).apply {
+							orientation = LinearLayout.VERTICAL
+							setPadding(0, 8, 0, 12)
+						}
+						item.addView(TextView(this).apply {
+							text = getString(
+								R.string.file_summary,
+								file.name,
+								formatFileSize(file.size),
+								file.source,
+								file.expiresAt.toString(),
+							)
+							setTextIsSelectable(true)
+						})
+						item.addView(Button(this).apply {
+							setText(R.string.save_file)
+							setOnClickListener {
+								pendingDownload = file
+								startActivityForResult(
+									Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+										addCategory(Intent.CATEGORY_OPENABLE)
+										type = file.mime
+										putExtra(Intent.EXTRA_TITLE, file.name)
+									},
+									REQUEST_SAVE_FILE,
+								)
+							}
+						})
+						fileList.addView(item, matchWidth())
+					}
+				}
+			}
+		}
+	}
+
+	private fun handleSharedFileIntent(intent: Intent?) {
+		if (intent?.action != Intent.ACTION_SEND) return
+		val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: run {
+			status.setText(R.string.file_share_invalid)
+			return
+		}
+		setIntent(Intent(this, MainActivity::class.java))
+		uploadSharedFile(uri)
+	}
+
+	private fun uploadSharedFile(uri: Uri) {
+		status.setText(R.string.file_uploading)
+		thread(name = "migi-file-upload") {
+			val result = runCatching { FileExchangeClient(this).upload(uri) }
+			runOnUiThread {
+				status.text = result.fold(
+					onSuccess = { getString(R.string.file_uploaded, it.name) },
+					onFailure = { getString(R.string.file_transfer_failed, it.message ?: "unknown error") },
+				)
+				if (result.isSuccess) refreshFiles()
+			}
+		}
+	}
+
+	private fun formatFileSize(bytes: Long): String = when {
+		bytes >= 1024 * 1024 -> "%.1f MiB".format(bytes.toDouble() / (1024 * 1024))
+		bytes >= 1024 -> "%.1f KiB".format(bytes.toDouble() / 1024)
+		else -> "$bytes B"
 	}
 
 	private fun refreshReleases() {
@@ -303,16 +434,16 @@ class MainActivity : Activity() {
             endpoint.error = getString(R.string.endpoint_required)
             return
         }
-	        val pin = normalizePin(certificatePin.text.toString())
+        val pin = normalizePin(certificatePin.text.toString())
         if (pin == null) {
             certificatePin.error = getString(R.string.certificate_pin_required)
             return
-	        }
-	        val pilotSigner = normalizePin(pilotSignerPin.text.toString())
-	        if (pilotSignerPin.text.isNotBlank() && pilotSigner == null) {
-	            pilotSignerPin.error = getString(R.string.pilot_signer_invalid)
-	            return
-	        }
+        }
+        val pilotSigner = normalizePin(pilotSignerPin.text.toString())
+        if (pilotSignerPin.text.isNotBlank() && pilotSigner == null) {
+            pilotSignerPin.error = getString(R.string.pilot_signer_invalid)
+            return
+        }
         if (CredentialStore(this).load() == null) {
             status.setText(R.string.device_not_paired)
             return
@@ -427,10 +558,13 @@ class MainActivity : Activity() {
         const val KEY_ENDPOINT = "endpoint"
         const val KEY_CERTIFICATE_PIN = "certificate_pin"
 		const val KEY_PAGER_MESSAGE = "pager_message"
+		const val KEY_FILES_GENERATION = "files_generation"
 		const val KEY_DND_OVERRIDE = "dnd_override"
 			const val KEY_AUDIO_VOLUME = "audio_volume"
 			const val KEY_PILOT_SIGNER_SHA256 = "pilot_signer_sha256"
-		const val DEFAULT_AUDIO_VOLUME = 100
+			const val DEFAULT_AUDIO_VOLUME = 100
+			private const val REQUEST_CHOOSE_FILE = 20
+			private const val REQUEST_SAVE_FILE = 21
 
         private fun normalizePin(raw: String?): String? {
             if (raw == null) return null

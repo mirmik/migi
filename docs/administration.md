@@ -11,6 +11,13 @@ The **Pager** form accepts up to 512 characters. Updating it creates a durable
 devices. A disconnected device receives the update through event replay when it
 returns.
 
+The **Shared files** section uses the same bounded temporary exchange as Android
+and `migi-file`. Browser uploads are size-limited, CSRF-protected, committed
+under random storage IDs and announced through `file.available`. The table
+shows the source and expiry of every live object and serves downloads with the
+stored MIME type, exact length and SHA-256 header. Access inherits the panel's
+loopback/SSH-tunnel security boundary.
+
 ## Start it
 
 ```bash
@@ -40,6 +47,10 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-artifact-max-bytes` | bytes | Maximum accepted APK size |
 | `-artifact-total-bytes` | bytes | Stop publication above this committed-storage limit |
 | `-apksigner`, `-aapt2` | filesystem | Pinned Android Build Tools; both enable release delivery |
+| `-file-dir` | filesystem | Temporary shared-file storage and staging directory |
+| `-file-max-bytes` | bytes | Maximum accepted shared file (default 100 MiB) |
+| `-file-total-bytes` | bytes | Aggregate shared-file limit (default 1 GiB) |
+| `-file-ttl` | duration | Retention from upload time (default 7 days) |
 
 For example, a router can forward public UDP `10443` to server UDP `8443`; in
 that case use `-listen :8443` and

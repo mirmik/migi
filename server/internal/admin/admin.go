@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -11,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -30,6 +33,7 @@ var content embed.FS
 
 type Config struct {
 	Broker                 *events.Broker
+	Files                  FileExchange
 	PublicEndpoint         string
 	CertificateFingerprint string
 	PublicListen           string
@@ -39,6 +43,32 @@ type Config struct {
 	AdminListen            string
 	StartedAt              time.Time
 }
+
+type SharedFile struct {
+	ID        string
+	Name      string
+	MIME      string
+	Size      int64
+	SHA256    string
+	Source    string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+type FileExchange interface {
+	ListSharedFiles(context.Context) ([]SharedFile, error)
+	ShareFile(context.Context, string, string, string, io.Reader, int64) (SharedFile, error)
+	OpenSharedFile(context.Context, string) (SharedFile, io.ReadCloser, error)
+	MaxSharedFileBytes() int64
+}
+
+var (
+	ErrFileTooLarge       = errors.New("shared file is too large")
+	ErrFileStorageFull    = errors.New("shared file storage is full")
+	ErrFileLengthMismatch = errors.New("shared file length mismatch")
+	ErrFileNotFound       = errors.New("shared file not found")
+	ErrFileInvalid        = errors.New("shared file metadata is invalid")
+)
 
 type Handler struct {
 	config    Config
@@ -64,6 +94,8 @@ type pageData struct {
 	Devices                []events.DeviceInfo
 	AgentTokens            []events.AgentTokenInfo
 	PublisherTokens        []events.PublisherTokenInfo
+	Files                  []SharedFile
+	FilesEnabled           bool
 	ActiveStreams          int
 	Pairing                *pairingView
 	AgentCredential        *agentCredentialView
@@ -125,6 +157,7 @@ func New(config Config) (*Handler, error) {
 			return value.Local().Format("2006-01-02 15:04:05 MST")
 		},
 		"formatDuration": formatDuration,
+		"formatBytes":    formatBytes,
 	}).ParseFS(content, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse admin templates: %w", err)
@@ -157,8 +190,110 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/publishers/create", h.createPublisherToken)
 	mux.HandleFunc("POST /admin/publishers/revoke", h.revokePublisherToken)
 	mux.HandleFunc("POST /admin/devices/package", h.setDevicePackage)
+	mux.HandleFunc("POST /admin/files", h.uploadFile)
+	mux.HandleFunc("GET /admin/files/{fileID}/content", h.downloadFile)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
 	return h.securityHeaders(mux)
+}
+
+func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
+	if h.config.Files == nil {
+		http.Error(w, "file exchange is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	limit := h.config.Files.MaxSharedFileBytes()
+	if limit <= 0 {
+		http.Error(w, "file exchange is misconfigured", http.StatusInternalServerError)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit+(1<<20))
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "file exceeds configured size", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid multipart form", http.StatusBadRequest)
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	if !h.validCSRF(r.FormValue("csrf_token")) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "a file is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	if header.Size <= 0 {
+		http.Error(w, "file must not be empty", http.StatusBadRequest)
+		return
+	}
+	contentType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil || contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	shared, err := h.config.Files.ShareFile(
+		r.Context(), header.Filename, contentType, "admin", file, header.Size,
+	)
+	if errors.Is(err, ErrFileTooLarge) {
+		http.Error(w, "file exceeds configured size", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if errors.Is(err, ErrFileStorageFull) {
+		http.Error(w, "file storage is full", http.StatusInsufficientStorage)
+		return
+	}
+	if errors.Is(err, ErrFileLengthMismatch) {
+		http.Error(w, "uploaded byte count differs from the form metadata", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, ErrFileInvalid) {
+		http.Error(w, "file name or media type is invalid", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		slog.Error("admin file upload failed", "error", err)
+		http.Error(w, "failed to store file", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("file shared from admin panel",
+		"file_id", shared.ID,
+		"name", shared.Name,
+		"size", shared.Size,
+		"remote_addr", r.RemoteAddr,
+	)
+	h.redirectToDashboard(w, r, "File shared")
+}
+
+func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {
+	if h.config.Files == nil {
+		http.Error(w, "file exchange is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	file, content, err := h.config.Files.OpenSharedFile(r.Context(), r.PathValue("fileID"))
+	if errors.Is(err, ErrFileNotFound) {
+		http.Error(w, "file does not exist or has expired", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "failed to open file", http.StatusInternalServerError)
+		return
+	}
+	defer content.Close()
+	w.Header().Set("Content-Type", file.MIME)
+	w.Header().Set("Content-Length", fmt.Sprint(file.Size))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
+		"filename": file.Name,
+	}))
+	w.Header().Set("X-Content-SHA256", file.SHA256)
+	if _, err := io.Copy(w, content); err != nil {
+		slog.Warn("admin file download failed", "file_id", file.ID, "error", err)
+	}
 }
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +612,14 @@ func (h *Handler) renderDashboard(
 		http.Error(w, "failed to read pager state", http.StatusInternalServerError)
 		return
 	}
+	var files []SharedFile
+	if h.config.Files != nil {
+		files, err = h.config.Files.ListSharedFiles(r.Context())
+		if err != nil {
+			http.Error(w, "failed to list shared files", http.StatusInternalServerError)
+			return
+		}
+	}
 	now := h.now()
 	data := pageData{
 		CSRFToken:              h.csrfToken,
@@ -494,6 +637,8 @@ func (h *Handler) renderDashboard(
 		Devices:                devices,
 		AgentTokens:            agentTokens,
 		PublisherTokens:        publisherTokens,
+		Files:                  files,
+		FilesEnabled:           h.config.Files != nil,
 		ActiveStreams:          h.config.Broker.SubscriberCount(),
 		Pairing:                pairing,
 		AgentCredential:        agentCredential,
@@ -523,12 +668,16 @@ func (h *Handler) validForm(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return false
 	}
-	provided := r.FormValue("csrf_token")
-	if len(provided) != len(h.csrfToken) || subtle.ConstantTimeCompare([]byte(provided), []byte(h.csrfToken)) != 1 {
+	if !h.validCSRF(r.FormValue("csrf_token")) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return false
 	}
 	return true
+}
+
+func (h *Handler) validCSRF(provided string) bool {
+	return len(provided) == len(h.csrfToken) &&
+		subtle.ConstantTimeCompare([]byte(provided), []byte(h.csrfToken)) == 1
 }
 
 func (h *Handler) securityHeaders(next http.Handler) http.Handler {
@@ -571,4 +720,17 @@ func formatDuration(value time.Duration) string {
 		value = 0
 	}
 	return value.Round(time.Second).String()
+}
+
+func formatBytes(value int64) string {
+	switch {
+	case value >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(value)/float64(1<<30))
+	case value >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(value)/float64(1<<20))
+	case value >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(value)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", value)
+	}
 }
