@@ -20,6 +20,7 @@
     <string name="files_empty">No shared files</string>
     <string name="files_failed">Cannot load files: %1$s</string>
     <string name="file_summary">%1$s — %2$s\nFrom %3$s; expires %4$s</string>
+    <string name="choose_photo">Share a photo</string>
     <string name="open_html_file">Open</string>
     <string name="opening_html_file">Downloading and verifying HTML…</string>
     <string name="html_file_opened">Opened: %1$s</string>
@@ -32,6 +33,7 @@
     <string name="file_downloaded">Saved: %1$s</string>
     <string name="file_transfer_failed">File transfer failed: %1$s</string>
     <string name="file_share_invalid">The shared item has no readable file</string>
+    <string name="file_selection_cancelled">Selection cancelled</string>
     <string name="releases_title">Application releases</string>
     <string name="releases_empty">No pending releases</string>
     <string name="pilot_signer_hint">Pilot signer certificate SHA-256</string>

@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
@@ -216,6 +217,17 @@ class MainActivity : Activity() {
 					)
 				}
 			}, matchWidth())
+			addView(Button(this@MainActivity).apply {
+				setText(R.string.choose_photo)
+				setOnClickListener {
+					startActivityForResult(
+						Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+							type = "image/*"
+						},
+						REQUEST_CHOOSE_PHOTO,
+					)
+				}
+			}, matchWidth())
 			fileList = LinearLayout(this@MainActivity).apply {
 				orientation = LinearLayout.VERTICAL
 			}
@@ -360,14 +372,21 @@ class MainActivity : Activity() {
 
 	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
 		super.onActivityResult(requestCode, resultCode, data)
-		if (resultCode != RESULT_OK) return
 		when (requestCode) {
-			REQUEST_CHOOSE_FILE -> data?.data?.let(::uploadSharedFile)
+			REQUEST_CHOOSE_FILE,
+			REQUEST_CHOOSE_PHOTO -> handleUploadPickerResult(resultCode, data)
 			REQUEST_SAVE_FILE -> {
 				val file = pendingDownload
-				.also { pendingDownload = null }
-				?: return
-				val destination = data?.data ?: return
+					.also { pendingDownload = null }
+					?: return
+				if (resultCode != RESULT_OK) {
+					updateStatus(R.string.file_selection_cancelled)
+					return
+				}
+				val destination = data?.data ?: run {
+					updateStatus(R.string.file_share_invalid)
+					return
+				}
 				updateStatus(R.string.file_downloading)
 				thread(name = "migi-file-download") {
 					val result = runCatching { FileExchangeClient(this).download(file, destination) }
@@ -379,6 +398,21 @@ class MainActivity : Activity() {
 					}
 				}
 			}
+		}
+	}
+
+	private fun handleUploadPickerResult(resultCode: Int, data: Intent?) {
+		val uri = data?.data
+		when (PickerResultPolicy.classify(resultCode == RESULT_OK, uri != null)) {
+			PickerResultPolicy.Outcome.CANCELLED -> {
+				updateStatus(R.string.file_selection_cancelled)
+				return
+			}
+			PickerResultPolicy.Outcome.MISSING_URI -> {
+				updateStatus(R.string.file_share_invalid)
+				return
+			}
+			PickerResultPolicy.Outcome.SELECTED -> uploadSharedFile(requireNotNull(uri))
 		}
 	}
 
@@ -810,6 +844,7 @@ class MainActivity : Activity() {
 			const val DEFAULT_AUDIO_VOLUME = 100
 			private const val REQUEST_CHOOSE_FILE = 20
 			private const val REQUEST_SAVE_FILE = 21
+			private const val REQUEST_CHOOSE_PHOTO = 22
 			private const val STATE_SELECTED_TAB = "selected_tab"
 			private const val TAB_STATUS = 0
 
@@ -825,4 +860,18 @@ class MainActivity : Activity() {
 
         private fun Char.isHexDigit(): Boolean = isDigit() || lowercaseChar() in 'a'..'f'
     }
+}
+
+internal object PickerResultPolicy {
+	enum class Outcome {
+		CANCELLED,
+		MISSING_URI,
+		SELECTED,
+	}
+
+	fun classify(succeeded: Boolean, hasUri: Boolean): Outcome = when {
+		!succeeded -> Outcome.CANCELLED
+		!hasUri -> Outcome.MISSING_URI
+		else -> Outcome.SELECTED
+	}
 }

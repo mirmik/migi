@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
@@ -11,6 +12,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.ByteArrayInputStream
@@ -40,7 +42,6 @@ class HtmlViewerActivity : Activity() {
             return
         }
 
-        val padding = (16 * resources.displayMetrics.density).toInt()
         val browser = WebView(this).apply {
             settings.apply {
                 javaScriptEnabled = true
@@ -69,22 +70,29 @@ class HtmlViewerActivity : Activity() {
         }
         webView = browser
 
-        setContentView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(padding, padding, padding, 0)
-            addView(TextView(this@HtmlViewerActivity).apply {
-                text = name.ifBlank { getString(R.string.files_title) }
-                textSize = 18f
-                setTextIsSelectable(true)
-            }, matchWidth())
-            addView(Button(this@HtmlViewerActivity).apply {
-                setText(R.string.close_html_viewer)
-                setOnClickListener { finish() }
-            }, matchWidth())
+        title = name.ifBlank { getString(R.string.files_title) }
+        val closeSize = (48 * resources.displayMetrics.density).toInt()
+        val closeMargin = (6 * resources.displayMetrics.density).toInt()
+        setContentView(FrameLayout(this).apply {
             addView(
                 browser,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
             )
+            addView(Button(this@HtmlViewerActivity).apply {
+                text = "×"
+                textSize = 24f
+                minWidth = 0
+                minHeight = 0
+                setPadding(0, 0, 0, 0)
+                alpha = 0.72f
+                contentDescription = getString(R.string.close_html_viewer)
+                setOnClickListener { finish() }
+            }, FrameLayout.LayoutParams(closeSize, closeSize, Gravity.TOP or Gravity.END).apply {
+                setMargins(closeMargin, closeMargin, closeMargin, closeMargin)
+            })
         })
     }
 
