@@ -11,10 +11,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -35,6 +37,9 @@ class MainActivity : Activity() {
 	private lateinit var releaseList: LinearLayout
 	private lateinit var fileList: LinearLayout
 	private lateinit var batteryButton: Button
+	private var selectedTab = TAB_STATUS
+	private var tabButtons: List<Button> = emptyList()
+	private var tabPages: List<ScrollView> = emptyList()
 	private var pendingDownload: SharedFile? = null
 	private val releaseExecutor = Executors.newSingleThreadExecutor()
 	private val releaseRefreshGeneration = AtomicLong()
@@ -46,6 +51,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        selectedTab = savedInstanceState?.getInt(STATE_SELECTED_TAB, TAB_STATUS) ?: TAB_STATUS
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -53,6 +59,11 @@ class MainActivity : Activity() {
         handlePairingIntent(intent)
         handleSharedFileIntent(intent)
     }
+
+	override fun onSaveInstanceState(outState: Bundle) {
+		outState.putInt(STATE_SELECTED_TAB, selectedTab)
+		super.onSaveInstanceState(outState)
+	}
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -169,9 +180,122 @@ class MainActivity : Activity() {
         }
 
         val padding = (20 * resources.displayMetrics.density).toInt()
-        val content = LinearLayout(this).apply {
+		val statusPage = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.connection_status_title)
+				textSize = 20f
+			})
+			addView(status, matchWidth())
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.pager_title)
+				textSize = 13f
+				setPadding(0, padding, 0, 0)
+			})
+			addView(pagerMessage, matchWidth())
+		}
+		val filesPage = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			setPadding(padding, padding, padding, padding)
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.files_title)
+				textSize = 20f
+			})
+			addView(Button(this@MainActivity).apply {
+				setText(R.string.choose_file)
+				setOnClickListener {
+					startActivityForResult(
+						Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+							addCategory(Intent.CATEGORY_OPENABLE)
+							type = "*/*"
+						},
+						REQUEST_CHOOSE_FILE,
+					)
+				}
+			}, matchWidth())
+			fileList = LinearLayout(this@MainActivity).apply {
+				orientation = LinearLayout.VERTICAL
+			}
+			addView(fileList, matchWidth())
+		}
+		val updatesPage = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			setPadding(padding, padding, padding, padding)
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.releases_title)
+				textSize = 20f
+			})
+			releaseList = LinearLayout(this@MainActivity).apply {
+				orientation = LinearLayout.VERTICAL
+			}
+			addView(releaseList, matchWidth())
+		}
+		val settingsPage = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			setPadding(padding, padding, padding, padding)
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.connection_settings_title)
+				textSize = 20f
+			})
+			addView(endpoint, matchWidth())
+			addView(certificatePin, matchWidth())
+			addView(pilotSignerPin, matchWidth())
+			addView(start, matchWidth())
+			addView(stop, matchWidth())
+			addView(batteryButton, matchWidth())
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.sound_settings_title)
+				textSize = 20f
+				setPadding(0, padding, 0, 0)
+			})
+			addView(dndOverride, matchWidth())
+			addView(audioVolumeLabel, matchWidth())
+			addView(audioVolume, matchWidth())
+		}
+
+		tabPages = listOf(statusPage, filesPage, updatesPage, settingsPage).map { page ->
+			ScrollView(this).apply {
+				addView(page, matchWidth())
+			}
+		}
+		val tabLabels = listOf(
+			R.string.tab_status,
+			R.string.tab_files,
+			R.string.tab_updates,
+			R.string.tab_settings,
+		)
+		tabButtons = tabLabels.mapIndexed { index, label ->
+			Button(this).apply {
+				setText(label)
+				textSize = 12f
+				isAllCaps = false
+				setOnClickListener { showTab(index) }
+			}
+		}
+		val tabBar = LinearLayout(this).apply {
+			orientation = LinearLayout.HORIZONTAL
+			for (button in tabButtons) {
+				addView(
+					button,
+					LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+				)
+			}
+		}
+		val pageHost = FrameLayout(this).apply {
+			for (page in tabPages) {
+				addView(
+					page,
+					FrameLayout.LayoutParams(
+						ViewGroup.LayoutParams.MATCH_PARENT,
+						ViewGroup.LayoutParams.MATCH_PARENT,
+					),
+				)
+			}
+		}
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, 0)
             addView(TextView(this@MainActivity).apply {
                 setText(R.string.server_title)
                 textSize = 24f
@@ -184,54 +308,30 @@ class MainActivity : Activity() {
                 )
                 textSize = 13f
             })
-            addView(TextView(this@MainActivity).apply {
-                setText(R.string.pager_title)
-                textSize = 13f
-            })
-            addView(pagerMessage, matchWidth())
-            addView(TextView(this@MainActivity).apply {
-                setText(R.string.files_title)
-                textSize = 20f
-            })
-            addView(Button(this@MainActivity).apply {
-                setText(R.string.choose_file)
-                setOnClickListener {
-                    startActivityForResult(
-                        Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                            addCategory(Intent.CATEGORY_OPENABLE)
-                            type = "*/*"
-                        },
-                        REQUEST_CHOOSE_FILE,
-                    )
-                }
-            }, matchWidth())
-            fileList = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            addView(fileList, matchWidth())
-            addView(TextView(this@MainActivity).apply {
-                setText(R.string.releases_title)
-                textSize = 20f
-            })
-            releaseList = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            addView(releaseList, matchWidth())
-            addView(endpoint, matchWidth())
-            addView(certificatePin, matchWidth())
-            addView(pilotSignerPin, matchWidth())
-            addView(start, matchWidth())
-            addView(stop, matchWidth())
-            addView(batteryButton, matchWidth())
-            addView(dndOverride, matchWidth())
-            addView(audioVolumeLabel, matchWidth())
-            addView(audioVolume, matchWidth())
-            addView(status, matchWidth())
         }
-        setContentView(ScrollView(this).apply {
-            addView(content, matchWidth())
-        })
+		setContentView(LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			addView(header, matchWidth())
+			addView(tabBar, matchWidth())
+			addView(
+				pageHost,
+				LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+			)
+		})
+		showTab(selectedTab)
     }
+
+	private fun showTab(index: Int) {
+		selectedTab = index.coerceIn(tabPages.indices)
+		tabPages.forEachIndexed { tabIndex, page ->
+			page.visibility = if (tabIndex == selectedTab) View.VISIBLE else View.GONE
+		}
+		tabButtons.forEachIndexed { tabIndex, button ->
+			val selected = tabIndex == selectedTab
+			button.isEnabled = !selected
+			button.isSelected = selected
+		}
+	}
 
 	override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
 		super.onActivityResult(requestCode, resultCode, data)
@@ -632,6 +732,8 @@ class MainActivity : Activity() {
 			const val DEFAULT_AUDIO_VOLUME = 100
 			private const val REQUEST_CHOOSE_FILE = 20
 			private const val REQUEST_SAVE_FILE = 21
+			private const val STATE_SELECTED_TAB = "selected_tab"
+			private const val TAB_STATUS = 0
 
         private fun normalizePin(raw: String?): String? {
             if (raw == null) return null
