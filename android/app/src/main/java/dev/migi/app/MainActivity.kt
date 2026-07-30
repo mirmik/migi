@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var certificatePin: EditText
     private lateinit var pilotSignerPin: EditText
     private lateinit var status: TextView
+	private lateinit var settingsStatus: TextView
 	private lateinit var pagerMessage: TextView
 	private lateinit var releaseList: LinearLayout
 	private lateinit var fileList: LinearLayout
@@ -142,7 +143,7 @@ class MainActivity : Activity() {
             text = getString(R.string.stop_connection)
             setOnClickListener {
                 stopService(Intent(this@MainActivity, ConnectionService::class.java))
-                status.setText(R.string.service_stopped)
+                updateStatus(R.string.service_stopped)
             }
         }
         batteryButton = Button(this).apply {
@@ -238,6 +239,12 @@ class MainActivity : Activity() {
 				setText(R.string.connection_settings_title)
 				textSize = 20f
 			})
+			settingsStatus = TextView(this@MainActivity).apply {
+				text = status.text
+				textSize = 16f
+				setPadding(0, 0, 0, padding)
+			}
+			addView(settingsStatus, matchWidth())
 			addView(endpoint, matchWidth())
 			addView(certificatePin, matchWidth())
 			addView(pilotSignerPin, matchWidth())
@@ -343,14 +350,14 @@ class MainActivity : Activity() {
 				.also { pendingDownload = null }
 				?: return
 				val destination = data?.data ?: return
-				status.setText(R.string.file_downloading)
+				updateStatus(R.string.file_downloading)
 				thread(name = "migi-file-download") {
 					val result = runCatching { FileExchangeClient(this).download(file, destination) }
 					runOnUiThread {
-						status.text = result.fold(
+						updateStatus(result.fold(
 							onSuccess = { getString(R.string.file_downloaded, file.name) },
 							onFailure = { getString(R.string.file_transfer_failed, it.message ?: "unknown error") },
-						)
+						))
 					}
 				}
 			}
@@ -417,7 +424,7 @@ class MainActivity : Activity() {
 	private fun handleSharedFileIntent(intent: Intent?) {
 		if (intent?.action != Intent.ACTION_SEND) return
 		val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: run {
-			status.setText(R.string.file_share_invalid)
+			updateStatus(R.string.file_share_invalid)
 			return
 		}
 		setIntent(Intent(this, MainActivity::class.java))
@@ -425,14 +432,14 @@ class MainActivity : Activity() {
 	}
 
 	private fun uploadSharedFile(uri: Uri) {
-		status.setText(R.string.file_uploading)
+		updateStatus(R.string.file_uploading)
 		thread(name = "migi-file-upload") {
 			val result = runCatching { FileExchangeClient(this).upload(uri) }
 			runOnUiThread {
-				status.text = result.fold(
+				updateStatus(result.fold(
 					onSuccess = { getString(R.string.file_uploaded, it.name) },
 					onFailure = { getString(R.string.file_transfer_failed, it.message ?: "unknown error") },
-				)
+				))
 				if (result.isSuccess) refreshFiles()
 			}
 		}
@@ -458,10 +465,10 @@ class MainActivity : Activity() {
 						return@runOnUiThread
 					}
 					result.onSuccess(::renderReleases).onFailure {
-						status.text = getString(
+						updateStatus(getString(
 							R.string.release_failed,
 							it.message ?: it.javaClass.simpleName,
-						)
+						))
 					}
 				}
 			}
@@ -514,10 +521,10 @@ class MainActivity : Activity() {
 						isEnabled = false
 						ReleaseInstaller(this@MainActivity).download(release.artifact.id) { result ->
 							runOnUiThread {
-								status.text = result.fold(
+								updateStatus(result.fold(
 									onSuccess = { getString(R.string.release_downloaded) },
 									onFailure = { getString(R.string.release_failed, it.message ?: "unknown error") },
-								)
+								))
 								refreshReleases()
 							}
 						}
@@ -532,10 +539,10 @@ class MainActivity : Activity() {
 							isEnabled = false
 							ReleaseInstaller(this@MainActivity).download(release.artifact.id) { result ->
 								runOnUiThread {
-									status.text = result.fold(
+									updateStatus(result.fold(
 										onSuccess = { getString(R.string.release_downloaded) },
 										onFailure = { getString(R.string.release_failed, it.message ?: "unknown error") },
-									)
+									))
 									refreshReleases()
 								}
 							}
@@ -553,15 +560,15 @@ class MainActivity : Activity() {
 						val installer = ReleaseInstaller(this@MainActivity)
 						if (!packageManager.canRequestPackageInstalls()) {
 							startActivity(installer.unknownSourcesSettingsIntent())
-							status.setText(R.string.allow_unknown_source)
+							updateStatus(R.string.allow_unknown_source)
 							return@setOnClickListener
 						}
 						isEnabled = false
 						installer.install(this@MainActivity, release.artifact.id) { result ->
-							status.text = result.fold(
+							updateStatus(result.fold(
 								onSuccess = { getString(R.string.install_submitted) },
 								onFailure = { getString(R.string.release_failed, it.message ?: "unknown error") },
-							)
+							))
 							refreshReleases()
 						}
 					}
@@ -611,7 +618,7 @@ class MainActivity : Activity() {
             return
         }
         if (CredentialStore(this).load() == null) {
-            status.setText(R.string.device_not_paired)
+            updateStatus(R.string.device_not_paired)
             return
         }
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
@@ -622,14 +629,14 @@ class MainActivity : Activity() {
         startForegroundService(
             Intent(this, ConnectionService::class.java).setAction(ConnectionService.ACTION_RECONFIGURE),
         )
-        status.setText(R.string.service_starting)
+        updateStatus(R.string.service_starting)
     }
 
     private fun handlePairingIntent(intent: Intent?) {
         if (intent?.action != Intent.ACTION_VIEW) return
         val invitation = PairingInvitation.parse(intent.data) ?: run {
             setIntent(Intent(this, MainActivity::class.java))
-            status.setText(R.string.invalid_pairing_invitation)
+            updateStatus(R.string.invalid_pairing_invitation)
             return
         }
         // The one-time secret must not be replayed after activity recreation.
@@ -650,7 +657,7 @@ class MainActivity : Activity() {
     }
 
     private fun pair(invitation: PairingInvitation) {
-        status.setText(R.string.pairing_in_progress)
+        updateStatus(R.string.pairing_in_progress)
         thread(name = "migi-pair") {
             val result = runCatching {
                 val response = NativeQuicClient.pair(
@@ -684,10 +691,10 @@ class MainActivity : Activity() {
                         Intent(this, ConnectionService::class.java)
                             .setAction(ConnectionService.ACTION_RECONFIGURE),
                     )
-                    status.setText(R.string.pairing_complete)
+                    updateStatus(R.string.pairing_complete)
 					requestBatteryOptimizationExemption()
                 }.onFailure {
-                    status.text = getString(R.string.pairing_failed, it.message ?: "unknown error")
+                    updateStatus(getString(R.string.pairing_failed, it.message ?: "unknown error"))
                 }
             }
         }
@@ -697,6 +704,15 @@ class MainActivity : Activity() {
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT,
     )
+
+	private fun updateStatus(resourceID: Int) {
+		updateStatus(getString(resourceID))
+	}
+
+	private fun updateStatus(message: CharSequence) {
+		status.text = message
+		if (::settingsStatus.isInitialized) settingsStatus.text = message
+	}
 
     private data class PairingInvitation(
         val endpoint: String,
