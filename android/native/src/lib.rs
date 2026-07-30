@@ -518,8 +518,8 @@ fn small_request(
     let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
     rand::rng().fill_bytes(&mut scid_bytes);
     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
     let h3_config = quiche::h3::Config::new()?;
+    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
     let mut http3 = None;
     let mut certificate_checked = false;
     let mut request_stream = None;
@@ -529,106 +529,118 @@ fn small_request(
     let mut output = [0_u8; MAX_DATAGRAM_SIZE];
     let deadline = Instant::now() + Duration::from_secs(15);
 
-    loop {
-        if Instant::now() >= deadline {
-            return Err("request timed out".into());
-        }
-        flush_packets(&socket, &mut connection, &mut output)?;
-        match socket.recv_from(&mut input) {
-            Ok((length, from)) => {
-                let info = quiche::RecvInfo {
-                    from,
-                    to: local_addr,
-                };
-                match connection.recv(&mut input[..length], info) {
-                    Ok(_) | Err(quiche::Error::Done) => {}
-                    Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
-                }
+    let result = (|| -> Result<String, AnyError> {
+        loop {
+            if Instant::now() >= deadline {
+                return Err("request timed out".into());
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                if connection.timeout() == Some(Duration::ZERO) {
-                    connection.on_timeout();
+            flush_packets(&socket, &mut connection, &mut output)?;
+            match socket.recv_from(&mut input) {
+                Ok((length, from)) => {
+                    let info = quiche::RecvInfo {
+                        from,
+                        to: local_addr,
+                    };
+                    match connection.recv(&mut input[..length], info) {
+                        Ok(_) | Err(quiche::Error::Done) => {}
+                        Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
+                    }
                 }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if connection.timeout() == Some(Duration::ZERO) {
+                        connection.on_timeout();
+                    }
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
-        }
-        if connection.is_closed() {
-            return Err(format!(
-                "QUIC connection closed during request: local={:?}, peer={:?}",
-                connection.local_error(),
-                connection.peer_error()
-            )
-            .into());
-        }
-        if connection.is_established() && !certificate_checked {
-            verify_certificate_pin(&connection, expected_pin)?;
-            certificate_checked = true;
-            http3 = Some(quiche::h3::Connection::with_transport(
-                &mut connection,
-                &h3_config,
-            )?);
-        }
-        if certificate_checked && request_stream.is_none() {
-            let headers = request_headers(method, &url, path, body.map(|value| value.len()), bearer);
-            let stream = http3
-                .as_mut()
-                .unwrap()
-                .send_request(&mut connection, &headers, body.is_none())?;
-            if let Some(body) = body {
-                http3
+            if connection.is_closed() {
+                return Err(format!(
+                    "QUIC connection closed during request: local={:?}, peer={:?}",
+                    connection.local_error(),
+                    connection.peer_error()
+                )
+                .into());
+            }
+            if connection.is_established() && !certificate_checked {
+                verify_certificate_pin(&connection, expected_pin)?;
+                certificate_checked = true;
+                http3 = Some(quiche::h3::Connection::with_transport(
+                    &mut connection,
+                    &h3_config,
+                )?);
+            }
+            if certificate_checked && request_stream.is_none() {
+                let headers =
+                    request_headers(method, &url, path, body.map(|value| value.len()), bearer);
+                let stream = http3
                     .as_mut()
                     .unwrap()
-                    .send_body(&mut connection, stream, body, true)?;
+                    .send_request(&mut connection, &headers, body.is_none())?;
+                if let Some(body) = body {
+                    http3
+                        .as_mut()
+                        .unwrap()
+                        .send_body(&mut connection, stream, body, true)?;
+                }
+                request_stream = Some(stream);
             }
-            request_stream = Some(stream);
-        }
-        if let Some(http3) = http3.as_mut() {
-            loop {
-                match http3.poll(&mut connection) {
-                    Ok((stream, quiche::h3::Event::Headers { list, .. }))
-                        if Some(stream) == request_stream =>
-                    {
-                        response_status = list
-                            .iter()
-                            .find(|header| header.name() == b":status")
-                            .and_then(|header| std::str::from_utf8(header.value()).ok())
-                            .map(str::to_owned);
-                    }
-                    Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
-                        while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
-                            if response_body.len() + read > 256 * 1024 {
-                                return Err("response is too large".into());
+            if let Some(http3) = http3.as_mut() {
+                loop {
+                    match http3.poll(&mut connection) {
+                        Ok((stream, quiche::h3::Event::Headers { list, .. }))
+                            if Some(stream) == request_stream =>
+                        {
+                            response_status = list
+                                .iter()
+                                .find(|header| header.name() == b":status")
+                                .and_then(|header| std::str::from_utf8(header.value()).ok())
+                                .map(str::to_owned);
+                        }
+                        Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
+                            while let Ok(read) =
+                                http3.recv_body(&mut connection, stream, &mut input)
+                            {
+                                if response_body.len() + read > 256 * 1024 {
+                                    return Err("response is too large".into());
+                                }
+                                response_body.extend_from_slice(&input[..read]);
                             }
-                            response_body.extend_from_slice(&input[..read]);
                         }
-                    }
-                    Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
-                        let status = response_status.as_deref().unwrap_or("unknown");
-                        let body = String::from_utf8(response_body)?;
-                        if status != expected_status {
-                            return Err(
-                                format!("request returned HTTP {status}: {}", body.trim()).into()
-                            );
+                        Ok((stream, quiche::h3::Event::Finished))
+                            if Some(stream) == request_stream =>
+                        {
+                            let status = response_status.as_deref().unwrap_or("unknown");
+                            let body = String::from_utf8(response_body)?;
+                            if status != expected_status {
+                                return Err(format!(
+                                    "request returned HTTP {status}: {}",
+                                    body.trim()
+                                )
+                                .into());
+                            }
+                            return Ok(body);
                         }
-                        return Ok(body);
+                        Ok((stream, quiche::h3::Event::Reset(code)))
+                            if Some(stream) == request_stream =>
+                        {
+                            return Err(format!("request stream was reset ({code})").into());
+                        }
+                        Ok((_, _)) => {}
+                        Err(quiche::h3::Error::Done) => break,
+                        Err(error) => return Err(format!("HTTP/3 request failed: {error:?}").into()),
                     }
-                    Ok((stream, quiche::h3::Event::Reset(code)))
-                        if Some(stream) == request_stream =>
-                    {
-                        return Err(format!("request stream was reset ({code})").into());
-                    }
-                    Ok((_, _)) => {}
-                    Err(quiche::h3::Error::Done) => break,
-                    Err(error) => return Err(format!("HTTP/3 request failed: {error:?}").into()),
                 }
             }
         }
-    }
+    })();
+    finish_with_cleanup(result, || {
+        close_short_connection(&socket, &mut connection, &mut output)
+    })
 }
 
 fn upload_request(
@@ -661,8 +673,8 @@ fn upload_request(
     let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
     rand::rng().fill_bytes(&mut scid_bytes);
     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
     let h3_config = quiche::h3::Config::new()?;
+    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
     let mut http3 = None;
     let mut certificate_checked = false;
     let mut request_stream = None;
@@ -675,128 +687,133 @@ fn upload_request(
     let mut output = [0_u8; MAX_DATAGRAM_SIZE];
     let deadline = Instant::now() + Duration::from_secs(15 * 60);
 
-    loop {
-        if Instant::now() >= deadline {
-            return Err("file upload timed out".into());
-        }
-        flush_packets(&socket, &mut connection, &mut output)?;
-        match socket.recv_from(&mut input) {
-            Ok((length, from)) => {
-                let info = quiche::RecvInfo { from, to: local_addr };
-                match connection.recv(&mut input[..length], info) {
-                    Ok(_) | Err(quiche::Error::Done) => {}
-                    Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
-                }
+    let result = (|| -> Result<String, AnyError> {
+        loop {
+            if Instant::now() >= deadline {
+                return Err("file upload timed out".into());
             }
-            Err(error)
-                if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
-            {
-                if connection.timeout() == Some(Duration::ZERO) {
-                    connection.on_timeout();
+            flush_packets(&socket, &mut connection, &mut output)?;
+            match socket.recv_from(&mut input) {
+                Ok((length, from)) => {
+                    let info = quiche::RecvInfo { from, to: local_addr };
+                    match connection.recv(&mut input[..length], info) {
+                        Ok(_) | Err(quiche::Error::Done) => {}
+                        Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
+                    }
                 }
+                Err(error)
+                    if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+                {
+                    if connection.timeout() == Some(Duration::ZERO) {
+                        connection.on_timeout();
+                    }
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
-        }
-        if connection.is_closed() {
-            return Err("QUIC connection closed during file upload".into());
-        }
-        if connection.is_established() && !certificate_checked {
-            verify_certificate_pin(&connection, expected_pin)?;
-            certificate_checked = true;
-            http3 = Some(quiche::h3::Connection::with_transport(
-                &mut connection,
-                &h3_config,
-            )?);
-        }
-        if certificate_checked && request_stream.is_none() {
-            let mut headers = request_headers(
-                "POST",
-                &url,
-                "/v1/files",
-                None,
-                Some(credential),
-            );
-            headers.push(quiche::h3::Header::new(b"content-type", mime.as_bytes()));
-            headers.push(quiche::h3::Header::new(
-                b"content-length",
-                size.to_string().as_bytes(),
-            ));
-            headers.push(quiche::h3::Header::new(
-                b"x-migi-filename",
-                name.as_bytes(),
-            ));
-            request_stream = Some(
-                http3
-                    .as_mut()
-                    .unwrap()
-                    .send_request(&mut connection, &headers, false)?,
-            );
-        }
-        if let (Some(http3), Some(stream)) = (http3.as_mut(), request_stream) {
-            if sent < size {
-                if pending_offset == pending.len() {
-                    let remaining = (size - sent).min(64 * 1024) as usize;
-                    pending.resize(remaining, 0);
-                    source.read_exact(&mut pending)?;
-                    pending_offset = 0;
-                }
-                let final_chunk = sent + (pending.len() - pending_offset) as u64 == size;
-                match http3.send_body(
+            if connection.is_closed() {
+                return Err("QUIC connection closed during file upload".into());
+            }
+            if connection.is_established() && !certificate_checked {
+                verify_certificate_pin(&connection, expected_pin)?;
+                certificate_checked = true;
+                http3 = Some(quiche::h3::Connection::with_transport(
                     &mut connection,
-                    stream,
-                    &pending[pending_offset..],
-                    final_chunk,
-                ) {
-                    Ok(written) => {
-                        pending_offset += written;
-                        sent += written as u64;
-                    }
-                    Err(quiche::h3::Error::Done) => {}
-                    Err(error) => return Err(format!("HTTP/3 upload failed: {error:?}").into()),
-                }
+                    &h3_config,
+                )?);
             }
-            loop {
-                match http3.poll(&mut connection) {
-                    Ok((event_stream, quiche::h3::Event::Headers { list, .. }))
-                        if event_stream == stream =>
-                    {
-                        response_status = header_value(&list, b":status");
+            if certificate_checked && request_stream.is_none() {
+                let mut headers = request_headers(
+                    "POST",
+                    &url,
+                    "/v1/files",
+                    None,
+                    Some(credential),
+                );
+                headers.push(quiche::h3::Header::new(b"content-type", mime.as_bytes()));
+                headers.push(quiche::h3::Header::new(
+                    b"content-length",
+                    size.to_string().as_bytes(),
+                ));
+                headers.push(quiche::h3::Header::new(
+                    b"x-migi-filename",
+                    name.as_bytes(),
+                ));
+                request_stream = Some(
+                    http3
+                        .as_mut()
+                        .unwrap()
+                        .send_request(&mut connection, &headers, false)?,
+                );
+            }
+            if let (Some(http3), Some(stream)) = (http3.as_mut(), request_stream) {
+                if sent < size {
+                    if pending_offset == pending.len() {
+                        let remaining = (size - sent).min(64 * 1024) as usize;
+                        pending.resize(remaining, 0);
+                        source.read_exact(&mut pending)?;
+                        pending_offset = 0;
                     }
-                    Ok((event_stream, quiche::h3::Event::Data)) if event_stream == stream => {
-                        while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
-                            if response_body.len() + read > 256 * 1024 {
-                                return Err("response is too large".into());
+                    let final_chunk = sent + (pending.len() - pending_offset) as u64 == size;
+                    match http3.send_body(
+                        &mut connection,
+                        stream,
+                        &pending[pending_offset..],
+                        final_chunk,
+                    ) {
+                        Ok(written) => {
+                            pending_offset += written;
+                            sent += written as u64;
+                        }
+                        Err(quiche::h3::Error::Done) => {}
+                        Err(error) => return Err(format!("HTTP/3 upload failed: {error:?}").into()),
+                    }
+                }
+                loop {
+                    match http3.poll(&mut connection) {
+                        Ok((event_stream, quiche::h3::Event::Headers { list, .. }))
+                            if event_stream == stream =>
+                        {
+                            response_status = header_value(&list, b":status");
+                        }
+                        Ok((event_stream, quiche::h3::Event::Data)) if event_stream == stream => {
+                            while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                                if response_body.len() + read > 256 * 1024 {
+                                    return Err("response is too large".into());
+                                }
+                                response_body.extend_from_slice(&input[..read]);
                             }
-                            response_body.extend_from_slice(&input[..read]);
                         }
-                    }
-                    Ok((event_stream, quiche::h3::Event::Finished)) if event_stream == stream => {
-                        if sent != size {
-                            return Err(invalid("server finished before upload completed"));
+                        Ok((event_stream, quiche::h3::Event::Finished)) if event_stream == stream => {
+                            if sent != size {
+                                return Err(invalid("server finished before upload completed"));
+                            }
+                            let status = response_status.as_deref().unwrap_or("unknown");
+                            let body = String::from_utf8(response_body)?;
+                            if status != "201" {
+                                return Err(format!(
+                                    "file upload returned HTTP {status}: {}",
+                                    body.trim()
+                                )
+                                .into());
+                            }
+                            return Ok(body);
                         }
-                        let status = response_status.as_deref().unwrap_or("unknown");
-                        let body = String::from_utf8(response_body)?;
-                        if status != "201" {
-                            return Err(format!(
-                                "file upload returned HTTP {status}: {}",
-                                body.trim()
-                            )
-                            .into());
+                        Ok((event_stream, quiche::h3::Event::Reset(code)))
+                            if event_stream == stream =>
+                        {
+                            return Err(format!("file upload stream was reset ({code})").into());
                         }
-                        return Ok(body);
+                        Ok((_, _)) => {}
+                        Err(quiche::h3::Error::Done) => break,
+                        Err(error) => return Err(format!("HTTP/3 upload failed: {error:?}").into()),
                     }
-                    Ok((event_stream, quiche::h3::Event::Reset(code)))
-                        if event_stream == stream =>
-                    {
-                        return Err(format!("file upload stream was reset ({code})").into());
-                    }
-                    Ok((_, _)) => {}
-                    Err(quiche::h3::Error::Done) => break,
-                    Err(error) => return Err(format!("HTTP/3 upload failed: {error:?}").into()),
                 }
             }
         }
-    }
+    })();
+    finish_with_cleanup(result, || {
+        close_short_connection(&socket, &mut connection, &mut output)
+    })
 }
 
 fn download_request(
@@ -828,8 +845,8 @@ fn download_request(
     let mut scid_bytes = [0_u8; quiche::MAX_CONN_ID_LEN];
     rand::rng().fill_bytes(&mut scid_bytes);
     let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
     let h3_config = quiche::h3::Config::new()?;
+    let mut connection = quiche::connect(url.domain(), &scid, local_addr, peer_addr, &mut config)?;
     let mut http3 = None;
     let mut certificate_checked = false;
     let mut request_stream = None;
@@ -841,129 +858,134 @@ fn download_request(
     let mut output = [0_u8; MAX_DATAGRAM_SIZE];
     let deadline = Instant::now() + Duration::from_secs(15 * 60);
 
-    loop {
-        if Instant::now() >= deadline {
-            return Err("artifact download timed out".into());
-        }
-        flush_packets(&socket, &mut connection, &mut output)?;
-        match socket.recv_from(&mut input) {
-            Ok((length, from)) => {
-                let info = quiche::RecvInfo {
-                    from,
-                    to: local_addr,
-                };
-                match connection.recv(&mut input[..length], info) {
-                    Ok(_) | Err(quiche::Error::Done) => {}
-                    Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
-                }
+    let result = (|| -> Result<String, AnyError> {
+        loop {
+            if Instant::now() >= deadline {
+                return Err("artifact download timed out".into());
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                if connection.timeout() == Some(Duration::ZERO) {
-                    connection.on_timeout();
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-        if connection.is_closed() {
-            return Err("QUIC connection closed during artifact download".into());
-        }
-        if connection.is_established() && !certificate_checked {
-            verify_certificate_pin(&connection, expected_pin)?;
-            certificate_checked = true;
-            http3 = Some(quiche::h3::Connection::with_transport(
-                &mut connection,
-                &h3_config,
-            )?);
-        }
-        if certificate_checked && request_stream.is_none() {
-            let headers = request_headers(
-                "GET",
-                &url,
-                request_path,
-                None,
-                Some(credential),
-            );
-            request_stream = Some(
-                http3
-                    .as_mut()
-                    .unwrap()
-                    .send_request(&mut connection, &headers, true)?,
-            );
-        }
-        if let Some(http3) = http3.as_mut() {
-            loop {
-                match http3.poll(&mut connection) {
-                    Ok((stream, quiche::h3::Event::Headers { list, .. }))
-                        if Some(stream) == request_stream =>
-                    {
-                        let response_status = header_value(&list, b":status");
-                        expected_length = header_value(&list, b"content-length")
-                            .map(|value| value.parse::<u64>())
-                            .transpose()?;
-                        expected_digest = header_value(&list, b"x-content-sha256");
-                        if response_status.as_deref() != Some("200") {
-                            return Err(format!(
-                                "artifact download returned HTTP {}",
-                                response_status.as_deref().unwrap_or("unknown")
-                            )
-                            .into());
-                        }
-                        let length = expected_length
-                            .ok_or_else(|| invalid("artifact response has no content length"))?;
-                        if length == 0 || length > max_bytes {
-                            return Err(invalid("artifact response exceeds configured size"));
-                        }
+            flush_packets(&socket, &mut connection, &mut output)?;
+            match socket.recv_from(&mut input) {
+                Ok((length, from)) => {
+                    let info = quiche::RecvInfo {
+                        from,
+                        to: local_addr,
+                    };
+                    match connection.recv(&mut input[..length], info) {
+                        Ok(_) | Err(quiche::Error::Done) => {}
+                        Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
                     }
-                    Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
-                        while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
-                            received += read as u64;
-                            if received > max_bytes
-                                || expected_length.is_some_and(|value| received > value)
-                            {
-                                return Err(invalid("artifact body exceeds declared size"));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if connection.timeout() == Some(Duration::ZERO) {
+                        connection.on_timeout();
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+            if connection.is_closed() {
+                return Err("QUIC connection closed during artifact download".into());
+            }
+            if connection.is_established() && !certificate_checked {
+                verify_certificate_pin(&connection, expected_pin)?;
+                certificate_checked = true;
+                http3 = Some(quiche::h3::Connection::with_transport(
+                    &mut connection,
+                    &h3_config,
+                )?);
+            }
+            if certificate_checked && request_stream.is_none() {
+                let headers = request_headers(
+                    "GET",
+                    &url,
+                    request_path,
+                    None,
+                    Some(credential),
+                );
+                request_stream = Some(
+                    http3
+                        .as_mut()
+                        .unwrap()
+                        .send_request(&mut connection, &headers, true)?,
+                );
+            }
+            if let Some(http3) = http3.as_mut() {
+                loop {
+                    match http3.poll(&mut connection) {
+                        Ok((stream, quiche::h3::Event::Headers { list, .. }))
+                            if Some(stream) == request_stream =>
+                        {
+                            let response_status = header_value(&list, b":status");
+                            expected_length = header_value(&list, b"content-length")
+                                .map(|value| value.parse::<u64>())
+                                .transpose()?;
+                            expected_digest = header_value(&list, b"x-content-sha256");
+                            if response_status.as_deref() != Some("200") {
+                                return Err(format!(
+                                    "artifact download returned HTTP {}",
+                                    response_status.as_deref().unwrap_or("unknown")
+                                )
+                                .into());
                             }
-                            destination.write_all(&input[..read])?;
-                            digest.update(&input[..read]);
+                            let length = expected_length
+                                .ok_or_else(|| invalid("artifact response has no content length"))?;
+                            if length == 0 || length > max_bytes {
+                                return Err(invalid("artifact response exceeds configured size"));
+                            }
                         }
-                    }
-                    Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
-                        let length = expected_length
-                            .ok_or_else(|| invalid("artifact response has no content length"))?;
-                        if received != length {
-                            return Err(invalid(
-                                "artifact byte count differs from content length",
-                            ));
+                        Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
+                            while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                                received += read as u64;
+                                if received > max_bytes
+                                    || expected_length.is_some_and(|value| received > value)
+                                {
+                                    return Err(invalid("artifact body exceeds declared size"));
+                                }
+                                destination.write_all(&input[..read])?;
+                                digest.update(&input[..read]);
+                            }
                         }
-                        destination.sync_all()?;
-                        let actual_digest = hex_lower(&digest.finalize());
-                        if expected_digest.as_deref() != Some(actual_digest.as_str()) {
-                            return Err(invalid("artifact digest differs from response header"));
+                        Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
+                            let length = expected_length
+                                .ok_or_else(|| invalid("artifact response has no content length"))?;
+                            if received != length {
+                                return Err(invalid(
+                                    "artifact byte count differs from content length",
+                                ));
+                            }
+                            destination.sync_all()?;
+                            let actual_digest = hex_lower(&digest.finalize());
+                            if expected_digest.as_deref() != Some(actual_digest.as_str()) {
+                                return Err(invalid("artifact digest differs from response header"));
+                            }
+                            return Ok(serde_json::json!({
+                                "bytes": received,
+                                "sha256": actual_digest,
+                            })
+                            .to_string());
                         }
-                        return Ok(serde_json::json!({
-                            "bytes": received,
-                            "sha256": actual_digest,
-                        })
-                        .to_string());
-                    }
-                    Ok((stream, quiche::h3::Event::Reset(code)))
-                        if Some(stream) == request_stream =>
-                    {
-                        return Err(format!("artifact stream was reset ({code})").into());
-                    }
-                    Ok((_, _)) => {}
-                    Err(quiche::h3::Error::Done) => break,
-                    Err(error) => {
-                        return Err(format!("HTTP/3 download failed: {error:?}").into());
+                        Ok((stream, quiche::h3::Event::Reset(code)))
+                            if Some(stream) == request_stream =>
+                        {
+                            return Err(format!("artifact stream was reset ({code})").into());
+                        }
+                        Ok((_, _)) => {}
+                        Err(quiche::h3::Error::Done) => break,
+                        Err(error) => {
+                            return Err(format!("HTTP/3 download failed: {error:?}").into());
+                        }
                     }
                 }
             }
         }
-    }
+    })();
+    finish_with_cleanup(result, || {
+        close_short_connection(&socket, &mut connection, &mut output)
+    })
 }
 
 fn quic_config() -> Result<quiche::Config, quiche::Error> {
@@ -1016,6 +1038,30 @@ fn flush_packets(
             Err(error) => return Err(format!("QUIC send failed: {error:?}").into()),
         }
     }
+}
+
+fn close_short_connection(
+    socket: &UdpSocket,
+    connection: &mut quiche::Connection,
+    output: &mut [u8],
+) {
+    if connection.is_closed() {
+        return;
+    }
+    if connection
+        .close(true, 0, b"short request complete")
+        .is_ok()
+    {
+        let _ = flush_packets(socket, connection, output);
+    }
+}
+
+fn finish_with_cleanup<T>(
+    result: Result<T, AnyError>,
+    cleanup: impl FnOnce(),
+) -> Result<T, AnyError> {
+    cleanup();
+    result
 }
 
 fn request_headers<'a>(
@@ -1222,6 +1268,7 @@ fn invalid(message: &str) -> AnyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn parses_openssl_fingerprint() {
@@ -1242,5 +1289,20 @@ mod tests {
         assert!(validate_shared_file_name("../screenshot.png").is_err());
         assert!(validate_mime("image/png").is_ok());
         assert!(validate_mime("image/png\r\nx-evil: yes").is_err());
+    }
+
+    #[test]
+    fn cleanup_runs_without_changing_request_result() {
+        let cleaned = Cell::new(false);
+        let success = finish_with_cleanup(Ok::<_, AnyError>("response"), || cleaned.set(true));
+        assert_eq!(success.unwrap(), "response");
+        assert!(cleaned.get());
+
+        cleaned.set(false);
+        let failure = finish_with_cleanup::<()>(Err(invalid("request failed")), || {
+            cleaned.set(true)
+        });
+        assert_eq!(failure.unwrap_err().to_string(), "request failed");
+        assert!(cleaned.get());
     }
 }
