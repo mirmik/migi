@@ -3,7 +3,9 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 unit_file="$script_dir/migi.service"
+user_unit_file="$script_dir/migi-user.service"
 env_file="$script_dir/migi.env.example"
+juser_env_file="$script_dir/migi-user.env.example"
 journal_file="$script_dir/journald@migi.conf.d/retention.conf"
 temporary_dir=$(mktemp -d)
 trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
@@ -33,14 +35,36 @@ do
     require_line "$required" "$unit_file"
 done
 
+for required in \
+    'UMask=0077' \
+    'StateDirectoryMode=0700' \
+    'ProtectSystem=strict' \
+    'ProtectHome=read-only' \
+    'MemoryDenyWriteExecute=no' \
+    'ReadWritePaths=%S/migi' \
+    '    -artifact-dir %S/migi/artifacts \' \
+    '    -artifact-max-bytes 268435456 \' \
+    '    -artifact-total-bytes 2147483648 \' \
+    '    -file-dir %S/migi/migi-files \' \
+    '    -apksigner %h/Android/Sdk/build-tools/36.0.0/apksigner \' \
+    '    -aapt2 %h/Android/Sdk/build-tools/36.0.0/aapt2 \'
+do
+    require_line "$required" "$user_unit_file"
+done
+
 require_line 'MIGI_INGEST_LISTEN=127.0.0.1:8787' "$env_file"
 require_line 'MIGI_AGENT_LISTEN=' "$env_file"
 require_line 'MIGI_ADMIN_LISTEN=127.0.0.1:8788' "$env_file"
+require_line 'MIGI_INGEST_LISTEN=127.0.0.1:8787' "$juser_env_file"
 require_line 'SystemMaxUse=256M' "$journal_file"
 require_line 'MaxRetentionSec=14day' "$journal_file"
 
 if grep -Eiq '(secret|token|private[_-]?key)=' "$env_file"; then
     echo "the environment template must not contain credentials" >&2
+    exit 1
+fi
+if grep -Eiq '(secret|token|private[_-]?key)=' "$juser_env_file"; then
+    echo "the user environment template must not contain credentials" >&2
     exit 1
 fi
 
@@ -57,5 +81,10 @@ systemd-analyze security \
     --no-pager \
     --threshold=30 \
     "$temporary_dir/migi.service" >/dev/null
+
+sed 's#^ExecStart=%h/.local/libexec/migi/migi-server#ExecStart=/bin/true#' \
+    "$user_unit_file" > "$temporary_dir/migi-user.service"
+SYSTEMD_UNIT_PATH="$temporary_dir:/usr/lib/systemd/user:/lib/systemd/user" \
+    systemd-analyze verify --man=no --user "$temporary_dir/migi-user.service"
 
 echo "systemd deployment kit verification passed"

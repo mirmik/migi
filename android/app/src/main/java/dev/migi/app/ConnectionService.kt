@@ -84,6 +84,7 @@ class ConnectionService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            preferences.edit().remove(MainActivity.KEY_CONNECTION_RECOVERY_ERROR).apply()
         }
         return START_STICKY
     }

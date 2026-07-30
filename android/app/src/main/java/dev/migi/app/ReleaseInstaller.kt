@@ -170,14 +170,14 @@ class ReleaseInstaller(private val context: Context) {
     private fun verifyAPK(file: File, metadata: ReleaseMetadata) {
         check(file.isFile && file.length() == metadata.size) { "APK size differs" }
         check(file.sha256().equals(metadata.sha256, ignoreCase = true)) { "APK digest differs" }
-        check(metadata.packageName == PILOT_PACKAGE) { "Package is not locally allowlisted" }
-        val localPin = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
+        val pilotPin = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
             .getString(MainActivity.KEY_PILOT_SIGNER_SHA256, null)
-            ?.filterNot { it == ':' || it.isWhitespace() }
-            ?.lowercase()
-        check(localPin?.matches(Regex("[0-9a-f]{64}")) == true) {
-            "Configure the pilot signer SHA-256 in Migi"
-        }
+        val localPin = resolveReleaseSignerPin(
+            packageName = metadata.packageName,
+            pilotPin = pilotPin,
+            selfPackageName = BuildConfig.APPLICATION_ID,
+            selfPin = BuildConfig.SELF_UPDATE_SIGNER_SHA256,
+        )
         check(localPin == metadata.signerSHA256.lowercase()) { "Release signer is not locally pinned" }
 
         val packageInfo = requireNotNull(
@@ -274,7 +274,6 @@ class ReleaseInstaller(private val context: Context) {
     private data class Connection(val endpoint: String, val pin: String, val credential: String)
 
     companion object {
-        private const val PILOT_PACKAGE = "dev.migi.pilot"
         private const val MAX_APK_BYTES = 256L shl 20
         const val ACTION_INSTALL_RESULT = "dev.migi.app.action.INSTALL_RESULT"
         const val EXTRA_ARTIFACT_ID = "artifact_id"
@@ -284,6 +283,37 @@ class ReleaseInstaller(private val context: Context) {
         var foregroundActivity: Activity? = null
     }
 }
+
+internal fun resolveReleaseSignerPin(
+    packageName: String,
+    pilotPin: String?,
+    selfPackageName: String,
+    selfPin: String,
+): String {
+    val (candidate, missingMessage) = when (packageName) {
+        PILOT_PACKAGE -> pilotPin to "Configure the pilot signer SHA-256 in Migi"
+        selfPackageName -> selfPin to "Migi self-update signer pin is not configured"
+        else -> error("Package is not locally allowlisted")
+    }
+    check(!candidate.isNullOrBlank()) { missingMessage }
+    val normalized = candidate
+        .filterNot { it == ':' || it.isWhitespace() }
+        .lowercase()
+    check(
+        candidate.all {
+            it.isDigit() || it.lowercaseChar() in 'a'..'f' || it == ':' || it.isWhitespace()
+        } && normalized.matches(Regex("[0-9a-f]{64}")),
+    ) {
+        if (packageName == PILOT_PACKAGE) {
+            "Configure the pilot signer SHA-256 in Migi"
+        } else {
+            "Migi self-update signer pin is malformed"
+        }
+    }
+    return normalized
+}
+
+private const val PILOT_PACKAGE = "dev.migi.pilot"
 
 class InstallResultReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

@@ -64,8 +64,78 @@ Install on a connected device:
 adb shell am start -n dev.migi.app/.MainActivity
 ```
 
+### Migi release identity
+
+Debug builds keep the repository defaults (`versionCode` 1, `versionName`
+`0.1.0`) and use the normal Android debug key. A release build fails closed
+unless all of the following environment variables are present:
+
+```bash
+export MIGI_VERSION_CODE=2
+export MIGI_VERSION_NAME=0.2.0
+export MIGI_RELEASE_SIGNER_SHA256='64 lowercase hex characters'
+export MIGI_KEYSTORE=/secure/outside-the-repository/migi-release.jks
+export MIGI_KEY_ALIAS=migi
+export MIGI_STORE_PASSWORD='...'
+export MIGI_KEY_PASSWORD='...'
+./gradlew :app:assembleRelease
+```
+
+The keystore path must be absolute, must name an existing file, and must stay
+outside this repository. Release signing enables APK Signature Scheme v2 only;
+v1, v3, v3.1, and v4 are disabled to match the server's deliberately narrow
+release verifier. The certificate SHA-256 is public and is compiled into the
+APK for the self-update policy; passwords and private key material must never
+enter Git, shell history, build logs, or Migi publisher configuration.
+
+`MIGI_VERSION_CODE` is an explicit positive monotonic release number. Never
+derive it implicitly from a local clock or silently auto-increment it: the
+reviewed publication command must name the intended version, and the server
+rejects a version that is not newer than the latest published package release.
+
+The currently deployed `dev.migi.app` is debug-signed. Android cannot replace
+it with an APK signed by a new stable release key. Enabling self-update
+therefore requires one controlled bootstrap: preserve a known-good release
+APK, uninstall the debug build, install the release-signed baseline with ADB,
+pair the phone again, and restore its notification, unknown-source, and battery
+settings. Every subsequent Migi update must use the same backed-up release key.
+
+Initialize a dedicated signing directory once:
+
+```bash
+scripts/init-migi-release-signing \
+  /secure/outside-the-repository/migi-release-signing
+```
+
+The command refuses to overwrite existing material, creates a 4096-bit
+long-lived release key and random password under mode-0700/0600 protection,
+records the public signer fingerprint, and creates a recovery archive. Copy
+that archive to offline or independently backed-up storage before treating the
+key as recoverable. Load the generated `signing.env` only into the release
+shell; do not copy its contents into Git, logs, chat, or publisher JSON.
+
+After the signing variables above are loaded from a protected external secret
+source, publish a reviewed clean commit with:
+
+```bash
+scripts/publish-migi-release \
+  --version-code 3 \
+  --version-name 0.3.0 \
+  --notes "Reconnect automatically after updating Migi" \
+  --publisher-config /secure/outside-the-repository/migi-publisher.json
+```
+
+The publisher JSON must be a regular file inaccessible to group and other
+users. The command refuses a dirty worktree, builds the release, independently
+checks package, version, one exact signer, and v2-only signing, then records the
+current Git revision in the immutable release. Add `--verify-only` to run every
+local build and APK check without uploading. Repeating a successful publication
+of the same APK is idempotent through its content digest.
+
 Before idle testing, grant notification permission in the app and set Samsung
-battery usage for Migi to **Unrestricted**.
+battery usage for Migi to **Unrestricted**. Once paired, Migi restarts its
+foreground connection after both a package replacement and a completed device
+boot; incomplete connection settings never trigger a background start.
 
 The build invokes Cargo through `cargo-ndk` and packages
 `libmigi_quiche.so` for `arm64-v8a`. On a fresh workstation:

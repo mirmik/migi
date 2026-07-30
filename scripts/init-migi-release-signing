@@ -1,0 +1,119 @@
+#!/bin/sh
+set -eu
+
+usage() {
+	echo "usage: $0 DIRECTORY" >&2
+}
+
+[ "$#" -eq 1 ] || {
+	usage
+	exit 2
+}
+
+migi_target=$1
+migi_script_path=$(readlink -f "$0")
+migi_repo_root=$(cd "$(dirname "$migi_script_path")/.." && pwd -P)
+
+case "$migi_target" in
+	/*) ;;
+	*)
+		echo "DIRECTORY must be an absolute path outside the repository" >&2
+		exit 1
+		;;
+esac
+
+mkdir -p "$migi_target"
+chmod 700 "$migi_target"
+migi_target=$(cd "$migi_target" && pwd -P)
+case "$migi_target/" in
+	"$migi_repo_root/"*)
+		echo "Signing material must stay outside the repository" >&2
+		exit 1
+		;;
+esac
+
+migi_keystore="$migi_target/migi-release.p12"
+migi_environment="$migi_target/signing.env"
+migi_signer_file="$migi_target/signer.sha256"
+migi_readme="$migi_target/RECOVERY.txt"
+migi_bundle="$migi_target/migi-release-recovery.tar.gz"
+
+for migi_output in \
+	"$migi_keystore" \
+	"$migi_environment" \
+	"$migi_signer_file" \
+	"$migi_readme" \
+	"$migi_bundle"
+do
+	if [ -e "$migi_output" ]; then
+		echo "Refusing to replace existing signing material: $migi_output" >&2
+		exit 1
+	fi
+done
+
+umask 077
+migi_password=$(openssl rand -base64 48 | tr -d '\n')
+migi_temporary_keystore="$migi_target/.migi-release.p12.tmp.$$"
+migi_temporary_cert="$migi_target/.migi-release.der.tmp.$$"
+trap 'rm -f "$migi_temporary_keystore" "$migi_temporary_cert"' EXIT HUP INT TERM
+
+keytool -genkeypair \
+	-noprompt \
+	-alias migi \
+	-keyalg RSA \
+	-keysize 4096 \
+	-validity 36500 \
+	-dname "CN=Migi Release,O=Migi" \
+	-storetype PKCS12 \
+	-keystore "$migi_temporary_keystore" \
+	-storepass "$migi_password" \
+	-keypass "$migi_password"
+
+keytool -exportcert \
+	-alias migi \
+	-keystore "$migi_temporary_keystore" \
+	-storepass "$migi_password" \
+	-file "$migi_temporary_cert"
+migi_signer=$(sha256sum "$migi_temporary_cert" | cut -d ' ' -f 1)
+
+mv "$migi_temporary_keystore" "$migi_keystore"
+chmod 600 "$migi_keystore"
+printf '%s\n' "$migi_signer" >"$migi_signer_file"
+chmod 644 "$migi_signer_file"
+
+{
+	printf "export MIGI_RELEASE_SIGNER_SHA256='%s'\n" "$migi_signer"
+	printf "export MIGI_KEYSTORE='%s'\n" "$migi_keystore"
+	printf "export MIGI_KEY_ALIAS='migi'\n"
+	printf "export MIGI_STORE_PASSWORD='%s'\n" "$migi_password"
+	printf "export MIGI_KEY_PASSWORD='%s'\n" "$migi_password"
+} >"$migi_environment"
+chmod 600 "$migi_environment"
+
+{
+	echo "Migi release signing recovery kit"
+	echo
+	echo "Signer SHA-256: $migi_signer"
+	echo
+	echo "The private key and its password are both required for every future Migi update."
+	echo "Keep this directory mode 0700 and signing.env/migi-release.p12 mode 0600."
+	echo "Copy migi-release-recovery.tar.gz to an offline or independently backed-up device."
+	echo "Test a restored copy with:"
+	echo
+	echo "  . ./signing.env"
+	echo "  keytool -list -alias \"\$MIGI_KEY_ALIAS\" -keystore \"\$MIGI_KEYSTORE\" -storepass \"\$MIGI_STORE_PASSWORD\""
+	echo
+	echo "Never commit, upload through Migi, or paste signing.env into logs or chat."
+} >"$migi_readme"
+chmod 600 "$migi_readme"
+
+tar -C "$migi_target" -czf "$migi_bundle" \
+	migi-release.p12 \
+	signing.env \
+	signer.sha256 \
+	RECOVERY.txt
+chmod 600 "$migi_bundle"
+
+echo "Created protected Migi release signing material in $migi_target"
+echo "Signer SHA-256: $migi_signer"
+echo "An off-host copy of $migi_bundle is still required."

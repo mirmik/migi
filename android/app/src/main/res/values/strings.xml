@@ -23,6 +23,10 @@
     <string name="pilot_signer_invalid">Enter exactly 64 hexadecimal digits</string>
     <string name="download_release">Download and verify</string>
     <string name="install_release">Install</string>
+    <string name="install_migi_update">Install Migi update</string>
+    <string name="self_update_warning">Migi self-update — Android will stop and replace this app. Keep the known-good APK for manual recovery.</string>
+    <string name="release_publisher">Publisher: %1$s</string>
+    <string name="release_notes">Release notes: %1$s</string>
     <string name="release_downloaded">Release downloaded and verified</string>
     <string name="release_failed">Release failed: %1$s</string>
     <string name="allow_unknown_source">Allow Migi as an installation source, then tap Install again</string>
@@ -40,6 +44,7 @@
     <string name="service_running">Connection service is running</string>
     <string name="service_stopped">Connection service is stopped</string>
     <string name="service_starting">Connection service is starting</string>
+    <string name="connection_recovery_failed">Automatic Migi connection recovery failed: %1$s</string>
     <string name="device_not_paired">Scan a Migi pairing QR with the phone camera</string>
     <string name="invalid_pairing_invitation">Invalid or expired pairing invitation</string>
     <string name="confirm_pairing_title">Pair with this Migi server?</string>

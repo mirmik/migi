@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 4 ]; then
+	echo "usage: $0 APK VERSION_CODE VERSION_NAME SIGNER_SHA256" >&2
+	exit 2
+fi
+
+migi_apk=$1
+migi_expected_code=$2
+migi_expected_name=$3
+migi_expected_signer=$(printf '%s' "$4" | tr -d ':[:space:]' | tr 'A-F' 'a-f')
+migi_android_home=${ANDROID_HOME:-/home/mirmik/Android/Sdk}
+migi_apksigner=${MIGI_APKSIGNER:-"$migi_android_home/build-tools/36.0.0/apksigner"}
+migi_aapt2=${MIGI_AAPT2:-"$migi_android_home/build-tools/36.0.0/aapt2"}
+
+case "$migi_expected_code" in
+	''|*[!0-9]*)
+		echo "Expected version code must be a positive integer" >&2
+		exit 1
+		;;
+esac
+if [ "$migi_expected_code" -le 0 ] || [ "$migi_expected_code" -gt 2100000000 ]; then
+	echo "Expected version code must be between 1 and 2100000000" >&2
+	exit 1
+fi
+if [ -z "$migi_expected_name" ]; then
+	echo "Expected version name must not be empty" >&2
+	exit 1
+fi
+case "$migi_expected_signer" in
+	????????????????????????????????????????????????????????????????) ;;
+	*)
+		echo "Expected signer must be a SHA-256 certificate digest" >&2
+		exit 1
+		;;
+esac
+case "$migi_expected_signer" in
+	*[!0-9a-f]*)
+		echo "Expected signer must be a SHA-256 certificate digest" >&2
+		exit 1
+		;;
+esac
+if [ ! -f "$migi_apk" ] || [ ! -s "$migi_apk" ]; then
+	echo "APK must be a non-empty regular file: $migi_apk" >&2
+	exit 1
+fi
+if [ ! -x "$migi_apksigner" ] || [ ! -x "$migi_aapt2" ]; then
+	echo "Pinned Android Build Tools 36.0.0 apksigner and aapt2 are required" >&2
+	exit 1
+fi
+
+migi_verify_tmp=$(mktemp -d /tmp/migi-apk-verify.XXXXXX)
+trap 'rm -rf "$migi_verify_tmp"' EXIT HUP INT TERM
+
+"$migi_apksigner" verify --verbose --print-certs "$migi_apk" >"$migi_verify_tmp/signing"
+"$migi_aapt2" dump badging "$migi_apk" >"$migi_verify_tmp/badging"
+
+grep -Fqx 'Verified using v1 scheme (JAR signing): false' "$migi_verify_tmp/signing"
+grep -Fqx 'Verified using v2 scheme (APK Signature Scheme v2): true' "$migi_verify_tmp/signing"
+grep -Fqx 'Verified using v3 scheme (APK Signature Scheme v3): false' "$migi_verify_tmp/signing"
+grep -Fqx 'Verified using v3.1 scheme (APK Signature Scheme v3.1): false' "$migi_verify_tmp/signing"
+grep -Fqx 'Verified using v4 scheme (APK Signature Scheme v4): false' "$migi_verify_tmp/signing"
+grep -Fqx 'Number of signers: 1' "$migi_verify_tmp/signing"
+
+migi_actual_signer=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$migi_verify_tmp/signing")
+migi_actual_package=$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" "$migi_verify_tmp/badging")
+migi_actual_code=$(sed -n "s/^package: .* versionCode='\([^']*\)'.*/\1/p" "$migi_verify_tmp/badging")
+migi_actual_name=$(sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p" "$migi_verify_tmp/badging")
+
+if [ "$migi_actual_package" != "dev.migi.app" ]; then
+	echo "APK package is $migi_actual_package, expected dev.migi.app" >&2
+	exit 1
+fi
+if [ "$migi_actual_code" != "$migi_expected_code" ]; then
+	echo "APK version code is $migi_actual_code, expected $migi_expected_code" >&2
+	exit 1
+fi
+if [ "$migi_actual_name" != "$migi_expected_name" ]; then
+	echo "APK version name is $migi_actual_name, expected $migi_expected_name" >&2
+	exit 1
+fi
+if [ "$migi_actual_signer" != "$migi_expected_signer" ]; then
+	echo "APK signer does not match MIGI_RELEASE_SIGNER_SHA256" >&2
+	exit 1
+fi
+
+echo "Verified Migi APK: package=$migi_actual_package version=$migi_actual_name ($migi_actual_code) signer=$migi_actual_signer"

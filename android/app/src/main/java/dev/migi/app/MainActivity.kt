@@ -20,6 +20,8 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import java.time.Instant
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import org.json.JSONObject
 
@@ -34,6 +36,9 @@ class MainActivity : Activity() {
 	private lateinit var fileList: LinearLayout
 	private lateinit var batteryButton: Button
 	private var pendingDownload: SharedFile? = null
+	private val releaseExecutor = Executors.newSingleThreadExecutor()
+	private val releaseRefreshGeneration = AtomicLong()
+	private var releaseChanges: AutoCloseable? = null
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
 		if (key == KEY_FILES_GENERATION) runOnUiThread(::refreshFiles)
@@ -60,19 +65,26 @@ class MainActivity : Activity() {
 			super.onStart()
 			ReleaseInstaller.foregroundActivity = this
 			preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
+			releaseChanges = ReleaseChanges.subscribe(::refreshReleases)
 			refreshPagerMessage()
-			ReleaseInstaller(this).reconcileSessions()
-			refreshReleases()
+			refreshReleases(reconcile = true)
 			refreshFiles()
 		refreshBatteryOptimizationState()
 	}
 
 		override fun onStop() {
+			releaseChanges?.close()
+			releaseChanges = null
 			if (ReleaseInstaller.foregroundActivity === this) {
 				ReleaseInstaller.foregroundActivity = null
 			}
 		preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
-		super.onStop()
+			super.onStop()
+	}
+
+	override fun onDestroy() {
+		releaseExecutor.shutdownNow()
+		super.onDestroy()
 	}
 
     private fun buildContentView() {
@@ -93,7 +105,12 @@ class MainActivity : Activity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT
         }
         status = TextView(this).apply {
+            val recoveryError = preferences.getString(KEY_CONNECTION_RECOVERY_ERROR, null)
             text = when {
+                recoveryError != null -> getString(
+                    R.string.connection_recovery_failed,
+                    recoveryError,
+                )
                 ConnectionService.isRunning -> getString(R.string.service_running)
                 CredentialStore(this@MainActivity).load() == null -> getString(R.string.device_not_paired)
                 else -> getString(R.string.service_stopped)
@@ -319,9 +336,32 @@ class MainActivity : Activity() {
 		else -> "$bytes B"
 	}
 
-	private fun refreshReleases() {
+	private fun refreshReleases(reconcile: Boolean = false) {
+		if (releaseExecutor.isShutdown) return
+		val generation = releaseRefreshGeneration.incrementAndGet()
+		runCatching {
+			releaseExecutor.execute {
+				val result = runCatching {
+					if (reconcile) ReleaseInstaller(applicationContext).reconcileSessions()
+					ReleaseRepository(applicationContext).use { it.listReleases() }
+				}
+				runOnUiThread {
+					if (isDestroyed || generation != releaseRefreshGeneration.get()) {
+						return@runOnUiThread
+					}
+					result.onSuccess(::renderReleases).onFailure {
+						status.text = getString(
+							R.string.release_failed,
+							it.message ?: it.javaClass.simpleName,
+						)
+					}
+				}
+			}
+		}
+	}
+
+	private fun renderReleases(releases: List<PendingRelease>) {
 		releaseList.removeAllViews()
-		val releases = ReleaseRepository(this).listReleases()
 		if (releases.isEmpty()) {
 			releaseList.addView(TextView(this).apply {
 				setText(R.string.releases_empty)
@@ -342,6 +382,18 @@ class MainActivity : Activity() {
 					append(release.artifact.versionCode)
 					append(") — ")
 					append(release.state)
+					if (release.artifact.packageName == BuildConfig.APPLICATION_ID) {
+						append("\n")
+						append(getString(R.string.self_update_warning))
+					}
+					release.publisher?.takeIf { it.isNotBlank() }?.let {
+						append("\n")
+						append(getString(R.string.release_publisher, it))
+					}
+					release.releaseNotes?.takeIf { it.isNotBlank() }?.let {
+						append("\n")
+						append(getString(R.string.release_notes, it))
+					}
 					release.error?.let { append("\n").append(it) }
 				}
 				setTextIsSelectable(true)
@@ -382,7 +434,13 @@ class MainActivity : Activity() {
 						}
 						return@apply
 					}
-					setText(R.string.install_release)
+					setText(
+						if (release.artifact.packageName == BuildConfig.APPLICATION_ID) {
+							R.string.install_migi_update
+						} else {
+							R.string.install_release
+						},
+					)
 					setOnClickListener {
 						val installer = ReleaseInstaller(this@MainActivity)
 						if (!packageManager.canRequestPackageInstalls()) {
@@ -562,6 +620,7 @@ class MainActivity : Activity() {
 		const val KEY_DND_OVERRIDE = "dnd_override"
 			const val KEY_AUDIO_VOLUME = "audio_volume"
 			const val KEY_PILOT_SIGNER_SHA256 = "pilot_signer_sha256"
+			const val KEY_CONNECTION_RECOVERY_ERROR = "connection_recovery_error"
 			const val DEFAULT_AUDIO_VOLUME = 100
 			private const val REQUEST_CHOOSE_FILE = 20
 			private const val REQUEST_SAVE_FILE = 21

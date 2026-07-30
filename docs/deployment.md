@@ -31,7 +31,17 @@ systemctl --user restart migi.service
 
 Inspect logs with `journalctl --user -u migi.service`. The user deployment uses
 `~/.config/migi` for its environment and TLS material and
-`~/.local/state/migi` for SQLite state.
+`~/.local/state/migi` for SQLite state. Immutable APKs live in
+`~/.local/state/migi/artifacts` and shared files in
+`~/.local/state/migi/migi-files`; the service umask and state-directory mode
+keep both private to the login user.
+
+The user unit enables release delivery with the pinned Android Build Tools
+36.0.0 under `~/Android/Sdk`. Both verifier paths are explicit systemd
+specifier paths in the unit, not publisher-controlled environment values.
+Startup fails if either verifier is missing or unusable. `apksigner` and
+`aapt2` are read through the otherwise read-only home tree, while only the Migi
+state directory remains writable.
 
 ## System service
 

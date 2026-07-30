@@ -1,0 +1,127 @@
+#!/bin/sh
+set -eu
+
+migi_version_code=
+migi_version_name=
+migi_notes=
+migi_publisher_config=
+migi_build_id=
+migi_verify_only=0
+
+usage() {
+	echo "usage: $0 --version-code N --version-name NAME --notes TEXT --publisher-config PATH [--build-id ID] [--verify-only]" >&2
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--version-code)
+			[ "$#" -ge 2 ] || { usage; exit 2; }
+			migi_version_code=$2
+			shift 2
+			;;
+		--version-name)
+			[ "$#" -ge 2 ] || { usage; exit 2; }
+			migi_version_name=$2
+			shift 2
+			;;
+		--notes)
+			[ "$#" -ge 2 ] || { usage; exit 2; }
+			migi_notes=$2
+			shift 2
+			;;
+		--publisher-config)
+			[ "$#" -ge 2 ] || { usage; exit 2; }
+			migi_publisher_config=$2
+			shift 2
+			;;
+		--build-id)
+			[ "$#" -ge 2 ] || { usage; exit 2; }
+			migi_build_id=$2
+			shift 2
+			;;
+		--verify-only)
+			migi_verify_only=1
+			shift
+			;;
+		*)
+			usage
+			exit 2
+			;;
+	esac
+done
+
+case "$migi_version_code" in
+	''|*[!0-9]*) echo "A positive --version-code is required" >&2; exit 1 ;;
+esac
+if [ "$migi_version_code" -le 0 ] || [ "$migi_version_code" -gt 2100000000 ]; then
+	echo "--version-code must be between 1 and 2100000000" >&2
+	exit 1
+fi
+if [ -z "$migi_version_name" ]; then
+	echo "A non-empty --version-name is required" >&2
+	exit 1
+fi
+if ! printf '%s' "$migi_notes" | grep -q '[^[:space:]]'; then
+	echo "Non-empty --notes are required" >&2
+	exit 1
+fi
+if [ -z "$migi_publisher_config" ] || [ ! -f "$migi_publisher_config" ]; then
+	echo "--publisher-config must name an existing regular file" >&2
+	exit 1
+fi
+migi_config_mode=$(stat -c '%a' "$migi_publisher_config")
+if [ $((migi_config_mode % 100)) -ne 0 ]; then
+	echo "Publisher configuration must not be accessible by group or other users" >&2
+	exit 1
+fi
+
+: "${MIGI_RELEASE_SIGNER_SHA256:?MIGI_RELEASE_SIGNER_SHA256 is required}"
+: "${MIGI_KEYSTORE:?MIGI_KEYSTORE is required}"
+: "${MIGI_KEY_ALIAS:?MIGI_KEY_ALIAS is required}"
+: "${MIGI_STORE_PASSWORD:?MIGI_STORE_PASSWORD is required}"
+: "${MIGI_KEY_PASSWORD:?MIGI_KEY_PASSWORD is required}"
+
+migi_script_path=$(readlink -f "$0")
+migi_repo_root=$(cd "$(dirname "$migi_script_path")/.." && pwd -P)
+if [ -n "$(git -C "$migi_repo_root" status --porcelain)" ]; then
+	echo "Refusing to publish from a dirty worktree; commit the reviewed source first" >&2
+	exit 1
+fi
+migi_source_revision=$(git -C "$migi_repo_root" rev-parse HEAD)
+if [ -z "$migi_build_id" ]; then
+	migi_build_id="migi-$migi_version_code-$migi_source_revision"
+fi
+
+export MIGI_VERSION_CODE="$migi_version_code"
+export MIGI_VERSION_NAME="$migi_version_name"
+
+(
+	cd "$migi_repo_root/android"
+	./gradlew :app:assembleRelease
+)
+
+migi_apk="$migi_repo_root/android/app/build/outputs/apk/release/app-release.apk"
+"$migi_repo_root/scripts/verify-migi-release-apk" \
+	"$migi_apk" \
+	"$migi_version_code" \
+	"$migi_version_name" \
+	"$MIGI_RELEASE_SIGNER_SHA256"
+
+if [ "$migi_verify_only" -eq 1 ]; then
+	echo "Verification-only mode: release was not uploaded"
+	exit 0
+fi
+
+migi_publish_tmp=$(mktemp -d /tmp/migi-publish.XXXXXX)
+trap 'rm -rf "$migi_publish_tmp"' EXIT HUP INT TERM
+(
+	cd "$migi_repo_root/server"
+	go build -o "$migi_publish_tmp/migi-publish" ./cmd/migi-publish
+)
+"$migi_publish_tmp/migi-publish" \
+	-config "$migi_publisher_config" \
+	-apk "$migi_apk" \
+	-version-code "$migi_version_code" \
+	-notes "$migi_notes" \
+	-source-revision "$migi_source_revision" \
+	-build-id "$migi_build_id"

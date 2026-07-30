@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArraySet
 
 data class ArtifactReference(
     val id: String,
@@ -82,7 +83,7 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
         val artifact = requireNotNull(event.artifact)
         val database = writableDatabase
         database.beginTransaction()
-        return try {
+        val changed = try {
             val current = readCursor(database)
             if (event.id <= current) {
                 false
@@ -109,6 +110,8 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
         } finally {
             database.endTransaction()
         }
+        if (changed) ReleaseChanges.publish()
+        return changed
     }
 
     fun advanceEventCursor(eventID: Long): Boolean {
@@ -134,6 +137,7 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
         } finally {
             database.endTransaction()
         }
+        ReleaseChanges.publish()
     }
 
     fun listReleases(): List<PendingRelease> = readableDatabase.rawQuery(
@@ -193,6 +197,7 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
             "artifact_id = ? AND package_name = ? AND version_code = ?",
             arrayOf(artifactID, release.packageName, release.versionCode.toString()),
         ) == 1) { "Pending release identity changed" }
+        ReleaseChanges.publish()
     }
 
     fun updateState(
@@ -216,6 +221,7 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
             "artifact_id = ?",
             arrayOf(artifactID),
         ) == 1) { "Unknown release $artifactID" }
+        ReleaseChanges.publish()
     }
 
     private fun readCursor(database: SQLiteDatabase): Long = database.rawQuery(
@@ -266,6 +272,21 @@ class ReleaseRepository(context: Context) : SQLiteOpenHelper(
             STATE_FAILED,
             STATE_DISMISSED,
         )
+    }
+}
+
+internal object ReleaseChanges {
+    private val listeners = CopyOnWriteArraySet<() -> Unit>()
+
+    fun subscribe(listener: () -> Unit): AutoCloseable {
+        listeners.add(listener)
+        return AutoCloseable { listeners.remove(listener) }
+    }
+
+    fun publish() {
+        listeners.forEach { listener ->
+            runCatching(listener)
+        }
     }
 }
 
