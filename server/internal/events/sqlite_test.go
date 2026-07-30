@@ -79,6 +79,89 @@ func TestPairingCodeIsOneTimeAndCredentialCanBeRevoked(t *testing.T) {
 	}
 }
 
+func TestNewPairingStartsAfterExistingEventHistory(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	existing, err := journal.Append(ctx, Input{Kind: "test", Title: "before pairing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretHash := sha256.Sum256([]byte("history baseline secret"))
+	tokenHash := sha256.Sum256([]byte("history baseline token"))
+	if err := journal.CreatePairingCode(ctx, secretHash[:], time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RedeemPairingCode(
+		ctx, secretHash[:], "phone-history", "Samsung", tokenHash[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	through, err := journal.Acknowledged(ctx, "phone-history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != existing.ID {
+		t.Fatalf("initial acknowledged cursor is %d, want %d", through, existing.ID)
+	}
+	if replay, err := journal.After(ctx, through, 10); err != nil || len(replay) != 0 {
+		t.Fatalf("pre-pairing replay = %#v, error %v", replay, err)
+	}
+	next, err := journal.Append(ctx, Input{Kind: "test", Title: "after pairing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := journal.After(ctx, through, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 1 || replay[0].ID != next.ID {
+		t.Fatalf("post-pairing replay = %#v, want event %d", replay, next.ID)
+	}
+}
+
+func TestRepairingExistingDevicePreservesAcknowledgedCursor(t *testing.T) {
+	journal := openTestJournal(t)
+	ctx := context.Background()
+	firstSecret := sha256.Sum256([]byte("first repair secret"))
+	firstToken := sha256.Sum256([]byte("first repair token"))
+	if err := journal.CreatePairingCode(ctx, firstSecret[:], time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RedeemPairingCode(
+		ctx, firstSecret[:], "phone-repair", "Samsung", firstToken[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	event, err := journal.Append(ctx, Input{Kind: "test", Title: "acknowledged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Acknowledge(ctx, "phone-repair", event.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(ctx, Input{Kind: "test", Title: "still pending"}); err != nil {
+		t.Fatal(err)
+	}
+
+	secondSecret := sha256.Sum256([]byte("second repair secret"))
+	secondToken := sha256.Sum256([]byte("second repair token"))
+	if err := journal.CreatePairingCode(ctx, secondSecret[:], time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RedeemPairingCode(
+		ctx, secondSecret[:], "phone-repair", "Samsung", secondToken[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	through, err := journal.Acknowledged(ctx, "phone-repair")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != event.ID {
+		t.Fatalf("repaired device cursor is %d, want preserved %d", through, event.ID)
+	}
+}
+
 func TestAgentTokenAuthenticatesTracksUseAndCanBeRevoked(t *testing.T) {
 	journal := openTestJournal(t)
 	ctx := context.Background()

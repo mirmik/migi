@@ -355,6 +355,13 @@ ON CONFLICT(device_id) DO UPDATE SET
 	if err != nil {
 		return fmt.Errorf("store device credential: %w", err)
 	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO device_acks(device_id, through_id, updated_at)
+VALUES(?, COALESCE((SELECT max(id) FROM events), 0), ?)
+ON CONFLICT(device_id) DO NOTHING`, deviceID, now)
+	if err != nil {
+		return fmt.Errorf("initialize device acknowledgement cursor: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit pairing transaction: %w", err)
 	}
