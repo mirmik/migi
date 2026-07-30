@@ -177,6 +177,14 @@ class MainActivity : Activity() {
                 textSize = 24f
             })
             addView(TextView(this@MainActivity).apply {
+                text = getString(
+                    R.string.app_version,
+                    BuildConfig.VERSION_NAME,
+                    BuildConfig.VERSION_CODE,
+                )
+                textSize = 13f
+            })
+            addView(TextView(this@MainActivity).apply {
                 setText(R.string.pager_title)
                 textSize = 13f
             })
