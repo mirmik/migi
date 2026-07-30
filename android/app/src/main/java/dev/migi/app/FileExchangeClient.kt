@@ -85,12 +85,60 @@ internal class FileExchangeClient(private val context: Context) {
     }
 
     fun download(file: SharedFile, destination: Uri) {
+        val temporary = downloadVerified(
+            file = file,
+            directoryName = "file-downloads",
+            prefix = "download-",
+            suffix = ".tmp",
+            maxBytes = MAX_FILE_BYTES,
+        )
+        try {
+            temporary.inputStream().use { input ->
+                context.contentResolver.openOutputStream(destination, "wt").use { output ->
+                    requireNotNull(output) { "Cannot open download destination" }
+                    input.copyTo(output, 64 * 1024)
+                    output.flush()
+                }
+            }
+        } finally {
+            temporary.delete()
+        }
+    }
+
+    fun downloadForViewing(file: SharedFile): File {
+        require(file.isViewableHTML()) { "Only HTML files can be opened in Migi" }
+        File(context.cacheDir, HtmlViewerPolicy.CACHE_DIRECTORY)
+            .listFiles()
+            ?.filter {
+                it.name.startsWith(HtmlViewerPolicy.FILE_PREFIX) &&
+                    it.name.endsWith(".html")
+            }
+            ?.forEach(File::delete)
+        return downloadVerified(
+            file = file,
+            directoryName = HtmlViewerPolicy.CACHE_DIRECTORY,
+            prefix = HtmlViewerPolicy.FILE_PREFIX,
+            suffix = ".html",
+            maxBytes = HtmlViewerPolicy.MAX_HTML_BYTES,
+        )
+    }
+
+    private fun downloadVerified(
+        file: SharedFile,
+        directoryName: String,
+        prefix: String,
+        suffix: String,
+        maxBytes: Long,
+    ): File {
+        require(file.size in 1..maxBytes) {
+            "File exceeds ${maxBytes / (1024 * 1024)} MiB viewer limit"
+        }
         val config = config()
-        val directory = File(context.cacheDir, "file-downloads").apply {
+        val directory = File(context.cacheDir, directoryName).apply {
             check(mkdirs() || isDirectory) { "Failed to create download cache" }
         }
-        val temporary = File.createTempFile("download-", ".tmp", directory)
-        try {
+        val temporary = File.createTempFile(prefix, suffix, directory)
+        return try {
             ParcelFileDescriptor.open(
                 temporary,
                 ParcelFileDescriptor.MODE_READ_WRITE or ParcelFileDescriptor.MODE_TRUNCATE,
@@ -102,7 +150,7 @@ internal class FileExchangeClient(private val context: Context) {
                         config.credential,
                         file.id,
                         descriptor.fd,
-                        MAX_FILE_BYTES,
+                        maxBytes,
                     ),
                 ))
                 require(verified.getLong("bytes") == file.size) { "Downloaded size differs from metadata" }
@@ -111,15 +159,10 @@ internal class FileExchangeClient(private val context: Context) {
                 }
             }
             require(temporary.length() == file.size) { "Downloaded size differs from metadata" }
-            temporary.inputStream().use { input ->
-                context.contentResolver.openOutputStream(destination, "wt").use { output ->
-                    requireNotNull(output) { "Cannot open download destination" }
-                    input.copyTo(output, 64 * 1024)
-                    output.flush()
-                }
-            }
-        } finally {
+            temporary
+        } catch (error: Throwable) {
             temporary.delete()
+            throw error
         }
     }
 
@@ -186,4 +229,11 @@ internal class FileExchangeClient(private val context: Context) {
             expiresAt = Instant.parse(json.getString("expires_at")),
         )
     }
+}
+
+internal fun SharedFile.isViewableHTML(): Boolean {
+    val normalizedMime = mime.substringBefore(';').trim()
+    return normalizedMime.equals("text/html", ignoreCase = true) ||
+        name.endsWith(".html", ignoreCase = true) ||
+        name.endsWith(".htm", ignoreCase = true)
 }

@@ -21,6 +21,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -417,6 +418,50 @@ class MainActivity : Activity() {
 							)
 							setTextIsSelectable(true)
 						})
+						if (file.isViewableHTML()) {
+							item.addView(Button(this).apply {
+								setText(R.string.open_html_file)
+								setOnClickListener {
+									val button = this
+									button.isEnabled = false
+									button.setText(R.string.opening_html_file)
+									updateStatus(R.string.opening_html_file)
+									thread(name = "migi-html-download") {
+										val result = runCatching {
+											FileExchangeClient(this@MainActivity)
+												.downloadForViewing(file)
+										}
+										runOnUiThread {
+											button.isEnabled = true
+											button.setText(R.string.open_html_file)
+											result.onSuccess { temporary ->
+												updateStatus(
+													getString(R.string.html_file_opened, file.name),
+												)
+												startActivity(
+													HtmlViewerActivity.intent(
+														this@MainActivity,
+														file.name,
+														temporary,
+													),
+												)
+											}.onFailure {
+												val message = getString(
+													R.string.file_transfer_failed,
+													it.message ?: "unknown error",
+												)
+												updateStatus(message)
+												Toast.makeText(
+													this@MainActivity,
+													message,
+													Toast.LENGTH_LONG,
+												).show()
+											}
+										}
+									}
+								}
+							})
+						}
 						item.addView(Button(this).apply {
 							setText(R.string.save_file)
 							setOnClickListener {

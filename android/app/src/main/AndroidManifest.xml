@@ -40,6 +40,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".HtmlViewerActivity"
+            android:exported="false" />
+
         <service
             android:name=".ConnectionService"
             android:exported="false"

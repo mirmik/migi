@@ -20,7 +20,12 @@
     <string name="files_empty">No shared files</string>
     <string name="files_failed">Cannot load files: %1$s</string>
     <string name="file_summary">%1$s — %2$s\nFrom %3$s; expires %4$s</string>
+    <string name="open_html_file">Open</string>
+    <string name="opening_html_file">Downloading and verifying HTML…</string>
+    <string name="html_file_opened">Opened: %1$s</string>
     <string name="save_file">Save</string>
+    <string name="close_html_viewer">Close</string>
+    <string name="html_viewer_failed">Cannot open HTML: %1$s</string>
     <string name="file_uploading">Uploading file over pinned QUIC…</string>
     <string name="file_downloading">Downloading and verifying file…</string>
     <string name="file_uploaded">Uploaded: %1$s</string>
