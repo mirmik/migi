@@ -232,6 +232,13 @@ class MainActivity : Activity() {
 			}
 			addView(releaseList, matchWidth())
 		}
+		val advancedConnectionSettings = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			visibility = View.GONE
+			addView(endpoint, matchWidth())
+			addView(certificatePin, matchWidth())
+			addView(pilotSignerPin, matchWidth())
+		}
 		val settingsPage = LinearLayout(this).apply {
 			orientation = LinearLayout.VERTICAL
 			setPadding(padding, padding, padding, padding)
@@ -245,9 +252,19 @@ class MainActivity : Activity() {
 				setPadding(0, 0, 0, padding)
 			}
 			addView(settingsStatus, matchWidth())
-			addView(endpoint, matchWidth())
-			addView(certificatePin, matchWidth())
-			addView(pilotSignerPin, matchWidth())
+			addView(Button(this@MainActivity).apply {
+				setText(R.string.show_advanced_connection_settings)
+				isAllCaps = false
+				setOnClickListener {
+					val show = advancedConnectionSettings.visibility != View.VISIBLE
+					advancedConnectionSettings.visibility = if (show) View.VISIBLE else View.GONE
+					setText(
+						if (show) R.string.hide_advanced_connection_settings
+						else R.string.show_advanced_connection_settings,
+					)
+				}
+			}, matchWidth())
+			addView(advancedConnectionSettings, matchWidth())
 			addView(start, matchWidth())
 			addView(stop, matchWidth())
 			addView(batteryButton, matchWidth())

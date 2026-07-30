@@ -9,6 +9,8 @@
     <string name="tab_settings">Settings</string>
     <string name="connection_status_title">Connection</string>
     <string name="connection_settings_title">Connection settings</string>
+    <string name="show_advanced_connection_settings">Advanced connection settings</string>
+    <string name="hide_advanced_connection_settings">Hide advanced connection settings</string>
     <string name="sound_settings_title">Sound</string>
 	<string name="pager_title">PAGER</string>
     <string name="pager_empty">No pager message</string>
