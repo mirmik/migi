@@ -52,12 +52,25 @@ func main() {
 
 func run() error {
 	endpoint := flag.String("endpoint", "http://127.0.0.1:8787", "trusted local Migi endpoint")
-	configPath := flag.String("config", "", "agent JSON configuration for authenticated HTTPS access")
+	configPath := flag.String("config", "", "agent JSON configuration (auto-detected by default)")
 	source := flag.String("source", "", "agent name recorded for uploads")
 	mimeType := flag.String("type", "", "upload MIME type (guessed from extension by default)")
 	output := flag.String("output", "", "download destination (defaults to shared filename)")
 	flag.Parse()
-	base, client, err := configureClient(*endpoint, *configPath)
+	var endpointExplicit, configExplicit bool
+	flag.Visit(func(option *flag.Flag) {
+		switch option.Name {
+		case "endpoint":
+			endpointExplicit = true
+		case "config":
+			configExplicit = true
+		}
+	})
+	resolvedConfig, err := resolveConfigPath(*configPath, endpointExplicit, configExplicit)
+	if err != nil {
+		return err
+	}
+	base, client, err := configureClient(*endpoint, resolvedConfig)
 	if err != nil {
 		return err
 	}
@@ -84,6 +97,43 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func resolveConfigPath(configPath string, endpointExplicit, configExplicit bool) (string, error) {
+	if endpointExplicit && configExplicit {
+		return "", errors.New("-endpoint and -config cannot be used together")
+	}
+	if configExplicit {
+		if configPath == "" {
+			return "", errors.New("-config requires a non-empty path")
+		}
+		return configPath, nil
+	}
+	if endpointExplicit {
+		return "", nil
+	}
+	if configured, exists := os.LookupEnv("MIGI_AGENT_CONFIG"); exists {
+		if configured == "" {
+			return "", errors.New("MIGI_AGENT_CONFIG is empty")
+		}
+		return configured, nil
+	}
+	configDirectory, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("locate user configuration: %w", err)
+	}
+	candidate := filepath.Join(configDirectory, "migi", "agent.json")
+	info, err := os.Stat(candidate)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return "", errors.New("default agent config is not a regular file")
+		}
+		return candidate, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect default agent config: %w", err)
+	}
+	return "", nil
 }
 
 func configureClient(endpointText, configPath string) (*url.URL, *fileClient, error) {

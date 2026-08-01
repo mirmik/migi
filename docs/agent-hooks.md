@@ -60,10 +60,10 @@ limited to 64 KiB JSON bodies, 256 Unicode characters in `title`, 8192 in
 ## Exchange files remotely
 
 The same agent configuration authorizes `GET` and `POST` requests under
-`/v1/files` on the authenticated HTTPS listener. `migi-file -config
-~/.config/migi/agent.json ...` verifies the configured certificate pin before
-sending the bearer token. On uploads, Migi derives the source agent name from
-the credential and ignores caller-supplied source identity.
+`/v1/files` on the authenticated HTTPS listener. `migi-file` automatically
+loads `MIGI_AGENT_CONFIG` or `~/.config/migi/agent.json` and verifies its
+certificate pin before sending the bearer token. On uploads, Migi derives the
+source agent name from the credential and ignores caller-supplied identity.
 
 ## Codex lifecycle hook
 

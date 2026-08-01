@@ -45,6 +45,46 @@ func TestConfigureClientRejectsInsecureAgentConfig(t *testing.T) {
 	}
 }
 
+func TestResolveConfigPathFindsDefaultAgentConfig(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("MIGI_AGENT_CONFIG", "")
+	if err := os.Unsetenv("MIGI_AGENT_CONFIG"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configRoot, "migi", "agent.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveConfigPath("", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != path {
+		t.Fatalf("resolved config = %q, want %q", resolved, path)
+	}
+}
+
+func TestResolveConfigPathHonorsExplicitEndpoint(t *testing.T) {
+	t.Setenv("MIGI_AGENT_CONFIG", "/must/not/be/used.json")
+	resolved, err := resolveConfigPath("", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != "" {
+		t.Fatalf("resolved config = %q, want local endpoint", resolved)
+	}
+}
+
+func TestResolveConfigPathRejectsConflictingOverrides(t *testing.T) {
+	if _, err := resolveConfigPath("agent.json", true, true); err == nil {
+		t.Fatal("conflicting endpoint and config overrides were accepted")
+	}
+}
+
 func TestGetVerifiesAndCommitsDownload(t *testing.T) {
 	const id = "0123456789abcdef0123456789abcdef"
 	content := []byte("phone screenshot")

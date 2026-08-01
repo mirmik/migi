@@ -251,11 +251,13 @@ For a remote agent, use the credential generated for the authenticated HTTPS
 agent listener:
 
 ```bash
-./bin/migi-file -config ~/.config/migi/agent.json list
+./bin/migi-file list
 ```
 
-The client reuses the agent endpoint host, authenticates every file request,
-and verifies the configured TLS certificate fingerprint.
+The client automatically loads `${MIGI_AGENT_CONFIG}` or
+`~/.config/migi/agent.json`, reuses its endpoint host, authenticates every file
+request, and verifies the configured TLS certificate fingerprint. Use
+`-config PATH` only to override that discovery.
 
 ### Install the Codex Migi skills
 

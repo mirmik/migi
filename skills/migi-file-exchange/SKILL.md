@@ -17,7 +17,7 @@ scripts/migi-file [-endpoint URL] list
 scripts/migi-file [-endpoint URL] [-output PATH] get FILE_ID
 ```
 
-The wrapper automatically uses `${MIGI_AGENT_CONFIG}` or
+The `migi-file` client automatically uses `${MIGI_AGENT_CONFIG}` or
 `~/.config/migi/agent.json` when present. That configuration connects to the
 authenticated HTTPS agent listener, sends the bearer token, and pins the exact
 server certificate. Otherwise it falls back to the trusted local endpoint

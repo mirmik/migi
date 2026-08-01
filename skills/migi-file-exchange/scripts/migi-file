@@ -1,19 +1,6 @@
 #!/bin/sh
 set -eu
 
-migi_connection_explicit=false
-for migi_arg in "$@"; do
-	case "$migi_arg" in
-		-config|-config=*|-endpoint|-endpoint=*) migi_connection_explicit=true ;;
-	esac
-done
-if [ "$migi_connection_explicit" = false ]; then
-	migi_agent_config=${MIGI_AGENT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/migi/agent.json}
-	if [ -f "$migi_agent_config" ]; then
-		set -- -config "$migi_agent_config" "$@"
-	fi
-fi
-
 if [ -n "${MIGI_FILE_BIN:-}" ]; then
 	if [ ! -x "$MIGI_FILE_BIN" ]; then
 		echo "migi-file: MIGI_FILE_BIN is not executable: $MIGI_FILE_BIN" >&2
