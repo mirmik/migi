@@ -144,9 +144,11 @@ is reachable. Health does not imply that a particular device is connected.
 
 ## Shared files
 
-Paired devices use these endpoints over authenticated HTTP/3. The same routes
-are available without authentication on the trusted loopback ingest listener
-for local agents.
+Paired devices use these endpoints over authenticated HTTP/3. Remote agents use
+the same routes on the authenticated HTTPS agent listener with their agent
+Bearer credential; upload source identity is derived from that credential.
+The routes are also available without authentication on the trusted loopback
+ingest listener for local agents.
 
 Upload a non-empty file as the request body:
 

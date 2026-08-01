@@ -172,7 +172,8 @@ server binds the requested device ID to the credential, supports local
 revocation, and revalidates active streams before events and heartbeats. A
 rejected Android credential is deleted and cannot enter an endless retry loop.
 
-Remote agents use a separate bearer-token namespace and ordinary HTTPS/TCP.
+Remote agents use a separate bearer-token namespace and ordinary HTTPS/TCP for
+event submission and shared-file exchange.
 Each token fixes the agent identity, is persisted only as a SHA-256 hash, and
 can be revoked without affecting phones or other agents. Hooks pin the same
 leaf certificate fingerprint as the phone; no persistent tunnel is required.

@@ -40,7 +40,7 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-listen` | UDP | Local bind for public HTTP/3/QUIC traffic |
 | `-public-endpoint` | HTTPS URL | Default address offered by the pairing form |
 | `-ingest-listen` | TCP | Trusted agent event submission |
-| `-agent-listen` | TLS/TCP | Authenticated event submission by remote agents; empty disables it |
+| `-agent-listen` | TLS/TCP | Authenticated event and file access by remote agents; empty disables it |
 | `-agent-endpoint` | HTTPS URL | Default external address offered when creating agent credentials |
 | `-admin-listen` | TCP | Local administration panel |
 | `-artifact-dir` | filesystem | Immutable APK storage and staging directory |

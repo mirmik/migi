@@ -47,6 +47,15 @@ func newAgentMuxWithSecurity(broker *events.Broker, security *agentSecurity) htt
 }
 
 func newAgentMuxWithReleases(broker *events.Broker, releases *releaseStore, security *agentSecurity) http.Handler {
+	return newAgentMuxWithStores(broker, releases, nil, security)
+}
+
+func newAgentMuxWithStores(
+	broker *events.Broker,
+	releases *releaseStore,
+	transfers *transferStore,
+	security *agentSecurity,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/agent-events", security.rateLimit(
@@ -60,6 +69,18 @@ func newAgentMuxWithReleases(broker *events.Broker, releases *releaseStore, secu
 			security.publishRequests,
 			releases.authenticatePublisher(releases.publishHandler()),
 		))
+	}
+	if transfers != nil {
+		transfers.routes(mux, func(next http.Handler) http.Handler {
+			return security.rateLimit(
+				"files",
+				security.publishRequests,
+				authenticateAgent(broker, security, next),
+			)
+		}, func(r *http.Request) string {
+			agent, _ := r.Context().Value(agentContextKey{}).(events.AgentTokenInfo)
+			return "agent:" + agent.Name
+		})
 	}
 	return security.limitConcurrency(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

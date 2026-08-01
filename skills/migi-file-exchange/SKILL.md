@@ -17,9 +17,15 @@ scripts/migi-file [-endpoint URL] list
 scripts/migi-file [-endpoint URL] [-output PATH] get FILE_ID
 ```
 
-Omit `-endpoint` for the trusted local endpoint
-`http://127.0.0.1:8787`. Do not substitute the public phone endpoint: local
-agent access is deliberately loopback-only.
+The wrapper automatically uses `${MIGI_AGENT_CONFIG}` or
+`~/.config/migi/agent.json` when present. That configuration connects to the
+authenticated HTTPS agent listener, sends the bearer token, and pins the exact
+server certificate. Otherwise it falls back to the trusted local endpoint
+`http://127.0.0.1:8787`.
+
+Use `-config PATH` to select another agent configuration explicitly. Use
+`-endpoint URL` only for a trusted HTTP listener; never substitute the public
+phone endpoint or expose the unauthenticated trusted listener to a network.
 
 ## Receive a file
 
@@ -56,8 +62,9 @@ success unless the command returns successfully.
 
 ## Diagnose failures
 
-- If listing cannot connect, check `http://127.0.0.1:8787/healthz` and the
-  `migi.service` user unit when access is authorized.
+- If listing cannot connect with an agent config, check its HTTPS host and the
+  `migi.service` user unit when access is authorized. Never print its token.
+- Without an agent config, check `http://127.0.0.1:8787/healthz`.
 - If the helper cannot find Go or the repository sources, report that the
   Migi client is unavailable rather than recreating the protocol with ad-hoc
   filesystem access.

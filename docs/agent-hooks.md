@@ -57,6 +57,14 @@ Tokens are independently revocable in the administration panel. Requests are
 limited to 64 KiB JSON bodies, 256 Unicode characters in `title`, 8192 in
 `body`, and a conservative per-source request rate.
 
+## Exchange files remotely
+
+The same agent configuration authorizes `GET` and `POST` requests under
+`/v1/files` on the authenticated HTTPS listener. `migi-file -config
+~/.config/migi/agent.json ...` verifies the configured certificate pin before
+sending the bearer token. On uploads, Migi derives the source agent name from
+the credential and ignores caller-supplied source identity.
+
 ## Codex lifecycle hook
 
 The integration under `integrations/codex/` uses only the Python standard

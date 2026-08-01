@@ -51,8 +51,8 @@ Codex agents can install the repository-owned `migi-file-exchange` and
 `migi-android-publisher` skills with
 `./scripts/install-migi-file-exchange-skill`.
 
-Remote agent hooks need no resident client or tunnel. The administration panel
-creates their revocable credentials and one-time connection configuration; see
-[docs/agent-hooks.md](docs/agent-hooks.md).
+Remote agent hooks and file clients need no resident client or tunnel. The
+administration panel creates their revocable credentials and one-time
+connection configuration; see [docs/agent-hooks.md](docs/agent-hooks.md).
 
 See [docs/development.md](docs/development.md) for build commands.

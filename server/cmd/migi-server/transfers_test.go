@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mirmik/migi/server/internal/agentauth"
 )
 
 func TestLocalFileRoundTripPublishesEvent(t *testing.T) {
@@ -84,6 +86,46 @@ func TestPublicFilesRequireDeviceAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	if file.Source != "device:phone-1" {
+		t.Fatalf("upload source = %q", file.Source)
+	}
+}
+
+func TestAgentFilesRequireAuthenticationAndDeriveSource(t *testing.T) {
+	broker := newTestBroker(t)
+	tokenID, plain, tokenHash, err := agentauth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.CreateAgentToken(t.Context(), tokenID, "builder-remote", tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newTransferStore(broker, t.TempDir(), 1024, 4096, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newAgentMuxWithStores(broker, nil, store, newAgentSecurity())
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/files", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated list returned %d", unauthorized.Code)
+	}
+
+	upload := httptest.NewRequest(http.MethodPost, "/v1/files", strings.NewReader("remote bytes"))
+	upload.Header.Set("Authorization", "Bearer "+plain)
+	upload.Header.Set("Content-Type", "text/plain")
+	upload.Header.Set("X-Migi-Filename", "remote.txt")
+	upload.Header.Set("X-Migi-Source", "spoofed")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, upload)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("authenticated upload returned %d: %s", response.Code, response.Body.String())
+	}
+	var file transfer
+	if err := json.NewDecoder(response.Body).Decode(&file); err != nil {
+		t.Fatal(err)
+	}
+	if file.Source != "agent:builder-remote" {
 		t.Fatalf("upload source = %q", file.Source)
 	}
 }

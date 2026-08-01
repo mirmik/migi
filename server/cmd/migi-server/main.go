@@ -48,7 +48,7 @@ func run() error {
 	}
 	listen := flag.String("listen", ":8443", "UDP address for the HTTP/3 server")
 	ingestListen := flag.String("ingest-listen", "127.0.0.1:8787", "trusted local TCP address for event submission")
-	agentListen := flag.String("agent-listen", "", "public TLS/TCP address for authenticated agent event submission; empty disables it")
+	agentListen := flag.String("agent-listen", "", "TLS/TCP address for authenticated agent events and files; empty disables it")
 	adminListen := flag.String("admin-listen", "127.0.0.1:8788", "local TCP address for the administration UI; empty disables it")
 	publicEndpoint := flag.String("public-endpoint", "", "default public https://host[:port] for pairing invitations")
 	agentEndpoint := flag.String("agent-endpoint", "", "public https://host[:port] advertised to agent hooks")
@@ -183,7 +183,7 @@ func run() error {
 	if *agentListen != "" {
 		agentServer = &http.Server{
 			Addr:              *agentListen,
-			Handler:           newAgentMuxWithReleases(broker, releases, newAgentSecurity()),
+			Handler:           newAgentMuxWithStores(broker, releases, transfers, newAgentSecurity()),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       30 * time.Second,
 			MaxHeaderBytes:    16 << 10,

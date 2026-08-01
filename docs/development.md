@@ -247,6 +247,16 @@ listener and must not be exposed publicly. On Android, use **Share → Migi** or
 the **Share a file** button. Downloads are written through Android's system
 document picker.
 
+For a remote agent, use the credential generated for the authenticated HTTPS
+agent listener:
+
+```bash
+./bin/migi-file -config ~/.config/migi/agent.json list
+```
+
+The client reuses the agent endpoint host, authenticates every file request,
+and verifies the configured TLS certificate fingerprint.
+
 ### Install the Codex Migi skills
 
 The repository contains `skills/migi-file-exchange` for ordinary file transfer

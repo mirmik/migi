@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +32,17 @@ type sharedFile struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type agentConfig struct {
+	Endpoint       string `json:"endpoint"`
+	Token          string `json:"token"`
+	TLSFingerprint string `json:"tls_fingerprint"`
+}
+
+type fileClient struct {
+	http  *http.Client
+	token string
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "migi-file:", err)
@@ -39,13 +52,14 @@ func main() {
 
 func run() error {
 	endpoint := flag.String("endpoint", "http://127.0.0.1:8787", "trusted local Migi endpoint")
+	configPath := flag.String("config", "", "agent JSON configuration for authenticated HTTPS access")
 	source := flag.String("source", "", "agent name recorded for uploads")
 	mimeType := flag.String("type", "", "upload MIME type (guessed from extension by default)")
 	output := flag.String("output", "", "download destination (defaults to shared filename)")
 	flag.Parse()
-	base, err := url.Parse(strings.TrimRight(*endpoint, "/"))
-	if err != nil || base.Scheme != "http" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return errors.New("endpoint must be a trusted local HTTP URL")
+	base, client, err := configureClient(*endpoint, *configPath)
+	if err != nil {
+		return err
 	}
 	args := flag.Args()
 	if len(args) == 0 {
@@ -56,23 +70,110 @@ func run() error {
 		if len(args) != 2 {
 			return errors.New("put requires exactly one file path")
 		}
-		return put(base, args[1], *source, *mimeType)
+		return put(client, base, args[1], *source, *mimeType)
 	case "list":
 		if len(args) != 1 {
 			return errors.New("list takes no arguments")
 		}
-		return list(base)
+		return list(client, base)
 	case "get":
 		if len(args) != 2 {
 			return errors.New("get requires exactly one file ID")
 		}
-		return get(base, args[1], *output)
+		return get(client, base, args[1], *output)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-func put(base *url.URL, path, source, contentType string) error {
+func configureClient(endpointText, configPath string) (*url.URL, *fileClient, error) {
+	if configPath == "" {
+		base, err := url.Parse(strings.TrimRight(endpointText, "/"))
+		if err != nil || base.Scheme != "http" || base.Host == "" || base.User != nil ||
+			base.Path != "" || base.RawQuery != "" || base.Fragment != "" {
+			return nil, nil, errors.New("endpoint must be a trusted HTTP URL without a path")
+		}
+		return base, &fileClient{http: noRedirectClient()}, nil
+	}
+	config, pin, err := loadAgentConfig(configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	base, _ := url.Parse(config.Endpoint)
+	base.Path = ""
+	return base, &fileClient{http: pinnedClient(pin), token: config.Token}, nil
+}
+
+func loadAgentConfig(path string) (agentConfig, [sha256.Size]byte, error) {
+	var config agentConfig
+	var pin [sha256.Size]byte
+	file, err := os.Open(path)
+	if err != nil {
+		return config, pin, fmt.Errorf("open agent config: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(io.LimitReader(file, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		return config, pin, fmt.Errorf("decode agent config: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return config, pin, errors.New("agent config must contain one JSON object")
+	}
+	endpoint, err := url.Parse(config.Endpoint)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil ||
+		endpoint.Path != "/v1/agent-events" || endpoint.RawQuery != "" || endpoint.Fragment != "" ||
+		!strings.HasPrefix(config.Token, "migi_at_") || len(config.Token) > 256 {
+		return config, pin, errors.New("agent config has invalid endpoint or token")
+	}
+	normalized := strings.ReplaceAll(strings.TrimSpace(config.TLSFingerprint), ":", "")
+	raw, err := hex.DecodeString(normalized)
+	if err != nil || len(raw) != sha256.Size {
+		return config, pin, errors.New("agent config has invalid TLS SHA-256 fingerprint")
+	}
+	copy(pin[:], raw)
+	return config, pin, nil
+}
+
+func noRedirectClient() *http.Client {
+	return &http.Client{
+		Timeout: 20 * time.Minute,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("file endpoint redirects are not allowed")
+		},
+	}
+}
+
+func pinnedClient(pin [sha256.Size]byte) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, // Exact leaf-certificate pinning is performed below.
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("server did not present a certificate")
+			}
+			actual := sha256.Sum256(state.PeerCertificates[0].Raw)
+			if actual != pin {
+				return errors.New("server TLS certificate fingerprint mismatch")
+			}
+			return nil
+		},
+	}
+	client := noRedirectClient()
+	client.Transport = transport
+	return client
+}
+
+func (c *fileClient) request(method, target string, body io.Reader) (*http.Request, error) {
+	request, err := http.NewRequest(method, target, body)
+	if err == nil && c.token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return request, err
+}
+
+func put(client *fileClient, base *url.URL, path, source, contentType string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -88,7 +189,7 @@ func put(base *url.URL, path, source, contentType string) error {
 			contentType = "application/octet-stream"
 		}
 	}
-	request, err := http.NewRequest(http.MethodPost, endpoint(base, "/v1/files"), file)
+	request, err := client.request(http.MethodPost, endpoint(base, "/v1/files"), file)
 	if err != nil {
 		return err
 	}
@@ -98,7 +199,7 @@ func put(base *url.URL, path, source, contentType string) error {
 	if source != "" {
 		request.Header.Set("X-Migi-Source", source)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.http.Do(request)
 	if err != nil {
 		return err
 	}
@@ -118,8 +219,12 @@ func put(base *url.URL, path, source, contentType string) error {
 	return nil
 }
 
-func list(base *url.URL) error {
-	response, err := http.Get(endpoint(base, "/v1/files"))
+func list(client *fileClient, base *url.URL) error {
+	request, err := client.request(http.MethodGet, endpoint(base, "/v1/files"), nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.http.Do(request)
 	if err != nil {
 		return err
 	}
@@ -141,12 +246,16 @@ func list(base *url.URL) error {
 	return nil
 }
 
-func get(base *url.URL, id, output string) error {
+func get(client *fileClient, base *url.URL, id, output string) error {
 	if len(id) != 32 || strings.Trim(id, "0123456789abcdef") != "" {
 		return errors.New("file ID must be 32 lowercase hexadecimal digits")
 	}
 	if output == "" {
-		response, err := http.Get(endpoint(base, "/v1/files/"+id))
+		request, err := client.request(http.MethodGet, endpoint(base, "/v1/files/"+id), nil)
+		if err != nil {
+			return err
+		}
+		response, err := client.http.Do(request)
 		if err != nil {
 			return err
 		}
@@ -175,7 +284,11 @@ func get(base *url.URL, id, output string) error {
 			os.Remove(output)
 		}
 	}()
-	response, err := http.Get(endpoint(base, "/v1/files/"+id+"/content"))
+	request, err := client.request(http.MethodGet, endpoint(base, "/v1/files/"+id+"/content"), nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.http.Do(request)
 	if err != nil {
 		return err
 	}
