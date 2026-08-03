@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import migi_codex_hook as hook
+import configure_notify
 import provision_local
 
 
@@ -26,6 +27,21 @@ class HookTests(unittest.TestCase):
     def test_failure_output_matches_event_schema(self):
         self.assertNotIn("continue", hook.failure_output("PermissionRequest"))
         self.assertTrue(hook.failure_output("Stop")["continue"])
+
+    def test_maps_codex_notify_message(self):
+        message = hook.agent_message_for(
+            {
+                "type": "agent-turn-complete",
+                "thread-id": "thread-1",
+                "turn-id": "turn-1",
+                "cwd": "/work/migi",
+                "last-assistant-message": "Euler: $e^{i\\pi}+1=0$",
+            }
+        )
+        self.assertIsNotNone(message)
+        self.assertEqual(message.turn_id, "turn-1")
+        self.assertIn("$e^{i\\pi}+1=0$", message.body)
+        self.assertIsNone(hook.agent_message_for({"type": "other"}))
 
     def test_requires_private_config_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,6 +88,22 @@ class HookTests(unittest.TestCase):
                 hook.send_notification(config, notification)
         connection.request.assert_not_called()
 
+    def test_sends_agent_message_to_dedicated_endpoint(self):
+        certificate = b"test certificate"
+        config = hook.ClientConfig(
+            endpoint=hook.urlsplit("https://127.0.0.1:8790/v1/agent-events"),
+            token="migi_at_test_secret",
+            fingerprint=hashlib.sha256(certificate).hexdigest(),
+        )
+        message = hook.AgentMessage("thread", "turn", "/work/migi", "Answer", "Body")
+        connection = mock.Mock()
+        connection.sock.getpeercert.return_value = certificate
+        connection.getresponse.return_value.status = 201
+        connection.getresponse.return_value.read.return_value = b"{}"
+        with mock.patch.object(hook.http.client, "HTTPSConnection", return_value=connection):
+            hook.send_agent_message(config, message)
+        self.assertEqual(connection.request.call_args.args[1], "/v1/agent-messages")
+
     def test_provisioner_extracts_and_writes_private_config(self):
         parser = provision_local.CredentialConfigParser()
         parser.feed(
@@ -84,6 +116,15 @@ class HookTests(unittest.TestCase):
             provision_local.write_private_config(path, config)
             self.assertEqual(stat_mode(path), 0o600)
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), config)
+
+    def test_configures_top_level_notify_without_losing_config(self):
+        source = 'model = "gpt-test"\n\n[projects."/work"]\ntrust_level = "trusted"\n'
+        updated = configure_notify.configured_text(source, "/home/test/migi-codex-hook")
+        self.assertIn('notify = ["/home/test/migi-codex-hook"]', updated)
+        self.assertIn('[projects."/work"]', updated)
+        replaced = configure_notify.configured_text(updated, "/new/hook")
+        self.assertEqual(replaced.count("notify ="), 1)
+        self.assertIn('notify = ["/new/hook"]', replaced)
 
 
 def stat_mode(path: Path) -> int:

@@ -16,6 +16,7 @@ var (
 	ErrPublisherExists        = errors.New("release publisher token id or name already exists")
 	ErrReleaseConflict        = errors.New("release idempotency key conflicts with existing content")
 	ErrReleaseNotFound        = errors.New("release does not exist")
+	ErrAgentMessageNotFound   = errors.New("agent message does not exist")
 )
 
 type Event struct {
@@ -90,6 +91,27 @@ type ReleaseDraft struct {
 	IdempotencyKey   string
 }
 
+type AgentMessage struct {
+	ID        uint64    `json:"id"`
+	EventID   uint64    `json:"event_id"`
+	Agent     string    `json:"agent"`
+	ThreadID  string    `json:"thread_id"`
+	TurnID    string    `json:"turn_id"`
+	CWD       string    `json:"cwd"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AgentMessageDraft struct {
+	Agent    string
+	ThreadID string
+	TurnID   string
+	CWD      string
+	Title    string
+	Body     string
+}
+
 type ServerStats struct {
 	EventCount         uint64
 	LatestEventID      uint64
@@ -124,6 +146,9 @@ type Journal interface {
 	ListPublisherTokens(context.Context) ([]PublisherTokenInfo, error)
 	ReplayRelease(context.Context, ReleaseDraft) (Release, bool, error)
 	PublishRelease(context.Context, ReleaseDraft) (Release, Event, bool, error)
+	PublishAgentMessage(context.Context, AgentMessageDraft) (AgentMessage, Event, bool, error)
+	RecentAgentMessages(context.Context, int) ([]AgentMessage, error)
+	AgentMessage(context.Context, uint64) (AgentMessage, error)
 	ReleaseForDevice(context.Context, string, string) (Release, error)
 	ListReleaseStorage(context.Context) (map[string]int64, error)
 	Stats(context.Context) (ServerStats, error)

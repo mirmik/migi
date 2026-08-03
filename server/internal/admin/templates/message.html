@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Message.Title}} · Migi</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/katex/katex.min.css">
+  <script defer src="../assets/katex/katex.min.js"></script>
+  <script defer src="../assets/katex/auto-render.min.js"></script>
+  <script defer src="../assets/message.js"></script>
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">{{.Message.Agent}}</span><h1>{{.Message.Title}}</h1></div>
+    <a class="button-link" href="./">All responses</a>
+  </header>
+  <main>
+    <section class="panel message-meta">
+      <dl>
+        <dt>Created</dt><dd>{{formatTime .Message.CreatedAt}}</dd>
+        <dt>Working directory</dt><dd><code>{{.Message.CWD}}</code></dd>
+        <dt>Thread</dt><dd><code>{{.Message.ThreadID}}</code></dd>
+        <dt>Turn</dt><dd><code>{{.Message.TurnID}}</code></dd>
+        <dt>Event</dt><dd>{{.Message.EventID}}</dd>
+      </dl>
+    </section>
+    <article class="panel agent-message" data-agent-message>{{.RenderedBody}}</article>
+  </main>
+  <footer>Rendered locally by Migi with Goldmark and KaTeX.</footer>
+</body>
+</html>

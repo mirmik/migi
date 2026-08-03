@@ -18,6 +18,8 @@ import (
 
 const agentMaxConcurrentRequests = 32
 
+const agentMessageMaxBytes = 1 << 20
+
 var agentEventKindPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type agentSecurity struct {
@@ -63,6 +65,11 @@ func newAgentMuxWithStores(
 		security.publishRequests,
 		authenticateAgent(broker, security, publishAgentEventHandler(broker)),
 	))
+	mux.Handle("POST /v1/agent-messages", security.rateLimit(
+		"publish-message",
+		security.publishRequests,
+		authenticateAgent(broker, security, publishAgentMessageHandler(broker)),
+	))
 	if releases != nil {
 		mux.Handle("POST /v1/releases", security.rateLimit(
 			"release-publish",
@@ -87,6 +94,80 @@ func newAgentMuxWithStores(
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	}))
+}
+
+func publishAgentMessageHandler(broker *events.Broker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agent, ok := r.Context().Value(agentContextKey{}).(events.AgentTokenInfo)
+		if !ok {
+			http.Error(w, "agent authentication required", http.StatusUnauthorized)
+			return
+		}
+		contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || contentType != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+		defer r.Body.Close()
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, agentMessageMaxBytes))
+		decoder.DisallowUnknownFields()
+		var input struct {
+			ThreadID string `json:"thread_id"`
+			TurnID   string `json:"turn_id"`
+			CWD      string `json:"cwd,omitempty"`
+			Title    string `json:"title"`
+			Body     string `json:"body"`
+		}
+		if err := decoder.Decode(&input); err != nil {
+			writeAgentMessageDecodeError(w, err)
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			writeAgentMessageDecodeError(w, err)
+			return
+		}
+		input.ThreadID = strings.TrimSpace(input.ThreadID)
+		input.TurnID = strings.TrimSpace(input.TurnID)
+		input.Title = strings.TrimSpace(input.Title)
+		if input.ThreadID == "" || input.TurnID == "" || input.Title == "" || strings.TrimSpace(input.Body) == "" {
+			http.Error(w, "thread_id, turn_id, title, and body are required", http.StatusBadRequest)
+			return
+		}
+		if !utf8.ValidString(input.ThreadID) || !utf8.ValidString(input.TurnID) ||
+			!utf8.ValidString(input.CWD) || !utf8.ValidString(input.Title) || !utf8.ValidString(input.Body) ||
+			utf8.RuneCountInString(input.ThreadID) > 256 || utf8.RuneCountInString(input.TurnID) > 256 ||
+			utf8.RuneCountInString(input.CWD) > 4096 || utf8.RuneCountInString(input.Title) > 256 {
+			http.Error(w, "agent message fields exceed the allowed size", http.StatusBadRequest)
+			return
+		}
+		message, created, err := broker.PublishAgentMessage(r.Context(), events.AgentMessageDraft{
+			Agent: agent.Name, ThreadID: input.ThreadID, TurnID: input.TurnID,
+			CWD: input.CWD, Title: input.Title, Body: input.Body,
+		})
+		if err != nil {
+			slog.Error("failed to persist agent message", "error", err, "agent", agent.Name)
+			http.Error(w, "failed to persist agent message", http.StatusInternalServerError)
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		slog.Info("authenticated agent message accepted",
+			"message_id", message.ID, "event_id", message.EventID, "agent", agent.Name,
+			"token_id", agent.ID, "created", created, "remote_addr", r.RemoteAddr,
+		)
+		writeJSON(w, status, message)
+	}
+}
+
+func writeAgentMessageDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		http.Error(w, "JSON body exceeds 1 MiB", http.StatusRequestEntityTooLarge)
+		return
+	}
+	http.Error(w, "invalid JSON body", http.StatusBadRequest)
 }
 
 func (s *agentSecurity) rateLimit(scope string, limiter *keyedRateLimiter, next http.Handler) http.Handler {

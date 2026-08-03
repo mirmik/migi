@@ -98,6 +98,31 @@ Tokens are created and revoked in the administration panel and stored only as
 SHA-256 hashes. A successful response has the same `201 Created` event object
 as trusted local submission. See [`agent-hooks.md`](agent-hooks.md).
 
+### Store a completed agent response
+
+Authenticated agents submit final Markdown separately from ordinary event
+bodies so long responses are not constrained by the notification preview:
+
+```http
+POST /v1/agent-messages
+Authorization: Bearer migi_at_<id>_<secret>
+Content-Type: application/json
+
+{
+  "thread_id": "thread-id",
+  "turn_id": "turn-id",
+  "cwd": "/work/project",
+  "title": "Codex response: project",
+  "body": "The result is $$E=mc^2$$."
+}
+```
+
+The request is limited to 1 MiB. `agent` is derived from the bearer credential.
+The pair `(agent, turn_id)` is idempotent: the first submission returns `201
+Created`, and a retry returns `200 OK` with the existing message. Migi stores
+the complete Markdown and atomically appends an `agent.message` event whose
+body is a bounded preview for device notifications.
+
 ## Stream events
 
 ```http

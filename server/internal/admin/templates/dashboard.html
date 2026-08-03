@@ -83,6 +83,15 @@
     </section>
 
     <section class="panel agents">
+      <div class="section-heading"><div><h2>Agent responses</h2><p>Final Codex messages stored as Markdown, with mathematical notation rendered in the browser.</p></div><a class="button-link" href="messages/">View all</a></div>
+      {{if .AgentMessages}}
+      <div class="message-list compact">
+        {{range .AgentMessages}}<a class="message-card" href="messages/{{.ID}}"><strong>{{.Title}}</strong><span>{{.Agent}} · {{formatTime .CreatedAt}}</span><p>{{messagePreview .Body}}</p></a>{{end}}
+      </div>
+      {{else}}<p>No agent responses stored yet.</p>{{end}}
+    </section>
+
+    <section class="panel agents">
       <h2>Shared files</h2>
       {{if .FilesEnabled}}
       <p>Upload a temporary file for paired phones and local agents. A committed upload emits a <code>file.available</code> event.</p>

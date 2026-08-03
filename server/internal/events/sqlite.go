@@ -109,6 +109,18 @@ CREATE TABLE IF NOT EXISTS pager_state (
     message TEXT NOT NULL,
     event_id INTEGER NOT NULL CHECK (event_id > 0),
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
+    agent TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    cwd TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(agent, turn_id)
 );`
 	if _, err := j.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)

@@ -6,6 +6,11 @@ state. It can set the persistent pager line displayed by the Android app, send
 a real test notification, create short-lived one-time pairing QR codes and
 revoke a device.
 
+The **Agent responses** section lists final messages submitted by Codex
+`notify`. Migi stores the original Markdown and renders it on a detail page with
+Goldmark and locally bundled KaTeX. Raw HTML is disabled, and the page's Content
+Security Policy permits scripts, styles and fonts only from the Migi server.
+
 The **Pager** form accepts up to 512 characters. Updating it creates a durable
 `pager.message` event; submitting an empty field clears the line on connected
 devices. A disconnected device receives the update through event replay when it

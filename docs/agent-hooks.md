@@ -65,14 +65,14 @@ loads `MIGI_AGENT_CONFIG` or `~/.config/migi/agent.json` and verifies its
 certificate pin before sending the bearer token. On uploads, Migi derives the
 source agent name from the credential and ignores caller-supplied identity.
 
-## Codex lifecycle hook
+## Codex notifications and lifecycle hooks
 
 The integration under `integrations/codex/` uses only the Python standard
 library. It checks config ownership and permissions, establishes TLS, compares
 the leaf-certificate SHA-256 fingerprint before transmitting the bearer token,
 and then sends one request. It does not run a daemon or keep a connection open.
 
-Install the runtime script and hook definition:
+Install the shared runtime script and the approval-hook definition:
 
 ```bash
 install -d -m 0700 ~/.local/libexec/migi
@@ -81,11 +81,32 @@ install -m 0755 integrations/codex/migi_codex_hook.py \
 install -m 0600 integrations/codex/hooks.json ~/.codex/hooks.json
 ```
 
-The global definition maps Codex `Stop` to `agent.completed` and
-`PermissionRequest` to `agent.attention_required`. Codex requires review of a
-new or changed command hook. Start a new Codex session, open `/hooks`, inspect
-the command and trust it. Until that review is completed, Codex deliberately
-skips the hook.
+Add the same executable as the user-level Codex notifier in
+`~/.codex/config.toml`:
+
+```toml
+notify = ["/home/USER/.local/libexec/migi/migi-codex-hook"]
+```
+
+The repository helper applies that top-level setting atomically while
+preserving the rest of the file:
+
+```bash
+python3 integrations/codex/configure_notify.py
+```
+
+Codex passes each completed turn as a JSON argument. The notifier stores
+`last-assistant-message` as source Markdown through `/v1/agent-messages`; Migi
+keeps the full response separately from the bounded event journal and emits a
+short `agent.message` event to connected phones. The browser panel lists the
+stored responses under `/admin/messages/` and renders mathematical notation
+with locally bundled KaTeX assets.
+
+The global hook definition maps `PermissionRequest` to
+`agent.attention_required`. Codex requires review of a new or changed command
+hook. Start a new Codex session, open `/hooks`, inspect the command and trust it.
+Until that review is completed, Codex deliberately skips the hook. The
+user-level `notify` setting does not use the hook trust flow.
 
 For a Migi server on the same machine, the generated client configuration may
 use the local endpoint:

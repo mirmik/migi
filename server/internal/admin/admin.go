@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -101,6 +102,16 @@ type pageData struct {
 	AgentCredential        *agentCredentialView
 	PublisherCredential    *agentCredentialView
 	Notice                 string
+	AgentMessages          []events.AgentMessage
+}
+
+type messagesPageData struct {
+	Messages []events.AgentMessage
+}
+
+type messagePageData struct {
+	Message      events.AgentMessage
+	RenderedBody template.HTML
 }
 
 type pairingView struct {
@@ -156,6 +167,7 @@ func New(config Config) (*Handler, error) {
 		},
 		"formatDuration": formatDuration,
 		"formatBytes":    formatBytes,
+		"messagePreview": messagePreview,
 	}).ParseFS(content, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse admin templates: %w", err)
@@ -179,6 +191,8 @@ func (h *Handler) Routes() http.Handler {
 		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
 	})
 	mux.HandleFunc("GET /admin/", h.dashboard)
+	mux.HandleFunc("GET /admin/messages/", h.agentMessages)
+	mux.HandleFunc("GET /admin/messages/{messageID}", h.agentMessage)
 	mux.HandleFunc("POST /admin/pair", h.createPairing)
 	mux.HandleFunc("POST /admin/notifications/test", h.sendTestNotification)
 	mux.HandleFunc("POST /admin/pager", h.setPagerMessage)
@@ -191,6 +205,46 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/files/{fileID}/content", h.downloadFile)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
 	return h.securityHeaders(mux)
+}
+
+func (h *Handler) agentMessages(w http.ResponseWriter, r *http.Request) {
+	messages, err := h.config.Broker.RecentAgentMessages(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "failed to read agent responses", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.template.ExecuteTemplate(w, "messages.html", messagesPageData{Messages: messages}); err != nil {
+		slog.Error("failed to render agent response list", "error", err)
+	}
+}
+
+func (h *Handler) agentMessage(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseUint(r.PathValue("messageID"), 10, 64)
+	if err != nil || id == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	message, err := h.config.Broker.AgentMessage(r.Context(), id)
+	if errors.Is(err, events.ErrAgentMessageNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "failed to read agent response", http.StatusInternalServerError)
+		return
+	}
+	rendered, err := renderAgentMarkdown(message.Body)
+	if err != nil {
+		http.Error(w, "failed to render agent response", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.template.ExecuteTemplate(w, "message.html", messagePageData{
+		Message: message, RenderedBody: rendered,
+	}); err != nil {
+		slog.Error("failed to render agent response", "error", err, "message_id", id)
+	}
 }
 
 func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -575,6 +629,11 @@ func (h *Handler) renderDashboard(
 		http.Error(w, "failed to read pager state", http.StatusInternalServerError)
 		return
 	}
+	agentMessages, err := h.config.Broker.RecentAgentMessages(r.Context(), 5)
+	if err != nil {
+		http.Error(w, "failed to read agent responses", http.StatusInternalServerError)
+		return
+	}
 	var files []SharedFile
 	if h.config.Files != nil {
 		files, err = h.config.Files.ListSharedFiles(r.Context())
@@ -607,6 +666,7 @@ func (h *Handler) renderDashboard(
 		AgentCredential:        agentCredential,
 		PublisherCredential:    publisherCredential,
 		Notice:                 notice,
+		AgentMessages:          agentMessages,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -646,7 +706,7 @@ func (h *Handler) validCSRF(provided string) bool {
 func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -696,4 +756,13 @@ func formatBytes(value int64) string {
 	default:
 		return fmt.Sprintf("%d B", value)
 	}
+}
+
+func messagePreview(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) > 240 {
+		return string(runes[:240]) + "…"
+	}
+	return value
 }

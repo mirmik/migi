@@ -136,6 +136,37 @@ func TestDashboardAndPairing(t *testing.T) {
 	}
 }
 
+func TestAgentResponseListAndDetail(t *testing.T) {
+	handler, broker := newTestHandler(t)
+	message, created, err := broker.PublishAgentMessage(t.Context(), events.AgentMessageDraft{
+		Agent: "codex-aion", ThreadID: "thread-1", TurnID: "turn-1", CWD: "/work/migi",
+		Title: "Codex response: migi", Body: "Answer with $$E=mc^2$$ and **emphasis**.",
+	})
+	if err != nil || !created {
+		t.Fatalf("publish message=%#v created=%v error=%v", message, created, err)
+	}
+
+	list := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/admin/messages/", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "Codex response: migi") {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+
+	detail := httptest.NewRecorder()
+	path := fmt.Sprintf("/admin/messages/%d", message.ID)
+	handler.Routes().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, path, nil))
+	body := detail.Body.String()
+	if detail.Code != http.StatusOK || !strings.Contains(body, "$$E=mc^2$$") ||
+		!strings.Contains(body, "<strong>emphasis</strong>") ||
+		!strings.Contains(body, `src="../assets/katex/katex.min.js"`) ||
+		!strings.Contains(body, `href="./">All responses`) {
+		t.Fatalf("detail status=%d body=%s", detail.Code, body)
+	}
+	if !strings.Contains(detail.Header().Get("Content-Security-Policy"), "script-src 'self'") {
+		t.Fatalf("CSP=%q", detail.Header().Get("Content-Security-Policy"))
+	}
+}
+
 func TestAdminRejectsInvalidCSRF(t *testing.T) {
 	handler, _ := newTestHandler(t)
 	form := url.Values{"csrf_token": {"wrong"}, "ttl": {"10m"}}

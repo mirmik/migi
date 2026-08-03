@@ -40,6 +40,15 @@ class Notification:
     body: str
 
 
+@dataclass(frozen=True)
+class AgentMessage:
+    thread_id: str
+    turn_id: str
+    cwd: str
+    title: str
+    body: str
+
+
 def config_path() -> Path:
     override = os.environ.get("MIGI_AGENT_CONFIG")
     return Path(override).expanduser() if override else DEFAULT_CONFIG_PATH
@@ -120,7 +129,61 @@ def notification_for(payload: dict[str, Any]) -> Notification | None:
     return None
 
 
+def agent_message_for(payload: dict[str, Any]) -> AgentMessage | None:
+    if payload.get("type") != "agent-turn-complete":
+        return None
+    thread_id = payload.get("thread-id")
+    turn_id = payload.get("turn-id")
+    body = payload.get("last-assistant-message")
+    if not all(isinstance(value, str) and value for value in (thread_id, turn_id, body)):
+        return None
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str):
+        cwd = ""
+    project = os.path.basename(os.path.normpath(cwd)) if cwd else "Codex"
+    return AgentMessage(
+        thread_id=thread_id[:256],
+        turn_id=turn_id[:256],
+        cwd=cwd[:4096],
+        title=f"Codex response: {project}"[:256],
+        body=body,
+    )
+
+
 def send_notification(config: ClientConfig, notification: Notification) -> None:
+    send_json(
+        config,
+        config.endpoint.path,
+        {
+            "kind": notification.kind,
+            "title": notification.title,
+            "body": notification.body,
+        },
+        {201},
+    )
+
+
+def send_agent_message(config: ClientConfig, message: AgentMessage) -> None:
+    send_json(
+        config,
+        "/v1/agent-messages",
+        {
+            "thread_id": message.thread_id,
+            "turn_id": message.turn_id,
+            "cwd": message.cwd,
+            "title": message.title,
+            "body": message.body,
+        },
+        {200, 201},
+    )
+
+
+def send_json(
+    config: ClientConfig,
+    path: str,
+    payload: dict[str, Any],
+    expected_statuses: set[int],
+) -> None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
@@ -142,17 +205,13 @@ def send_notification(config: ClientConfig, notification: Notification) -> None:
             raise RuntimeError("Migi TLS certificate fingerprint mismatch")
 
         body = json.dumps(
-            {
-                "kind": notification.kind,
-                "title": notification.title,
-                "body": notification.body,
-            },
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
         connection.request(
             "POST",
-            config.endpoint.path,
+            path,
             body=body,
             headers={
                 "Authorization": f"Bearer {config.token}",
@@ -164,7 +223,7 @@ def send_notification(config: ClientConfig, notification: Notification) -> None:
         )
         response = connection.getresponse()
         response_body = response.read(MAX_RESPONSE_BODY)
-        if response.status != 201:
+        if response.status not in expected_statuses:
             detail = response_body.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"Migi returned HTTP {response.status}: {detail[:256]}")
     finally:
@@ -200,6 +259,16 @@ def read_hook_payload() -> dict[str, Any]:
     return payload
 
 
+def read_notify_payload() -> dict[str, Any]:
+    raw = sys.argv[1]
+    if len(raw.encode("utf-8")) > MAX_HOOK_INPUT:
+        raise ValueError("notify input exceeds 1 MiB")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("notify input must be a JSON object")
+    return payload
+
+
 def failure_output(event_name: str) -> dict[str, Any]:
     warning: dict[str, Any] = {
         "systemMessage": "Migi notification delivery failed; see ~/.local/state/migi/agent-hook.log"
@@ -212,6 +281,13 @@ def failure_output(event_name: str) -> dict[str, Any]:
 def main() -> int:
     event_name = "unknown"
     try:
+        if len(sys.argv) > 1:
+            payload = read_notify_payload()
+            message = agent_message_for(payload)
+            if message is None:
+                return 0
+            send_agent_message(load_config(config_path()), message)
+            return 0
         payload = read_hook_payload()
         if isinstance(payload.get("hook_event_name"), str):
             event_name = payload["hook_event_name"]

@@ -163,6 +163,28 @@ func (b *Broker) PublishRelease(ctx context.Context, draft ReleaseDraft) (Releas
 	return release, created, nil
 }
 
+func (b *Broker) PublishAgentMessage(ctx context.Context, draft AgentMessageDraft) (AgentMessage, bool, error) {
+	b.publicationMu.Lock()
+	defer b.publicationMu.Unlock()
+
+	message, event, created, err := b.journal.PublishAgentMessage(ctx, draft)
+	if err != nil {
+		return AgentMessage{}, false, err
+	}
+	if created {
+		b.broadcast(event)
+	}
+	return message, created, nil
+}
+
+func (b *Broker) RecentAgentMessages(ctx context.Context, limit int) ([]AgentMessage, error) {
+	return b.journal.RecentAgentMessages(ctx, limit)
+}
+
+func (b *Broker) AgentMessage(ctx context.Context, id uint64) (AgentMessage, error) {
+	return b.journal.AgentMessage(ctx, id)
+}
+
 func (b *Broker) ReleaseForDevice(ctx context.Context, deviceID, artifactID string) (Release, error) {
 	return b.journal.ReleaseForDevice(ctx, deviceID, artifactID)
 }

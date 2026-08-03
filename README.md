@@ -54,5 +54,9 @@ Codex agents can install the repository-owned `migi-file-exchange` and
 Remote agent hooks and file clients need no resident client or tunnel. The
 administration panel creates their revocable credentials and one-time
 connection configuration; see [docs/agent-hooks.md](docs/agent-hooks.md).
+Codex `notify` can also archive every final response as Markdown. The browser
+panel exposes a response history and renders embedded LaTeX notation with
+server-bundled KaTeX while the ordinary event stream sends a bounded preview to
+paired phones.
 
 See [docs/development.md](docs/development.md) for build commands.

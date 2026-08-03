@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent responses · Migi</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">Stored output</span><h1>Agent responses</h1></div>
+    <a class="button-link" href="../">Administration</a>
+  </header>
+  <main>
+    <section class="panel agents">
+      {{if .Messages}}
+      <div class="message-list">
+        {{range .Messages}}
+        <a class="message-card" href="{{.ID}}">
+          <strong>{{.Title}}</strong>
+          <span>{{.Agent}} · {{formatTime .CreatedAt}}</span>
+          {{if .CWD}}<code>{{.CWD}}</code>{{end}}
+          <p>{{messagePreview .Body}}</p>
+        </a>
+        {{end}}
+      </div>
+      {{else}}<p>No agent responses stored yet.</p>{{end}}
+    </section>
+  </main>
+  <footer>Responses are stored as source Markdown and rendered only for display.</footer>
+</body>
+</html>
