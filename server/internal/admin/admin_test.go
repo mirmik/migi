@@ -93,8 +93,8 @@ func TestDashboardAndPairing(t *testing.T) {
 		t.Fatalf("dashboard status = %d, want %d", response.Code, http.StatusOK)
 	}
 	if !strings.Contains(response.Body.String(), "Migi") ||
-		!strings.Contains(response.Body.String(), "https://203.0.113.10:443") ||
-		!strings.Contains(response.Body.String(), "Send test notification") {
+		!strings.Contains(response.Body.String(), "Send test notification") ||
+		!strings.Contains(response.Body.String(), `href="devices/"`) {
 		t.Fatalf("dashboard is missing expected server details: %s", response.Body.String())
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
@@ -186,12 +186,12 @@ func TestAdminListsUploadsAndDownloadsSharedFiles(t *testing.T) {
 	exchange := &fakeFileExchange{max: 1024, content: make(map[string][]byte)}
 	handler.config.Files = exchange
 
-	dashboard := httptest.NewRecorder()
-	handler.Routes().ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/admin/", nil))
-	if dashboard.Code != http.StatusOK ||
-		!strings.Contains(dashboard.Body.String(), "Shared files") ||
-		!strings.Contains(dashboard.Body.String(), "No shared files") {
-		t.Fatalf("file exchange dashboard = %d: %s", dashboard.Code, dashboard.Body.String())
+	filesPage := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(filesPage, httptest.NewRequest(http.MethodGet, "/admin/files/", nil))
+	if filesPage.Code != http.StatusOK ||
+		!strings.Contains(filesPage.Body.String(), "Shared files") ||
+		!strings.Contains(filesPage.Body.String(), "No shared files") {
+		t.Fatalf("file exchange page = %d: %s", filesPage.Code, filesPage.Body.String())
 	}
 
 	body := new(bytes.Buffer)
@@ -221,11 +221,11 @@ func TestAdminListsUploadsAndDownloadsSharedFiles(t *testing.T) {
 		t.Fatalf("uploaded files = %#v", exchange.files)
 	}
 
-	dashboard = httptest.NewRecorder()
-	handler.Routes().ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/admin/", nil))
-	if !strings.Contains(dashboard.Body.String(), "browser-note.txt") ||
-		!strings.Contains(dashboard.Body.String(), "files/"+exchange.files[0].ID+"/content") {
-		t.Fatalf("dashboard does not show uploaded file: %s", dashboard.Body.String())
+	filesPage = httptest.NewRecorder()
+	handler.Routes().ServeHTTP(filesPage, httptest.NewRequest(http.MethodGet, "/admin/files/", nil))
+	if !strings.Contains(filesPage.Body.String(), "browser-note.txt") ||
+		!strings.Contains(filesPage.Body.String(), "files/"+exchange.files[0].ID+"/content") {
+		t.Fatalf("files page does not show uploaded file: %s", filesPage.Body.String())
 	}
 
 	download := httptest.NewRecorder()
@@ -437,7 +437,7 @@ func TestAdminRevokesDevice(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusSeeOther, response.Body.String())
 	}
-	if location := response.Header().Get("Location"); location != "../?notice=Device+revoked" {
+	if location := response.Header().Get("Location"); location != "./?notice=Device+revoked" {
 		t.Fatalf("revoke Location = %q", location)
 	}
 	if _, err := broker.AuthenticateDevice(context.Background(), tokenHash[:]); !errors.Is(err, events.ErrUnauthorized) {
@@ -522,11 +522,16 @@ func TestAdminURLsSurviveARewritingProxy(t *testing.T) {
 		`href="assets/style.css"`,
 		`action="pager"`,
 		`action="notifications/test"`,
-		`action="pair"`,
+		`href="devices/"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("proxied dashboard is missing %s", expected)
 		}
+	}
+	devices := httptest.NewRecorder()
+	proxy.ServeHTTP(devices, httptest.NewRequest(http.MethodGet, "/migi/admin/devices/", nil))
+	if devices.Code != http.StatusOK || !strings.Contains(devices.Body.String(), `action="../pair"`) {
+		t.Fatalf("proxied devices page = %d: %s", devices.Code, devices.Body.String())
 	}
 
 	asset := httptest.NewRecorder()

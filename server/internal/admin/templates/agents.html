@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Credentials · Migi</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body>
+  <header><div><span class="eyebrow">Administration</span><h1>Credentials</h1></div><span class="healthy">revocable identities</span></header>
+  {{template "admin-nav" "../"}}
+  <main>
+    {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+    <section class="panel agents">
+      <h2>Agent credentials</h2><p>Create one credential per agent host or identity. The plain token is shown only once.</p>
+      <form method="post" action="../agents/create"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>Public HTTPS endpoint<input type="url" name="endpoint" required value="{{.AgentEndpoint}}" placeholder="https://host:10444" autocomplete="off" spellcheck="false"></label><label>Agent name<input type="text" name="name" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required placeholder="builder-1" autocomplete="off" spellcheck="false"></label><button type="submit">Create token</button></form>
+      {{if .AgentCredential}}<div class="credential"><h3>Configuration for {{.AgentCredential.Name}}</h3><p>Copy this now. Migi cannot display the token again.</p><pre>{{.AgentCredential.Config}}</pre></div>{{end}}
+      {{if .AgentTokens}}<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Token ID</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>{{range .AgentTokens}}<tr><td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .CreatedAt}}</td><td>{{formatOptionalTime .LastUsedAt}}</td><td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td><td>{{if not .RevokedAt}}<form method="post" action="../agents/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="token_id" value="{{.ID}}"><button class="danger" type="submit">Revoke</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No agent credentials created yet.</p>{{end}}
+    </section>
+    <section class="panel agents">
+      <h2>Release publishers</h2><p>Create a credential that can publish valid APK releases. The plain token is shown only once.</p>
+      <form method="post" action="../publishers/create"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>Public HTTPS endpoint<input type="url" name="endpoint" required value="{{.AgentEndpoint}}" placeholder="https://host:10444" autocomplete="off" spellcheck="false"></label><label>Publisher name<input type="text" name="name" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required placeholder="pilot-builder" autocomplete="off" spellcheck="false"></label><button type="submit">Create publisher</button></form>
+      {{if .PublisherCredential}}<div class="credential"><h3>Configuration for {{.PublisherCredential.Name}}</h3><p>Copy this now. Migi cannot display the token again.</p><pre>{{.PublisherCredential.Config}}</pre></div>{{end}}
+      {{if .PublisherTokens}}<div class="table-wrap"><table><thead><tr><th>Publisher</th><th>Token ID</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>{{range .PublisherTokens}}<tr><td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .CreatedAt}}</td><td>{{formatOptionalTime .LastUsedAt}}</td><td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td><td>{{if not .RevokedAt}}<form method="post" action="../publishers/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="token_id" value="{{.ID}}"><button class="danger" type="submit">Revoke</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No release publishers created yet.</p>{{end}}
+    </section>
+  </main><footer>Tokens are stored only as hashes and can be revoked independently.</footer>
+</body></html>

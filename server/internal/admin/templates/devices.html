@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Devices · Migi</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body>
+  <header><div><span class="eyebrow">Administration</span><h1>Devices</h1></div><span class="healthy">{{.Stats.ActiveDeviceCount}} active</span></header>
+  {{template "admin-nav" "../"}}
+  <main>
+    {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+    <section class="grid">
+      <article class="panel">
+        <h2>Pair a device</h2>
+        <p>Create a short-lived, one-time invitation for a phone.</p>
+        <form method="post" action="../pair">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <label>Endpoint<input type="url" name="endpoint" required value="{{.PublicEndpoint}}" placeholder="https://host:10443" autocomplete="off" spellcheck="false"></label>
+          <label>Lifetime<select name="ttl"><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option></select></label>
+          <button type="submit">Create pairing QR</button>
+        </form>
+        {{if .Pairing}}<div class="pairing"><p>Endpoint: <code>{{.Pairing.Endpoint}}</code></p><img src="{{.Pairing.QRDataURI}}" width="384" height="384" alt="One-time Migi pairing QR"><p>Expires {{formatTime .Pairing.ExpiresAt}}. Delete screenshots after use or expiry.</p></div>{{end}}
+      </article>
+      <article class="panel">
+        <h2>Connection state</h2>
+        <dl><dt>Active devices</dt><dd>{{.Stats.ActiveDeviceCount}}</dd><dt>Live streams</dt><dd>{{.ActiveStreams}}</dd><dt>Open invitations</dt><dd>{{.Stats.ActivePairingCodes}}</dd><dt>Public endpoint</dt><dd>{{if .PublicEndpoint}}{{.PublicEndpoint}}{{else}}not configured{{end}}</dd></dl>
+      </article>
+    </section>
+    <section class="panel devices">
+      <h2>Paired devices</h2>
+      {{if .Devices}}<div class="table-wrap"><table><thead><tr><th>Name</th><th>Device ID</th><th>Last seen</th><th>ACK cursor</th><th>Status</th><th></th></tr></thead><tbody>{{range .Devices}}<tr><td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .LastSeenAt}}</td><td>{{.AckThrough}}</td><td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td><td>{{if not .RevokedAt}}<form method="post" action="../devices/revoke"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="device_id" value="{{.ID}}"><button class="danger" type="submit">Revoke</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p>No devices paired yet.</p>{{end}}
+    </section>
+  </main>
+  <footer>Pairing invitations are one-time and expire automatically.</footer>
+</body></html>

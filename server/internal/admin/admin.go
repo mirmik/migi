@@ -193,6 +193,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/", h.dashboard)
 	mux.HandleFunc("GET /admin/messages/", h.agentMessages)
 	mux.HandleFunc("GET /admin/messages/{messageID}", h.agentMessage)
+	mux.HandleFunc("GET /admin/devices/", h.devices)
+	mux.HandleFunc("GET /admin/agents/", h.agents)
+	mux.HandleFunc("GET /admin/files/", h.files)
+	mux.HandleFunc("GET /admin/system/", h.system)
 	mux.HandleFunc("POST /admin/pair", h.createPairing)
 	mux.HandleFunc("POST /admin/notifications/test", h.sendTestNotification)
 	mux.HandleFunc("POST /admin/pager", h.setPagerMessage)
@@ -318,7 +322,7 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 		"size", shared.Size,
 		"remote_addr", r.RemoteAddr,
 	)
-	h.redirectToDashboard(w, r, "File shared")
+	h.redirectTo(w, "files/", "File shared")
 }
 
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {
@@ -348,7 +352,23 @@ func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
-	h.renderDashboard(w, r, nil, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
+	h.renderPage(w, r, "dashboard.html", nil, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) devices(w http.ResponseWriter, r *http.Request) {
+	h.renderPage(w, r, "devices.html", nil, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) agents(w http.ResponseWriter, r *http.Request) {
+	h.renderPage(w, r, "agents.html", nil, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) files(w http.ResponseWriter, r *http.Request) {
+	h.renderPage(w, r, "files.html", nil, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
+}
+
+func (h *Handler) system(w http.ResponseWriter, r *http.Request) {
+	h.renderPage(w, r, "system.html", nil, nil, nil, r.URL.Query().Get("notice"), http.StatusOK)
 }
 
 func (h *Handler) createAgentToken(w http.ResponseWriter, r *http.Request) {
@@ -393,7 +413,7 @@ func (h *Handler) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("agent token created", "agent", name, "token_id", tokenID, "remote_addr", r.RemoteAddr)
-	h.renderDashboard(w, r, nil, &agentCredentialView{
+	h.renderPage(w, r, "agents.html", nil, &agentCredentialView{
 		Name: name, Config: string(encoded),
 	}, nil, "Agent token created; copy it now", http.StatusCreated)
 }
@@ -442,7 +462,7 @@ func (h *Handler) createPublisherToken(w http.ResponseWriter, r *http.Request) {
 	slog.Info("release publisher created",
 		"publisher", name, "token_id", tokenID,
 	)
-	h.renderDashboard(w, r, nil, nil, &agentCredentialView{
+	h.renderPage(w, r, "agents.html", nil, nil, &agentCredentialView{
 		Name: name, Config: string(encoded),
 	}, "Publisher token created; copy it now", http.StatusCreated)
 }
@@ -460,7 +480,7 @@ func (h *Handler) revokePublisherToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to revoke publisher token", http.StatusInternalServerError)
 		return
 	}
-	h.redirectToDashboard(w, r, "Publisher token revoked")
+	h.redirectTo(w, "./", "Publisher token revoked")
 }
 
 func (h *Handler) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +501,7 @@ func (h *Handler) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("agent token revoked", "token_id", tokenID, "remote_addr", r.RemoteAddr)
-	h.redirectToDashboard(w, r, "Agent token revoked")
+	h.redirectTo(w, "./", "Agent token revoked")
 }
 
 func (h *Handler) setPagerMessage(w http.ResponseWriter, r *http.Request) {
@@ -567,7 +587,7 @@ func (h *Handler) createPairing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to render pairing QR", http.StatusInternalServerError)
 		return
 	}
-	h.renderDashboard(w, r, &pairingView{
+	h.renderPage(w, r, "devices.html", &pairingView{
 		QRDataURI: template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(png)),
 		Endpoint:  endpoint.String(),
 		ExpiresAt: expiresAt,
@@ -592,12 +612,13 @@ func (h *Handler) revokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("device revoked", "device_id", deviceID, "remote_addr", r.RemoteAddr)
-	h.redirectToDashboard(w, r, "Device revoked")
+	h.redirectTo(w, "./", "Device revoked")
 }
 
-func (h *Handler) renderDashboard(
+func (h *Handler) renderPage(
 	w http.ResponseWriter,
 	r *http.Request,
+	templateName string,
 	pairing *pairingView,
 	agentCredential *agentCredentialView,
 	publisherCredential *agentCredentialView,
@@ -629,7 +650,7 @@ func (h *Handler) renderDashboard(
 		http.Error(w, "failed to read pager state", http.StatusInternalServerError)
 		return
 	}
-	agentMessages, err := h.config.Broker.RecentAgentMessages(r.Context(), 5)
+	agentMessages, err := h.config.Broker.RecentAgentMessages(r.Context(), 4)
 	if err != nil {
 		http.Error(w, "failed to read agent responses", http.StatusInternalServerError)
 		return
@@ -670,9 +691,14 @@ func (h *Handler) renderDashboard(
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := h.template.ExecuteTemplate(w, "dashboard.html", data); err != nil {
+	if err := h.template.ExecuteTemplate(w, templateName, data); err != nil {
 		return
 	}
+}
+
+func (h *Handler) redirectTo(w http.ResponseWriter, location, notice string) {
+	w.Header().Set("Location", location+"?notice="+url.QueryEscape(notice))
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 func (h *Handler) redirectToDashboard(w http.ResponseWriter, r *http.Request, notice string) {

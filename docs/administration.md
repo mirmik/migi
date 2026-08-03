@@ -6,6 +6,19 @@ state. It can set the persistent pager line displayed by the Android app, send
 a real test notification, create short-lived one-time pairing QR codes and
 revoke a device.
 
+The panel is split into focused browser sections:
+
+- **Overview** shows service health, delivery counters, pager controls, a test
+  notification action and recent agent responses.
+- **Responses** lists and renders stored Codex output.
+- **Devices** owns pairing invitations, connection state and revocation.
+- **Credentials** manages agent and APK publisher identities.
+- **Files** owns the shared temporary inbox.
+- **System** shows listeners, endpoints, certificate identity and uptime.
+
+All sections use relative navigation and form actions so the panel continues to
+work when an authenticated reverse proxy publishes it below a path prefix.
+
 The **Agent responses** section lists final messages submitted by Codex
 `notify`. Migi stores the original Markdown and renders it on a detail page with
 Goldmark and locally bundled KaTeX. Raw HTML is disabled, and the page's Content

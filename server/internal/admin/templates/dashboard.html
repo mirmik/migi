@@ -11,6 +11,7 @@
     <div><span class="eyebrow">Self-hosted agent link</span><h1>Migi</h1></div>
     <span class="healthy">● server running</span>
   </header>
+  {{template "admin-nav" "./"}}
   <main>
     {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
     <section class="stats">
@@ -22,10 +23,10 @@
       <article><strong>{{formatDuration .Uptime}}</strong><span>uptime</span></article>
     </section>
 
-    <section class="grid">
+    <section class="grid overview-actions">
       <article class="panel">
         <h2>Pager</h2>
-        <p>Set the persistent one-line message shown inside the Migi app. Submit an empty field to clear it.</p>
+        <p>Set the persistent one-line message shown inside the Migi app.</p>
         <form method="post" action="pager">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <label>Message
@@ -35,55 +36,18 @@
         </form>
         {{if .Pager.EventID}}<p class="muted">Last updated {{formatTime .Pager.UpdatedAt}} · event {{.Pager.EventID}}</p>{{end}}
       </article>
-
       <article class="panel">
         <h2>Test notification</h2>
-        <p>Send a real attention event through the journal and every connected device stream.</p>
+        <p>Send a real attention event through the journal and connected device streams.</p>
         <form method="post" action="notifications/test">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <button type="submit">Send test notification</button>
         </form>
       </article>
-
-      <article class="panel">
-        <h2>Pair a device</h2>
-        <p>Create a short-lived, one-time invitation. Enter the HTTPS endpoint that the phone can reach over UDP, then confirm it and the fingerprint on the phone.</p>
-        <form method="post" action="pair">
-          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-          <label>Endpoint
-            <input type="url" name="endpoint" required value="{{.PublicEndpoint}}" placeholder="https://host:10443" autocomplete="off" spellcheck="false">
-          </label>
-          <label>Lifetime
-            <select name="ttl"><option value="10m">10 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option></select>
-          </label>
-          <button type="submit">Create pairing QR</button>
-        </form>
-        {{if .Pairing}}
-        <div class="pairing">
-          <p>Endpoint: <code>{{.Pairing.Endpoint}}</code></p>
-          <img src="{{.Pairing.QRDataURI}}" width="384" height="384" alt="One-time Migi pairing QR">
-          <p>Expires {{formatTime .Pairing.ExpiresAt}}. Delete screenshots after use or expiry.</p>
-        </div>
-        {{end}}
-      </article>
-
-      <article class="panel configuration">
-        <h2>Configuration</h2>
-        <dl>
-          <dt>Default pairing endpoint</dt><dd>{{if .PublicEndpoint}}{{.PublicEndpoint}}{{else}}not configured{{end}}</dd>
-          <dt>Certificate SHA-256</dt><dd class="fingerprint">{{.CertificateFingerprint}}</dd>
-          <dt>QUIC listener</dt><dd>{{.PublicListen}}</dd>
-          <dt>Agent ingress</dt><dd>{{.IngestListen}}</dd>
-          <dt>Authenticated agent TLS</dt><dd>{{if .AgentListen}}{{.AgentListen}}{{else}}disabled{{end}}</dd>
-          <dt>Agent endpoint</dt><dd>{{if .AgentEndpoint}}{{.AgentEndpoint}}/v1/agent-events{{else}}not configured{{end}}</dd>
-          <dt>Administration</dt><dd>{{.AdminListen}}</dd>
-          <dt>Started</dt><dd>{{formatTime .StartedAt}}</dd>
-        </dl>
-      </article>
     </section>
 
     <section class="panel agents">
-      <div class="section-heading"><div><h2>Agent responses</h2><p>Final Codex messages stored as Markdown, with mathematical notation rendered in the browser.</p></div><a class="button-link" href="messages/">View all</a></div>
+      <div class="section-heading"><div><h2>Recent agent responses</h2><p>Final Codex messages, rendered from stored Markdown.</p></div><a class="button-link" href="messages/">View all</a></div>
       {{if .AgentMessages}}
       <div class="message-list compact">
         {{range .AgentMessages}}<a class="message-card" href="messages/{{.ID}}"><strong>{{.Title}}</strong><span>{{.Agent}} · {{formatTime .CreatedAt}}</span><p>{{messagePreview .Body}}</p></a>{{end}}
@@ -91,127 +55,11 @@
       {{else}}<p>No agent responses stored yet.</p>{{end}}
     </section>
 
-    <section class="panel agents">
-      <h2>Shared files</h2>
-      {{if .FilesEnabled}}
-      <p>Upload a temporary file for paired phones and local agents. A committed upload emits a <code>file.available</code> event.</p>
-      <form method="post" action="files" enctype="multipart/form-data">
-        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <label>File
-          <input type="file" name="file" required>
-        </label>
-        <button type="submit">Share file</button>
-      </form>
-
-      {{if .Files}}
-      <div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Size</th><th>Type</th><th>Source</th><th>Uploaded</th><th>Expires</th><th></th></tr></thead>
-        <tbody>{{range .Files}}<tr>
-          <td>{{.Name}}</td>
-          <td>{{formatBytes .Size}}</td>
-          <td><code>{{.MIME}}</code></td>
-          <td>{{.Source}}</td>
-          <td>{{formatTime .CreatedAt}}</td>
-          <td>{{formatTime .ExpiresAt}}</td>
-          <td><a class="button-link" href="files/{{.ID}}/content">Download</a></td>
-        </tr>{{end}}</tbody>
-      </table></div>
-      {{else}}<p>No shared files.</p>{{end}}
-      {{else}}
-      <p>File exchange is disabled.</p>
-      {{end}}
-    </section>
-
-    <section class="panel agents">
-      <h2>Agent credentials</h2>
-      <p>Create one credential per agent host or identity. Migi derives the event's agent name from the token. The plain token is shown only once.</p>
-      <form method="post" action="agents/create">
-        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <label>Public HTTPS endpoint
-          <input type="url" name="endpoint" required value="{{.AgentEndpoint}}" placeholder="https://host:10444" autocomplete="off" spellcheck="false">
-        </label>
-        <label>Agent name
-          <input type="text" name="name" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required placeholder="builder-1" autocomplete="off" spellcheck="false">
-        </label>
-        <button type="submit">Create token</button>
-      </form>
-
-      {{if .AgentCredential}}
-      <div class="credential">
-        <h3>Configuration for {{.AgentCredential.Name}}</h3>
-        <p>Copy this now. Migi cannot display the token again.</p>
-        <pre>{{.AgentCredential.Config}}</pre>
-      </div>
-      {{end}}
-
-      {{if .AgentTokens}}
-      <div class="table-wrap"><table>
-        <thead><tr><th>Agent</th><th>Token ID</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
-        <tbody>{{range .AgentTokens}}<tr>
-          <td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .CreatedAt}}</td><td>{{formatOptionalTime .LastUsedAt}}</td>
-          <td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td>
-          <td>{{if not .RevokedAt}}<form method="post" action="agents/revoke">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="token_id" value="{{.ID}}">
-            <button class="danger" type="submit">Revoke</button>
-          </form>{{end}}</td>
-        </tr>{{end}}</tbody>
-      </table></div>
-      {{else}}<p>No agent credentials created yet.</p>{{end}}
-    </section>
-
-    <section class="panel agents">
-      <h2>Release publishers</h2>
-      <p>Create a credential that can publish any valid APK. The plain token is shown only once.</p>
-      <form method="post" action="publishers/create">
-        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <label>Public HTTPS endpoint
-          <input type="url" name="endpoint" required value="{{.AgentEndpoint}}" placeholder="https://host:10444" autocomplete="off" spellcheck="false">
-        </label>
-        <label>Publisher name
-          <input type="text" name="name" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required placeholder="pilot-builder" autocomplete="off" spellcheck="false">
-        </label>
-        <button type="submit">Create publisher</button>
-      </form>
-
-      {{if .PublisherCredential}}
-      <div class="credential">
-        <h3>Configuration for {{.PublisherCredential.Name}}</h3>
-        <p>Copy this now. Migi cannot display the token again.</p>
-        <pre>{{.PublisherCredential.Config}}</pre>
-      </div>
-      {{end}}
-
-      {{if .PublisherTokens}}
-      <div class="table-wrap"><table>
-        <thead><tr><th>Publisher</th><th>Token ID</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
-        <tbody>{{range .PublisherTokens}}<tr>
-          <td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .CreatedAt}}</td><td>{{formatOptionalTime .LastUsedAt}}</td>
-          <td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td>
-          <td>{{if not .RevokedAt}}<form method="post" action="publishers/revoke">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="token_id" value="{{.ID}}">
-            <button class="danger" type="submit">Revoke</button>
-          </form>{{end}}</td>
-        </tr>{{end}}</tbody>
-      </table></div>
-      {{else}}<p>No release publishers created yet.</p>{{end}}
-    </section>
-
-    <section class="panel devices">
-      <h2>Paired devices</h2>
-      <p>All active paired devices can receive application releases.</p>
-      {{if .Devices}}
-      <div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Device ID</th><th>Last seen</th><th>ACK cursor</th><th>Status</th><th></th></tr></thead>
-        <tbody>{{range .Devices}}<tr>
-          <td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{formatTime .LastSeenAt}}</td><td>{{.AckThrough}}</td>
-          <td>{{if .RevokedAt}}<span class="revoked">revoked</span>{{else}}<span class="active">active</span>{{end}}</td>
-          <td>{{if not .RevokedAt}}<form method="post" action="devices/revoke">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="device_id" value="{{.ID}}">
-            <button class="danger" type="submit">Revoke</button>
-          </form>{{end}}</td>
-        </tr>{{end}}</tbody>
-      </table></div>
-      {{else}}<p>No devices paired yet.</p>{{end}}
+    <section class="section-cards">
+      <a class="section-card" href="devices/"><span>Devices</span><strong>Pair and manage phones</strong><small>{{.Stats.ActiveDeviceCount}} active</small></a>
+      <a class="section-card" href="agents/"><span>Credentials</span><strong>Agents and publishers</strong><small>{{len .AgentTokens}} agent identities</small></a>
+      <a class="section-card" href="files/"><span>Files</span><strong>Shared temporary inbox</strong><small>{{len .Files}} available</small></a>
+      <a class="section-card" href="system/"><span>System</span><strong>Listeners and certificate</strong><small>Started {{formatTime .StartedAt}}</small></a>
     </section>
   </main>
   <footer>Restrict administration to a trusted network or protect it with an authenticated reverse proxy.</footer>

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>System · Migi</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body>
+  <header><div><span class="eyebrow">Administration</span><h1>System</h1></div><span class="healthy">● server running</span></header>
+  {{template "admin-nav" "../"}}
+  <main>
+    <section class="stats"><article><strong>{{.Stats.EventCount}}</strong><span>stored events</span></article><article><strong>{{.Stats.LatestEventID}}</strong><span>latest event ID</span></article><article><strong>{{.Stats.ActiveDeviceCount}}</strong><span>active devices</span></article><article><strong>{{.ActiveStreams}}</strong><span>live streams</span></article><article><strong>{{len .AgentTokens}}</strong><span>agent identities</span></article><article><strong>{{formatDuration .Uptime}}</strong><span>uptime</span></article></section>
+    <section class="panel configuration"><h2>Configuration</h2><dl><dt>Default pairing endpoint</dt><dd>{{if .PublicEndpoint}}{{.PublicEndpoint}}{{else}}not configured{{end}}</dd><dt>Certificate SHA-256</dt><dd class="fingerprint">{{.CertificateFingerprint}}</dd><dt>QUIC listener</dt><dd>{{.PublicListen}}</dd><dt>Agent ingress</dt><dd>{{.IngestListen}}</dd><dt>Authenticated agent TLS</dt><dd>{{if .AgentListen}}{{.AgentListen}}{{else}}disabled{{end}}</dd><dt>Agent endpoint</dt><dd>{{if .AgentEndpoint}}{{.AgentEndpoint}}/v1/agent-events{{else}}not configured{{end}}</dd><dt>Administration</dt><dd>{{.AdminListen}}</dd><dt>Started</dt><dd>{{formatTime .StartedAt}}</dd></dl></section>
+  </main><footer>Operational configuration is read-only in this interface.</footer>
+</body></html>

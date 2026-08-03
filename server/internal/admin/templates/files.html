@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Files · Migi</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body>
+  <header><div><span class="eyebrow">Administration</span><h1>Shared files</h1></div><span class="healthy">{{len .Files}} available</span></header>
+  {{template "admin-nav" "../"}}
+  <main>
+    {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+    <section class="panel agents">
+      {{if .FilesEnabled}}
+      <p>Upload a temporary file for paired phones and local agents. A committed upload emits a <code>file.available</code> event.</p>
+      <form method="post" action="../files" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>File<input type="file" name="file" required></label><button type="submit">Share file</button></form>
+      {{if .Files}}<div class="table-wrap"><table><thead><tr><th>Name</th><th>Size</th><th>Type</th><th>Source</th><th>Uploaded</th><th>Expires</th><th></th></tr></thead><tbody>{{range .Files}}<tr><td>{{.Name}}</td><td>{{formatBytes .Size}}</td><td><code>{{.MIME}}</code></td><td>{{.Source}}</td><td>{{formatTime .CreatedAt}}</td><td>{{formatTime .ExpiresAt}}</td><td><a class="button-link" href="../files/{{.ID}}/content">Download</a></td></tr>{{end}}</tbody></table></div>{{else}}<p>No shared files.</p>{{end}}
+      {{else}}<p>File exchange is disabled.</p>{{end}}
+    </section>
+  </main><footer>Shared files are bounded and expire automatically.</footer>
+</body></html>
