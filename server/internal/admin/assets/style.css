@@ -54,8 +54,9 @@ footer { padding: 24px 0 36px; color: #69778b; font-size: 12px; }
 .agent-message p, .agent-message li { color: #d4dbea; }
 .agent-message a { color: #8eabff; }
 .agent-message pre { overflow-x: auto; padding: 16px; border-radius: 10px; background: #090d12; }
-.agent-message code { color: #dce9e1; }
+.agent-message code { color: #dce9e1; font-size: .94em; }
 .agent-message :not(pre) > code { padding: 2px 5px; border-radius: 5px; background: #090d12; }
+.agent-message .local-reference { white-space: normal; overflow-wrap: anywhere; color: #b9c9e8; }
 .agent-message blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid #6688ef; }
 .agent-message table { display: block; overflow-x: auto; }
 .agent-message .katex-display { overflow-x: auto; overflow-y: hidden; padding: 8px 0; }
