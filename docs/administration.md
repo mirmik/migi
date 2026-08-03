@@ -16,7 +16,7 @@ and `migi-file`. Browser uploads are size-limited, CSRF-protected, committed
 under random storage IDs and announced through `file.available`. The table
 shows the source and expiry of every live object and serves downloads with the
 stored MIME type, exact length and SHA-256 header. Access inherits the panel's
-loopback/SSH-tunnel security boundary.
+configured administration-listener security boundary.
 
 ## Start it
 
@@ -129,24 +129,17 @@ live subscription under the same lock as the final short replay query, so a
 reconnect neither loads the complete journal into memory nor loses events in
 the transition from replay to live delivery.
 
-## Remote administration
+## Browser access
 
-The panel intentionally has no password login and defaults to loopback. Do not
-forward its TCP port on the router. Reach it through SSH:
+The panel intentionally has no password login and defaults to loopback. To use
+it from browsers on a trusted LAN, set `-admin-listen` to a LAN address reachable
+by those clients and open `http://host:port/admin/`. Limit that port to the
+trusted network and do not forward it directly from the public internet.
 
-```bash
-ssh -L 8788:127.0.0.1:8788 user@home-server
-```
-
-While that command is connected, open `http://127.0.0.1:8788/admin/` on the
-client machine. SSH supplies authentication and encryption. If direct exposure
-is ever needed, an explicit authentication and authorization layer must be
-implemented first.
-
-It may instead listen on a trusted LAN address behind an authenticated reverse
-proxy. The panel uses relative asset, form and redirect URLs, so the proxy can
-own an external prefix without teaching Migi about it. For an external
-`/migi/`, redirect exact `/migi` to `/migi/admin/` and rewrite
+For access from an untrusted network, place the panel behind an authenticated
+HTTPS reverse proxy. The panel uses relative asset, form and redirect URLs, so
+the proxy can own an external prefix without teaching Migi about it. For an
+external `/migi/`, redirect exact `/migi` to `/migi/admin/` and rewrite
 `/migi/(.*)` to the upstream `/$1`. Thus the direct `/admin/` panel is available
 as `/migi/admin/` through the proxy. Apply the same authentication policy to
 both proxy rules. The prefix is routing, not authentication; the upstream TCP

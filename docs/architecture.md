@@ -184,9 +184,10 @@ Public CA certificates remain an optional deployment mode, not a requirement.
 
 Administrative POST actions carry a process-local CSRF token, and the panel
 sends a restrictive content security policy and `no-store` caching policy. The
-panel has no remote-access authentication of its own: its security boundary is
-the loopback bind plus an authenticated SSH tunnel. Binding it to a non-loopback
-address requires adding a real authentication layer first.
+panel has no authentication of its own. Bind it only to an address reachable
+from a trusted network, or place it behind an authenticated reverse proxy before
+allowing access from an untrusted network. Never forward an unauthenticated
+administration listener directly from the public internet.
 
 ## Failure handling
 
