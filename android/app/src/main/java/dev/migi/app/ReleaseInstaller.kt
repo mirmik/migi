@@ -16,70 +16,72 @@ import kotlin.concurrent.thread
 import org.json.JSONObject
 
 class ReleaseInstaller(private val context: Context) {
-    private val repository = ReleaseRepository(context)
-
     fun download(artifactID: String, onComplete: (Result<Unit>) -> Unit) {
         thread(name = "migi-release-download") {
-            val result = runCatching {
-                val release = requireNotNull(repository.findRelease(artifactID)) {
-                    "Unknown release"
-                }
-                val connection = connection()
-                repository.updateState(artifactID, ReleaseRepository.STATE_DOWNLOADING)
-                val metadataResponse = NativeQuicClient.releaseMetadata(
-                    connection.endpoint,
-                    connection.pin,
-                    connection.credential,
-                    artifactID,
-                )
-                checkNativeResponse(metadataResponse)
-                val metadata = parseMetadata(metadataResponse)
-                check(metadata.artifactID == artifactID)
-                check(metadata.packageName == release.artifact.packageName)
-                check(metadata.versionCode == release.artifact.versionCode)
-                check(metadata.versionName == release.artifact.versionName)
-                check(metadata.size in 1..MAX_APK_BYTES)
-                repository.updateMetadata(artifactID, metadata)
-
-                val directory = File(context.cacheDir, "releases").apply {
-                    check(mkdirs() || isDirectory) { "Failed to create release cache" }
-                }
-                val file = File(directory, "$artifactID.apk")
-                ParcelFileDescriptor.open(
-                    file,
-                    ParcelFileDescriptor.MODE_CREATE or
-                        ParcelFileDescriptor.MODE_TRUNCATE or
-                        ParcelFileDescriptor.MODE_READ_WRITE,
-                ).use { descriptor ->
-                    val downloadResponse = NativeQuicClient.downloadRelease(
+            val result = ReleaseRepository(context).use { repository ->
+                runCatching {
+                    val release = requireNotNull(repository.findRelease(artifactID)) {
+                        "Unknown release"
+                    }
+                    val connection = connection()
+                    repository.updateState(artifactID, ReleaseRepository.STATE_DOWNLOADING)
+                    val metadataResponse = NativeQuicClient.releaseMetadata(
                         connection.endpoint,
                         connection.pin,
                         connection.credential,
                         artifactID,
-                        descriptor.fd,
-                        metadata.size,
                     )
-                    checkNativeResponse(downloadResponse)
-                    val download = JSONObject(downloadResponse)
-                    check(download.getLong("bytes") == metadata.size) { "Downloaded size differs" }
-                    check(download.getString("sha256").equals(metadata.sha256, ignoreCase = true)) {
-                        "Downloaded digest differs"
+                    checkNativeResponse(metadataResponse)
+                    val metadata = parseMetadata(metadataResponse)
+                    check(metadata.artifactID == artifactID)
+                    check(metadata.packageName == release.artifact.packageName)
+                    check(metadata.versionCode == release.artifact.versionCode)
+                    check(metadata.versionName == release.artifact.versionName)
+                    check(metadata.size in 1..MAX_APK_BYTES)
+                    repository.updateMetadata(artifactID, metadata)
+
+                    val directory = File(context.cacheDir, "releases").apply {
+                        check(mkdirs() || isDirectory) { "Failed to create release cache" }
                     }
-                }
-                verifyAPK(file, metadata)
-                repository.updateState(
-                    artifactID,
-                    ReleaseRepository.STATE_DOWNLOADED,
-                    tempPath = file.absolutePath,
-                )
-            }.onFailure { error ->
-                repository.findRelease(artifactID)?.let {
+                    val file = File(directory, "$artifactID.apk")
+                    ParcelFileDescriptor.open(
+                        file,
+                        ParcelFileDescriptor.MODE_CREATE or
+                            ParcelFileDescriptor.MODE_TRUNCATE or
+                            ParcelFileDescriptor.MODE_READ_WRITE,
+                    ).use { descriptor ->
+                        val downloadResponse = NativeQuicClient.downloadRelease(
+                            connection.endpoint,
+                            connection.pin,
+                            connection.credential,
+                            artifactID,
+                            descriptor.fd,
+                            metadata.size,
+                        )
+                        checkNativeResponse(downloadResponse)
+                        val download = JSONObject(downloadResponse)
+                        check(download.getLong("bytes") == metadata.size) {
+                            "Downloaded size differs"
+                        }
+                        check(download.getString("sha256").equals(metadata.sha256, ignoreCase = true)) {
+                            "Downloaded digest differs"
+                        }
+                    }
+                    verifyAPK(file, metadata)
                     repository.updateState(
                         artifactID,
-                        ReleaseRepository.STATE_FAILED,
-                        tempPath = it.tempPath,
-                        error = error.message ?: error.javaClass.simpleName,
+                        ReleaseRepository.STATE_DOWNLOADED,
+                        tempPath = file.absolutePath,
                     )
+                }.onFailure { error ->
+                    repository.findRelease(artifactID)?.let {
+                        repository.updateState(
+                            artifactID,
+                            ReleaseRepository.STATE_FAILED,
+                            tempPath = it.tempPath,
+                            error = error.message ?: error.javaClass.simpleName,
+                        )
+                    }
                 }
             }
             (context as? Activity)?.runOnUiThread { onComplete(result) } ?: onComplete(result)
@@ -87,76 +89,80 @@ class ReleaseInstaller(private val context: Context) {
     }
 
     fun install(activity: Activity, artifactID: String, onComplete: (Result<Unit>) -> Unit) {
-        val result = runCatching {
-            check(context.packageManager.canRequestPackageInstalls()) {
-                "Allow Migi to install apps from this source first"
-            }
-            val release = requireNotNull(repository.findRelease(artifactID))
-            val path = requireNotNull(release.tempPath) { "Download the APK first" }
-            val metadata = release.toMetadata()
-            val file = File(path)
-            verifyAPK(file, metadata)
+        val result = ReleaseRepository(context).use { repository ->
+            runCatching {
+                check(context.packageManager.canRequestPackageInstalls()) {
+                    "Allow Migi to install apps from this source first"
+                }
+                val release = requireNotNull(repository.findRelease(artifactID))
+                val path = requireNotNull(release.tempPath) { "Download the APK first" }
+                val metadata = release.toMetadata()
+                val file = File(path)
+                verifyAPK(file, metadata)
 
-            val installer = context.packageManager.packageInstaller
-            val resumableSession = release.sessionID?.takeIf { expected ->
-                installer.mySessions.any { it.sessionId == expected }
-            }
-            val sessionID = resumableSession ?: installer.createSession(
-                PackageInstaller.SessionParams(
-                    PackageInstaller.SessionParams.MODE_FULL_INSTALL,
-                ).apply {
-                    setAppPackageName(metadata.packageName)
-                    setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
-                },
-            )
-            installer.openSession(sessionID).use { session ->
-                if (resumableSession == null) {
-                    FileInputStream(file).use { input ->
-                        session.openWrite("base.apk", 0, file.length()).use { output ->
-                            input.copyTo(output)
-                            session.fsync(output)
+                val installer = context.packageManager.packageInstaller
+                val resumableSession = release.sessionID?.takeIf { expected ->
+                    installer.mySessions.any { it.sessionId == expected }
+                }
+                val sessionID = resumableSession ?: installer.createSession(
+                    PackageInstaller.SessionParams(
+                        PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+                    ).apply {
+                        setAppPackageName(metadata.packageName)
+                        setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+                    },
+                )
+                installer.openSession(sessionID).use { session ->
+                    if (resumableSession == null) {
+                        FileInputStream(file).use { input ->
+                            session.openWrite("base.apk", 0, file.length()).use { output ->
+                                input.copyTo(output)
+                                session.fsync(output)
+                            }
                         }
                     }
+                    repository.updateState(
+                        artifactID,
+                        ReleaseRepository.STATE_INSTALLING,
+                        tempPath = path,
+                        sessionID = sessionID,
+                    )
+                    foregroundActivity = activity
+                    session.commit(statusReceiver(artifactID, sessionID).intentSender)
                 }
-                repository.updateState(
-                    artifactID,
-                    ReleaseRepository.STATE_INSTALLING,
-                    tempPath = path,
-                    sessionID = sessionID,
-                )
-                foregroundActivity = activity
-                session.commit(statusReceiver(artifactID, sessionID).intentSender)
             }
         }
         onComplete(result)
     }
 
     fun reconcileSessions() {
-        val installer = context.packageManager.packageInstaller
-        val owned = installer.mySessions.associateBy { it.sessionId }
-        val releases = repository.listReleases()
-        val referenced = releases.mapNotNull { it.sessionID }.toSet()
-        for (session in owned.values) {
-            if (session.sessionId !in referenced) {
-                runCatching { installer.abandonSession(session.sessionId) }
+        ReleaseRepository(context).use { repository ->
+            val installer = context.packageManager.packageInstaller
+            val owned = installer.mySessions.associateBy { it.sessionId }
+            val releases = repository.listReleases()
+            val referenced = releases.mapNotNull { it.sessionID }.toSet()
+            for (session in owned.values) {
+                if (session.sessionId !in referenced) {
+                    runCatching { installer.abandonSession(session.sessionId) }
+                }
             }
-        }
-        for (release in releases.filter { it.state == ReleaseRepository.STATE_INSTALLING }) {
-            val sessionID = release.sessionID
-            if (sessionID == null || sessionID !in owned) {
-                val installed = runCatching {
-                    context.packageManager.getPackageInfo(release.artifact.packageName, 0)
-                }.getOrNull()
-                if (installed != null && installed.longVersionCode >= release.artifact.versionCode) {
-                    release.tempPath?.let { File(it).delete() }
-                    repository.updateState(release.artifact.id, ReleaseRepository.STATE_INSTALLED)
-                } else {
-                    repository.updateState(
-                        release.artifact.id,
-                        ReleaseRepository.STATE_FAILED,
-                        tempPath = release.tempPath,
-                        error = "Installer session disappeared; tap Install to retry",
-                    )
+            for (release in releases.filter { it.state == ReleaseRepository.STATE_INSTALLING }) {
+                val sessionID = release.sessionID
+                if (sessionID == null || sessionID !in owned) {
+                    val installed = runCatching {
+                        context.packageManager.getPackageInfo(release.artifact.packageName, 0)
+                    }.getOrNull()
+                    if (installed != null && installed.longVersionCode >= release.artifact.versionCode) {
+                        release.tempPath?.let { File(it).delete() }
+                        repository.updateState(release.artifact.id, ReleaseRepository.STATE_INSTALLED)
+                    } else {
+                        repository.updateState(
+                            release.artifact.id,
+                            ReleaseRepository.STATE_FAILED,
+                            tempPath = release.tempPath,
+                            error = "Installer session disappeared; tap Install to retry",
+                        )
+                    }
                 }
             }
         }
@@ -255,39 +261,44 @@ class InstallResultReceiver : BroadcastReceiver() {
         val artifactID = intent.getStringExtra(ReleaseInstaller.EXTRA_ARTIFACT_ID) ?: return
         val expectedSession = intent.getIntExtra(ReleaseInstaller.EXTRA_EXPECTED_SESSION_ID, -1)
         val actualSession = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
-        val repository = ReleaseRepository(context)
-        val release = repository.findRelease(artifactID) ?: return
-        if (expectedSession < 0 || actualSession != expectedSession || release.sessionID != expectedSession) {
-            return
-        }
-        when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                val confirmation = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
-                val activity = ReleaseInstaller.foregroundActivity
-                if (confirmation != null && activity != null) {
-                    activity.startActivity(confirmation)
-                } else {
-                    repository.updateState(
-                        artifactID,
-                        ReleaseRepository.STATE_FAILED,
-                        tempPath = release.tempPath,
-                        sessionID = expectedSession,
-                        error = "Open Migi and tap Install again to confirm",
-                    )
+        ReleaseRepository(context).use { repository ->
+            val release = repository.findRelease(artifactID) ?: return
+            if (
+                expectedSession < 0 ||
+                actualSession != expectedSession ||
+                release.sessionID != expectedSession
+            ) {
+                return
+            }
+            when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    val confirmation = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                    val activity = ReleaseInstaller.foregroundActivity
+                    if (confirmation != null && activity != null) {
+                        activity.startActivity(confirmation)
+                    } else {
+                        repository.updateState(
+                            artifactID,
+                            ReleaseRepository.STATE_FAILED,
+                            tempPath = release.tempPath,
+                            sessionID = expectedSession,
+                            error = "Open Migi and tap Install again to confirm",
+                        )
+                    }
                 }
+                PackageInstaller.STATUS_SUCCESS -> {
+                    release.tempPath?.let { File(it).delete() }
+                    repository.updateState(artifactID, ReleaseRepository.STATE_INSTALLED)
+                }
+                else -> repository.updateState(
+                    artifactID,
+                    ReleaseRepository.STATE_FAILED,
+                    tempPath = release.tempPath,
+                    sessionID = expectedSession,
+                    error = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                        ?: "Android rejected installation",
+                )
             }
-            PackageInstaller.STATUS_SUCCESS -> {
-                release.tempPath?.let { File(it).delete() }
-                repository.updateState(artifactID, ReleaseRepository.STATE_INSTALLED)
-            }
-            else -> repository.updateState(
-                artifactID,
-                ReleaseRepository.STATE_FAILED,
-                tempPath = release.tempPath,
-                sessionID = expectedSession,
-                error = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
-                    ?: "Android rejected installation",
-            )
         }
     }
 }

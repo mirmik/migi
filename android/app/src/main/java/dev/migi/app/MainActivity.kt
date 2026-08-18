@@ -1531,7 +1531,7 @@ class MainActivity : Activity() {
                         .putString(KEY_CERTIFICATE_PIN, invitation.pin)
                         .commit(),
                 ) { "Failed to save paired server" }
-                ReleaseRepository(this).resetForPairing()
+                ReleaseRepository(this).use { it.resetForPairing() }
                 PlaybackQueueRepository(this).reset()
                 PlaybackMediaCache(this).clear()
             }

@@ -171,9 +171,8 @@ class EventStreamClient(
         callbacks = null
         if (error?.contains("HTTP 401") == true) {
             CredentialStore(context).clear()
-            closed = true
             onState("Device credential rejected; scan a new pairing QR")
-            executor.shutdown()
+            close()
             return
         }
         scheduleReconnect(error ?: "Connection stopped")
@@ -237,11 +236,13 @@ class EventStreamClient(
     }
 
     override fun close() {
+        if (closed) return
         closed = true
         generation++
         callbacks?.stop()
         callbacks = null
         executor.shutdownNow()
+        releases.close()
     }
 
     companion object {
