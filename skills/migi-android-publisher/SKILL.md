@@ -5,8 +5,10 @@ description: Build, verify, and publish signed Android APK releases through the 
 
 # Migi Android Publisher
 
-Use `scripts/migi-publish-app` for publication. It locates an installed
-`migi-publish` or runs the client from the Migi repository.
+Use the bundled `scripts/migi-publish-app` client for publication. It is
+self-contained Python and must work from a copied skill directory without a
+Migi repository checkout, Go toolchain, installed `migi-publish`, or
+third-party Python packages.
 
 ## Build the application
 
@@ -47,14 +49,15 @@ Publishing creates an external installable release. Do it when the user asks
 to send, deliver, install, or publish the application through Migi. A request
 to build or inspect an APK alone does not authorize publication.
 
-Use a publisher configuration explicitly provided by the user or the
-`MIGI_PUBLISHER_CONFIG` environment variable. A deployment may have a
-well-known protected configuration path documented outside the application
-repository; do not search broad directories for credentials.
+Use a publisher configuration explicitly provided by the user, the
+`MIGI_PUBLISHER_CONFIG` environment variable, or
+`~/.config/migi/publisher.json`. Require the file to be owned by the current
+user and mode `0600` or stricter. Do not search broad directories for
+credentials. Run `scripts/migi-publish-app --check-config` to validate it and
+print only the secret-free endpoint.
 
 ```text
 scripts/migi-publish-app \
-  -config "$MIGI_PUBLISHER_CONFIG" \
   -apk /absolute/path/app-release.apk \
   -notes "Concise user-visible release notes" \
   -source-revision REVISION \

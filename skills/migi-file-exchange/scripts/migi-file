@@ -1,31 +1,218 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env python3
+"""Self-contained Migi shared-file client for the Agent Skill package."""
 
-if [ -n "${MIGI_FILE_BIN:-}" ]; then
-	if [ ! -x "$MIGI_FILE_BIN" ]; then
-		echo "migi-file: MIGI_FILE_BIN is not executable: $MIGI_FILE_BIN" >&2
-		exit 1
-	fi
-	exec "$MIGI_FILE_BIN" "$@"
-fi
+from __future__ import annotations
 
-if command -v migi-file >/dev/null 2>&1; then
-	exec migi-file "$@"
-fi
+import argparse
+import hashlib
+import hmac
+import json
+import mimetypes
+import os
+import re
+import stat
+import sys
+from pathlib import Path
 
-migi_wrapper_path=$(readlink -f "$0")
-migi_skill_dir=$(dirname "$(dirname "$migi_wrapper_path")")
-migi_repo_root=$(cd "$migi_skill_dir/../.." && pwd -P)
-migi_repo_binary="$migi_repo_root/server/bin/migi-file"
+from _migi_transport import (
+    MigiClientError,
+    MigiHTTPClient,
+    decode_json,
+    format_timestamp,
+    read_bounded,
+    resolve_agent_client,
+    response_error,
+    utf8_header,
+)
 
-if [ -x "$migi_repo_binary" ]; then
-	exec "$migi_repo_binary" "$@"
-fi
 
-if ! command -v go >/dev/null 2>&1; then
-	echo "migi-file: neither migi-file nor Go is available" >&2
-	exit 1
-fi
+FILE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
-cd "$migi_repo_root/server"
-exec go run ./cmd/migi-file "$@"
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog="migi-file")
+    result.add_argument(
+        "-endpoint",
+        "--endpoint",
+        default=None,
+        help="trusted local HTTP endpoint",
+    )
+    result.add_argument(
+        "-config",
+        "--config",
+        default=None,
+        help="agent JSON configuration (auto-detected by default)",
+    )
+    result.add_argument("-source", "--source", default="", help="source label for local uploads")
+    result.add_argument("-type", "--type", dest="mime_type", default="", help="upload MIME type")
+    result.add_argument("-output", "--output", default="", help="download destination")
+    result.add_argument(
+        "--check-config",
+        action="store_true",
+        help="validate configuration and print the secret-free endpoint",
+    )
+    result.add_argument("command", nargs="?", choices=("put", "list", "get"))
+    result.add_argument("operands", nargs="*")
+    return result
+
+
+def _server_result(response, *, expected: int, label: str):
+    body = read_bounded(response)
+    if response.status != expected:
+        raise response_error(response, body)
+    return decode_json(body, label=label)
+
+
+def put(
+    client: MigiHTTPClient,
+    path_text: str,
+    *,
+    source: str = "",
+    mime_type: str = "",
+) -> None:
+    path = Path(path_text)
+    try:
+        stream = path.open("rb")
+    except OSError as exc:
+        raise MigiClientError(f"open upload: {exc}") from exc
+    with stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+            raise MigiClientError("upload must be a non-empty regular file")
+        content_type = mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        headers: dict[str, str | bytes] = {
+            "Content-Length": str(info.st_size),
+            "Content-Type": content_type,
+            "X-Migi-Filename": utf8_header(path.name, label="filename"),
+        }
+        if source:
+            headers["X-Migi-Source"] = utf8_header(source, label="source")
+        with client.open("POST", "/v1/files", body=stream, headers=headers) as response:
+            shared = _server_result(response, expected=201, label="upload")
+    if not isinstance(shared, dict):
+        raise MigiClientError("upload response must be a JSON object")
+    print(
+        f"{shared.get('id', '')}\t{shared.get('name', '')}\t"
+        f"{shared.get('size', 0)} bytes\t{format_timestamp(shared.get('expires_at'))}"
+    )
+
+
+def list_files(client: MigiHTTPClient) -> None:
+    with client.open("GET", "/v1/files") as response:
+        files = _server_result(response, expected=200, label="file list")
+    if not isinstance(files, list):
+        raise MigiClientError("file list response must be a JSON array")
+    for item in files:
+        if not isinstance(item, dict):
+            raise MigiClientError("file list contains a non-object entry")
+        print(
+            f"{item.get('id', '')}\t{item.get('size', 0)}\t{item.get('source', '')}\t"
+            f"{format_timestamp(item.get('expires_at'))}\t{item.get('name', '')}"
+        )
+
+
+def _metadata_name(client: MigiHTTPClient, file_id: str) -> str:
+    with client.open("GET", f"/v1/files/{file_id}") as response:
+        metadata = _server_result(response, expected=200, label="file metadata")
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str):
+        raise MigiClientError("file metadata has no valid name")
+    name = Path(metadata["name"]).name
+    if name in ("", ".", ".."):
+        raise MigiClientError("file metadata has an unsafe name")
+    return name
+
+
+def get(client: MigiHTTPClient, file_id: str, *, output: str = "") -> None:
+    if not FILE_ID_RE.fullmatch(file_id):
+        raise MigiClientError("file ID must be 32 lowercase hexadecimal digits")
+    destination = Path(output or _metadata_name(client, file_id))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(destination, flags, 0o600)
+    except OSError as exc:
+        raise MigiClientError(f"create destination: {exc}") from exc
+    committed = False
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            fd = -1
+            with client.open("GET", f"/v1/files/{file_id}/content") as response:
+                if response.status != 200:
+                    raise response_error(response, read_bounded(response))
+                length_text = response.getheader("Content-Length", "")
+                digest_text = response.getheader("X-Content-SHA256", "").lower()
+                try:
+                    expected_size = int(length_text)
+                except ValueError as exc:
+                    raise MigiClientError("server returned an invalid content length") from exc
+                if expected_size <= 0:
+                    raise MigiClientError("server returned an invalid content length")
+                if not re.fullmatch(r"[0-9a-f]{64}", digest_text):
+                    raise MigiClientError("server returned an invalid content digest")
+                digest = hashlib.sha256()
+                written = 0
+                while written <= expected_size:
+                    chunk = response.read(min(64 << 10, expected_size + 1 - written))
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+                    digest.update(chunk)
+                    written += len(chunk)
+                if written != expected_size:
+                    raise MigiClientError(
+                        f"downloaded {written} bytes, expected {expected_size}"
+                    )
+                if not hmac.compare_digest(digest.hexdigest(), digest_text):
+                    raise MigiClientError(
+                        "downloaded file digest does not match server metadata"
+                    )
+                stream.flush()
+                os.fsync(stream.fileno())
+        committed = True
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if not committed:
+            try:
+                destination.unlink()
+            except FileNotFoundError:
+                pass
+    print(destination)
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    client = resolve_agent_client(endpoint=args.endpoint, config=args.config)
+    if args.check_config:
+        if args.command is not None:
+            raise MigiClientError("--check-config does not accept a command")
+        print(f"Migi endpoint: {client.public_endpoint}")
+        return 0
+    if args.command is None:
+        raise MigiClientError("usage: migi-file [flags] put PATH | list | get ID")
+    if args.command == "put":
+        if len(args.operands) != 1:
+            raise MigiClientError("put requires exactly one file path")
+        put(client, args.operands[0], source=args.source, mime_type=args.mime_type)
+    elif args.command == "list":
+        if args.operands:
+            raise MigiClientError("list takes no arguments")
+        list_files(client)
+    else:
+        if len(args.operands) != 1:
+            raise MigiClientError("get requires exactly one file ID")
+        get(client, args.operands[0], output=args.output)
+    return 0
+
+
+def main() -> int:
+    try:
+        return run()
+    except (MigiClientError, OSError, json.JSONDecodeError) as exc:
+        print(f"migi-file: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

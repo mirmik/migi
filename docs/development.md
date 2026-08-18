@@ -174,6 +174,20 @@ go run ./cmd/migi-server \
   -key /path/to/privkey.pem
 ```
 
+## Agent Skills
+
+The three packages under `skills/` bundle Python-standard-library clients and
+must remain runnable after copying a package away from this repository. Verify
+their clean-room file, media, release, configuration, and TLS-pinning contracts
+with:
+
+```bash
+python3 skills/test_self_contained_skills.py
+```
+
+Validate each `SKILL.md` with the Agent Skills validator used by the target
+agent host before publishing or installing a changed package.
+
 Both Android Build Tools paths are required to enable release delivery. The
 server refuses to start if the configured tools cannot report their versions or
 if committed release metadata references a missing artifact file.

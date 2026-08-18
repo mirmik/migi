@@ -5,15 +5,23 @@ description: Send audio tracks, album artwork, and agent-curated playlists throu
 
 # Migi Audio Player
 
-Use the bundled helpers. They locate the repository client or an installed
-`migi-play`, then use the authenticated, certificate-pinned agent connection.
+Use the bundled `scripts/migi-play` and `scripts/migi-album` clients. They are
+self-contained Python and must work from a copied skill directory without a
+Migi repository checkout, Go toolchain, installed `migi-play`, or third-party
+Python packages. They use the authenticated, certificate-pinned agent
+connection from `${MIGI_AGENT_CONFIG}` or `~/.config/migi/agent.json`; use
+`-config PATH` to select another file. Use `-endpoint URL` only for a trusted
+local HTTP listener.
+
+Run `scripts/migi-play --check-config` to validate configuration and print only
+the secret-free server origin. Never print or copy the token into a command.
 
 ## Send an album directory
 
 Run:
 
 ```text
-scripts/migi-album [--name NAME] [--device DEVICE_ID] [--source AGENT] [--cover IMAGE|--no-cover] DIRECTORY
+scripts/migi-album [--config PATH|--endpoint URL] [--name NAME] [--device DEVICE_ID] [--source AGENT] [--cover IMAGE|--no-cover] DIRECTORY
 ```
 
 The helper selects only supported audio files in the directory, version-sorts
@@ -33,10 +41,10 @@ only when that matches the user's intent.
 Keep every flag before the operation:
 
 ```text
-scripts/migi-play [-name NAME] [-device DEVICE_ID] [-source AGENT] [-cover IMAGE] play FILE...
-scripts/migi-play [-title TITLE] [-artist ARTIST] put FILE
-scripts/migi-play list
-scripts/migi-play [-name NAME] [-device DEVICE_ID] [-cover IMAGE] queue MEDIA_ID...
+scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-device DEVICE_ID] [-source AGENT] [-cover IMAGE] play FILE...
+scripts/migi-play [-config PATH|-endpoint URL] [-title TITLE] [-artist ARTIST] put FILE
+scripts/migi-play [-config PATH|-endpoint URL] list
+scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-device DEVICE_ID] [-cover IMAGE] queue MEDIA_ID...
 ```
 
 Use `play` for a new ordered set. It uploads each audio object and publishes
@@ -63,6 +71,8 @@ do not drive the phone through ADB unless the user authorized device control.
 ## Validate and diagnose
 
 - Require a successful `queued event N` result before claiming delivery.
+- If config validation rejects ownership or permissions, make the file owned
+  by the current user and mode `0600`; do not weaken that check.
 - If a phone appears unchanged, distinguish transport acknowledgement from
   Android acceptance. When ADB access is authorized, inspect logs for
   `Rejected invalid playback queue event` and confirm the Music screen.

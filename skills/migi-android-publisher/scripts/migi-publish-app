@@ -1,31 +1,220 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env python3
+"""Self-contained signed-APK publisher for the Migi Agent Skill package."""
 
-migi_publisher_script=$(readlink -f "$0")
-migi_publisher_repo=$(cd "$(dirname "$migi_publisher_script")/../../.." && pwd -P)
+from __future__ import annotations
 
-if [ -n "${MIGI_PUBLISH:-}" ]; then
-	if [ ! -x "$MIGI_PUBLISH" ]; then
-		echo "MIGI_PUBLISH is not an executable file: $MIGI_PUBLISH" >&2
-		exit 1
-	fi
-	exec "$MIGI_PUBLISH" "$@"
-fi
+import argparse
+import hashlib
+import json
+import os
+import secrets
+import stat
+import sys
+from pathlib import Path
+from typing import BinaryIO
 
-if command -v migi-publish >/dev/null 2>&1; then
-	exec migi-publish "$@"
-fi
+from _migi_transport import (
+    MigiClientError,
+    MigiHTTPClient,
+    read_bounded,
+    resolve_publisher_client,
+    response_error,
+    utf8_header,
+)
 
-if [ -x "$migi_publisher_repo/server/bin/migi-publish" ]; then
-	exec "$migi_publisher_repo/server/bin/migi-publish" "$@"
-fi
 
-if command -v go >/dev/null 2>&1 &&
-	[ -f "$migi_publisher_repo/server/go.mod" ] &&
-	[ -d "$migi_publisher_repo/server/cmd/migi-publish" ]; then
-	cd "$migi_publisher_repo/server"
-	exec go run ./cmd/migi-publish "$@"
-fi
+MAX_RESPONSE_BYTES = 64 << 10
 
-echo "migi-publish is unavailable; install it or use a Migi repository checkout with Go" >&2
-exit 1
+
+class MultipartBody:
+    """A bounded-memory file-like multipart body with a known content length."""
+
+    def __init__(self, prefix: bytes, apk: BinaryIO, apk_size: int, suffix: bytes) -> None:
+        self.prefix = memoryview(prefix)
+        self.apk = apk
+        self.apk_size = apk_size
+        self.suffix = memoryview(suffix)
+        self._stage = 0
+        self._offset = 0
+        self.length = len(prefix) + apk_size + len(suffix)
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = 64 << 10
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0 and self._stage < 3:
+            if self._stage == 0:
+                available = len(self.prefix) - self._offset
+                if available:
+                    count = min(available, remaining)
+                    chunks.append(bytes(self.prefix[self._offset : self._offset + count]))
+                    self._offset += count
+                    remaining -= count
+                if self._offset == len(self.prefix):
+                    self._stage = 1
+                    self._offset = 0
+            elif self._stage == 1:
+                chunk = self.apk.read(remaining)
+                if chunk:
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                    self._offset += len(chunk)
+                if not chunk or self._offset == self.apk_size:
+                    if self._offset != self.apk_size:
+                        raise MigiClientError("APK changed while constructing the upload")
+                    self._stage = 2
+                    self._offset = 0
+            else:
+                available = len(self.suffix) - self._offset
+                if available:
+                    count = min(available, remaining)
+                    chunks.append(bytes(self.suffix[self._offset : self._offset + count]))
+                    self._offset += count
+                    remaining -= count
+                if self._offset == len(self.suffix):
+                    self._stage = 3
+        return b"".join(chunks)
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog="migi-publish-app")
+    result.add_argument("-config", "--config", default=None, help="publisher JSON configuration")
+    result.add_argument("-apk", "--apk", default="", help="signed APK to publish")
+    result.add_argument("-notes", "--notes", default="", help="release notes")
+    result.add_argument("-source-revision", "--source-revision", default="")
+    result.add_argument("-build-id", "--build-id", default="")
+    result.add_argument("-idempotency-key", "--idempotency-key", default="")
+    result.add_argument(
+        "--check-config",
+        action="store_true",
+        help="validate configuration and print the secret-free endpoint",
+    )
+    return result
+
+
+def apk_digest(stream: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    while True:
+        chunk = stream.read(1 << 20)
+        if not chunk:
+            break
+        digest.update(chunk)
+    stream.seek(0)
+    return digest.hexdigest()
+
+
+def multipart_body(
+    apk: BinaryIO,
+    apk_size: int,
+    metadata: dict[str, str],
+) -> tuple[MultipartBody, str]:
+    boundary = "migi-" + secrets.token_hex(24)
+    encoded_metadata = (
+        json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    prefix = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="metadata"\r\n'
+        "Content-Type: application/json\r\n\r\n"
+    ).encode("ascii") + encoded_metadata + (
+        f"\r\n--{boundary}\r\n"
+        'Content-Disposition: form-data; name="apk"; filename="release.apk"\r\n'
+        "Content-Type: application/vnd.android.package-archive\r\n\r\n"
+    ).encode("ascii")
+    suffix = f"\r\n--{boundary}--\r\n".encode("ascii")
+    return MultipartBody(prefix, apk, apk_size, suffix), f"multipart/form-data; boundary={boundary}"
+
+
+def publish(
+    client: MigiHTTPClient,
+    endpoint_path: str,
+    apk_path: str,
+    *,
+    notes: str = "",
+    source_revision: str = "",
+    build_id: str = "",
+    idempotency_key: str = "",
+) -> None:
+    path = Path(apk_path)
+    try:
+        apk = path.open("rb")
+    except OSError as exc:
+        raise MigiClientError(f"open APK: {exc}") from exc
+    with apk:
+        info = os.fstat(apk.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+            raise MigiClientError("APK must be a non-empty regular file")
+        digest = apk_digest(apk)
+        key = idempotency_key or digest
+        encoded_key = utf8_header(key, label="idempotency key")
+        if not 1 <= len(encoded_key) <= 128 or key.strip() != key:
+            raise MigiClientError(
+                "idempotency key must be 1-128 non-surrounding-whitespace characters"
+            )
+        metadata = {
+            key: value
+            for key, value in {
+                "release_notes": notes,
+                "source_revision": source_revision,
+                "build_id": build_id,
+            }.items()
+            if value
+        }
+        body, content_type = multipart_body(apk, info.st_size, metadata)
+        headers = {
+            "Content-Length": str(body.length),
+            "Content-Type": content_type,
+            "Idempotency-Key": encoded_key,
+        }
+        with client.open(
+            "POST",
+            endpoint_path,
+            body=body,
+            headers=headers,
+        ) as response:
+            result = read_bounded(response, MAX_RESPONSE_BYTES)
+            if response.status != 201:
+                raise response_error(response, result)
+    try:
+        decoded = json.loads(result)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        sys.stdout.buffer.write(result)
+        if result and not result.endswith(b"\n"):
+            print()
+    else:
+        print(json.dumps(decoded, ensure_ascii=False, indent=2))
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    client, endpoint_path = resolve_publisher_client(args.config)
+    if args.check_config:
+        if args.apk:
+            raise MigiClientError("--check-config does not accept -apk")
+        print(f"Migi publisher endpoint: {client.public_endpoint}{endpoint_path}")
+        return 0
+    if not args.apk:
+        raise MigiClientError("-apk is required")
+    publish(
+        client,
+        endpoint_path,
+        args.apk,
+        notes=args.notes,
+        source_revision=args.source_revision,
+        build_id=args.build_id,
+        idempotency_key=args.idempotency_key,
+    )
+    return 0
+
+
+def main() -> int:
+    try:
+        return run()
+    except (MigiClientError, OSError, json.JSONDecodeError) as exc:
+        print(f"migi-publish-app: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

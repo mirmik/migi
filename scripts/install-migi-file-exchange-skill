@@ -16,21 +16,19 @@ for migi_skill_name in migi-file-exchange migi-android-publisher migi-audio-play
 		exit 1
 	fi
 
-	if [ -L "$migi_skill_target" ]; then
-		migi_existing_target=$(readlink -f "$migi_skill_target" || true)
-		if [ "$migi_existing_target" = "$migi_skill_source" ]; then
-			echo "Migi skill is already installed: $migi_skill_target"
-			continue
-		fi
-		echo "Refusing to replace an existing symlink: $migi_skill_target -> $(readlink "$migi_skill_target")" >&2
-		exit 1
-	fi
-
 	if [ -e "$migi_skill_target" ]; then
 		echo "Refusing to replace an existing path: $migi_skill_target" >&2
 		exit 1
 	fi
 
-	ln -s "$migi_skill_source" "$migi_skill_target"
-	echo "Installed Migi skill: $migi_skill_target -> $migi_skill_source"
+	migi_skill_stage=$(mktemp -d "$migi_skill_parent/.migi-skill-$migi_skill_name.XXXXXX")
+	if ! cp -R "$migi_skill_source/." "$migi_skill_stage/"; then
+		echo "Failed to stage Migi skill; partial copy left at $migi_skill_stage" >&2
+		exit 1
+	fi
+	if ! mv -T "$migi_skill_stage" "$migi_skill_target"; then
+		echo "Failed to install Migi skill; staged copy left at $migi_skill_stage" >&2
+		exit 1
+	fi
+	echo "Installed self-contained Migi skill: $migi_skill_target"
 done

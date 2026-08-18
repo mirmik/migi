@@ -5,16 +5,17 @@ description: Use the self-hosted Migi file exchange to list, identify, download,
 
 # Migi File Exchange
 
-Use `scripts/migi-file` for all exchange operations. It locates an installed
-`migi-file`, uses the repository build, or runs the Go client from this
-repository.
+Use the bundled `scripts/migi-file` client for every exchange operation. It is
+self-contained Python and must work from a copied skill directory without a
+Migi repository checkout, Go toolchain, installed `migi-file`, or third-party
+Python packages.
 
 Keep all flags before the operation:
 
 ```text
-scripts/migi-file [-endpoint URL] [-source NAME] [-type MIME] [-output PATH] put PATH
-scripts/migi-file [-endpoint URL] list
-scripts/migi-file [-endpoint URL] [-output PATH] get FILE_ID
+scripts/migi-file [-config PATH|-endpoint URL] [-source NAME] [-type MIME] put PATH
+scripts/migi-file [-config PATH|-endpoint URL] list
+scripts/migi-file [-config PATH|-endpoint URL] [-output PATH] get FILE_ID
 ```
 
 The `migi-file` client automatically uses `${MIGI_AGENT_CONFIG}` or
@@ -26,6 +27,8 @@ server certificate. Otherwise it falls back to the trusted local endpoint
 Use `-config PATH` to select another agent configuration explicitly. Use
 `-endpoint URL` only for a trusted HTTP listener; never substitute the public
 phone endpoint or expose the unauthenticated trusted listener to a network.
+Run `scripts/migi-file --check-config` to validate configuration and print only
+the secret-free server origin. Never print or copy the token into a command.
 
 ## Receive a file
 
@@ -65,9 +68,8 @@ success unless the command returns successfully.
 - If listing cannot connect with an agent config, check its HTTPS host and the
   `migi.service` user unit when access is authorized. Never print its token.
 - Without an agent config, check `http://127.0.0.1:8787/healthz`.
-- If the helper cannot find Go or the repository sources, report that the
-  Migi client is unavailable rather than recreating the protocol with ad-hoc
-  filesystem access.
+- If config validation rejects ownership or permissions, make the file owned
+  by the current user and mode `0600`; do not weaken that check.
 - If storage is full or a file exceeds the configured limit, report the server
   response. Do not delete other exchange objects without an explicit user
   request.

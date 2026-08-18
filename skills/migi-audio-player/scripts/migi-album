@@ -1,92 +1,126 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Queue a naturally ordered album with the bundled migi-play client."""
 
-migi_name=
-migi_device=
-migi_source=codex
-migi_cover=
-migi_cover_mode=auto
+from __future__ import annotations
 
-usage() {
-	echo "usage: migi-album [--name NAME] [--device DEVICE_ID] [--source AGENT] [--cover IMAGE|--no-cover] DIRECTORY" >&2
+import argparse
+import os
+import re
+import sys
+from pathlib import Path
+
+
+AUDIO_SUFFIXES = {
+    ".mp3",
+    ".opus",
+    ".ogg",
+    ".oga",
+    ".flac",
+    ".m4a",
+    ".mp4",
+    ".aac",
+    ".wav",
 }
+ARTWORK_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
-while (($# > 0)); do
-	case "$1" in
-		--name)
-			(($# >= 2)) || { usage; exit 2; }
-			migi_name=$2
-			shift 2
-			;;
-		--device)
-			(($# >= 2)) || { usage; exit 2; }
-			migi_device=$2
-			shift 2
-			;;
-		--source)
-			(($# >= 2)) || { usage; exit 2; }
-			migi_source=$2
-			shift 2
-			;;
-		--cover)
-			(($# >= 2)) || { usage; exit 2; }
-			migi_cover=$2
-			migi_cover_mode=explicit
-			shift 2
-			;;
-		--no-cover)
-			migi_cover_mode=none
-			shift
-			;;
-		--)
-			shift
-			break
-			;;
-		-*)
-			usage
-			exit 2
-			;;
-		*) break ;;
-	esac
-done
 
-(($# == 1)) || { usage; exit 2; }
-migi_directory=$1
-[[ -d "$migi_directory" ]] || { echo "migi-album: not a directory: $migi_directory" >&2; exit 1; }
-[[ -n "$migi_name" ]] || migi_name=$(basename "$migi_directory")
+def version_key(path: Path) -> tuple:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", path.name)
+    )
 
-mapfile -d '' migi_tracks < <(
-	find "$migi_directory" -maxdepth 1 -type f \
-		\( -iname '*.mp3' -o -iname '*.opus' -o -iname '*.ogg' -o -iname '*.oga' \
-		-o -iname '*.flac' -o -iname '*.m4a' -o -iname '*.mp4' -o -iname '*.aac' \
-		-o -iname '*.wav' \) -print0 | sort -z -V
-)
 
-((${#migi_tracks[@]} > 0)) || { echo "migi-album: no supported audio files found" >&2; exit 1; }
-((${#migi_tracks[@]} <= 32)) || { echo "migi-album: album has more than 32 tracks" >&2; exit 1; }
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog="migi-album")
+    result.add_argument("--name", default="", help="playlist name")
+    result.add_argument("--device", default="", help="paired device ID")
+    result.add_argument("--source", default="codex", help="source label")
+    result.add_argument("--config", default=None, help="agent JSON configuration")
+    result.add_argument("--endpoint", default=None, help="trusted local HTTP endpoint")
+    cover = result.add_mutually_exclusive_group()
+    cover.add_argument("--cover", default="", help="explicit JPEG, PNG, or WebP artwork")
+    cover.add_argument("--no-cover", action="store_true", help="do not attach artwork")
+    result.add_argument("directory", type=Path)
+    return result
 
-if [[ "$migi_cover_mode" == explicit ]]; then
-	[[ -f "$migi_cover" ]] || { echo "migi-album: cover is not a file: $migi_cover" >&2; exit 1; }
-elif [[ "$migi_cover_mode" == auto ]]; then
-	for migi_stem in cover folder front; do
-		mapfile -d '' migi_covers < <(
-			find "$migi_directory" -maxdepth 1 -type f \
-				\( -iname "$migi_stem.jpg" -o -iname "$migi_stem.jpeg" -o -iname "$migi_stem.png" \
-				-o -iname "$migi_stem.webp" \) -print0 | sort -z
-		)
-		if ((${#migi_covers[@]} > 0)); then
-			migi_cover=${migi_covers[0]}
-			break
-		fi
-	done
-fi
 
-migi_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-migi_arguments=(-name "$migi_name" -source "$migi_source")
-[[ -z "$migi_device" ]] || migi_arguments+=(-device "$migi_device")
-[[ -z "$migi_cover" ]] || migi_arguments+=(-cover "$migi_cover")
+def auto_cover(directory: Path) -> Path | None:
+    files = [item for item in directory.iterdir() if item.is_file()]
+    for stem in ("cover", "folder", "front"):
+        matches = sorted(
+            (
+                item
+                for item in files
+                if item.stem.casefold() == stem and item.suffix.casefold() in ARTWORK_SUFFIXES
+            ),
+            key=lambda item: item.name.casefold(),
+        )
+        if matches:
+            return matches[0]
+    return None
 
-printf 'Queueing %d tracks as %s\n' "${#migi_tracks[@]}" "$migi_name" >&2
-[[ -z "$migi_cover" ]] || printf '  artwork: %s\n' "$migi_cover" >&2
-printf '  %s\n' "${migi_tracks[@]}" >&2
-exec "$migi_script_dir/migi-play" "${migi_arguments[@]}" play "${migi_tracks[@]}"
+
+def run(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    if args.config is not None and args.endpoint is not None:
+        raise ValueError("--config and --endpoint cannot be used together")
+    directory = args.directory.resolve()
+    if not directory.is_dir():
+        raise ValueError(f"not a directory: {directory}")
+    tracks = sorted(
+        (
+            item
+            for item in directory.iterdir()
+            if item.is_file() and item.suffix.casefold() in AUDIO_SUFFIXES
+        ),
+        key=version_key,
+    )
+    if not tracks:
+        raise ValueError("no supported audio files found")
+    if len(tracks) > 32:
+        raise ValueError("album has more than 32 tracks")
+
+    cover: Path | None = None
+    if args.cover:
+        cover = Path(args.cover).resolve()
+        if not cover.is_file():
+            raise ValueError(f"cover is not a file: {cover}")
+        if cover.suffix.casefold() not in ARTWORK_SUFFIXES:
+            raise ValueError("cover must be JPEG, PNG, or WebP")
+    elif not args.no_cover:
+        cover = auto_cover(directory)
+
+    name = args.name or directory.name
+    play = Path(__file__).resolve().with_name("migi-play")
+    command = [sys.executable, str(play), "-name", name, "-source", args.source]
+    if args.config is not None:
+        command.extend(("-config", args.config))
+    if args.endpoint is not None:
+        command.extend(("-endpoint", args.endpoint))
+    if args.device:
+        command.extend(("-device", args.device))
+    if cover is not None:
+        command.extend(("-cover", str(cover)))
+    command.append("play")
+    command.extend(str(track) for track in tracks)
+
+    print(f"Queueing {len(tracks)} tracks as {name}", file=sys.stderr)
+    if cover is not None:
+        print(f"  artwork: {cover}", file=sys.stderr)
+    for track in tracks:
+        print(f"  {track}", file=sys.stderr)
+    os.execv(sys.executable, command)
+    return 0
+
+
+def main() -> int:
+    try:
+        return run()
+    except (OSError, ValueError) as exc:
+        print(f"migi-album: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
