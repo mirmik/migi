@@ -498,10 +498,19 @@ class MainActivity : Activity() {
 						playbackButton.isEnabled = true
 						return@runOnUiThread
 					}
-					runCatching { PlaybackService.start(this, queue.eventID) }
-						.onSuccess { playbackStatus.setText(R.string.playback_started) }
-						.onFailure { playbackStatus.text = getString(R.string.playback_failed, it.message ?: "unknown error") }
-					playbackButton.isEnabled = true
+					PlaybackService.start(this, queue.eventID) { playbackError ->
+						if (!isDestroyed) {
+							if (playbackError == null) {
+								playbackStatus.setText(R.string.playback_started)
+							} else {
+								playbackStatus.text = getString(
+									R.string.playback_failed,
+									playbackError.message ?: "unknown error",
+								)
+							}
+							playbackButton.isEnabled = true
+						}
+					}
 				}
 			}
 		}.onFailure {

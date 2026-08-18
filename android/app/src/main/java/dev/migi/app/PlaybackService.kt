@@ -1,6 +1,7 @@
 package dev.migi.app
 
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,8 +11,10 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionToken
 
 class PlaybackService : MediaSessionService() {
 	private lateinit var player: ExoPlayer
@@ -40,45 +43,6 @@ class PlaybackService : MediaSessionService() {
 			.build()
 	}
 
-	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-		val result = super.onStartCommand(intent, flags, startId)
-		when (intent?.action) {
-			ACTION_PLAY_QUEUE -> playQueue(intent.getLongExtra(EXTRA_EVENT_ID, 0))
-		}
-		return result
-	}
-
-	private fun playQueue(eventID: Long) {
-		runCatching {
-			val queue = requireNotNull(PlaybackQueueRepository(this).current()) {
-				"No playback queue is available"
-			}
-			require(queue.eventID == eventID) { "Playback queue changed before it could start" }
-			val files = PlaybackMediaCache(this).prepared(queue)
-			val items = queue.items.zip(files).map { (track, file) ->
-				MediaItem.Builder()
-					.setMediaId(track.id)
-					.setUri(Uri.fromFile(file))
-					.setMimeType(track.mime)
-					.setMediaMetadata(
-						MediaMetadata.Builder()
-							.setTitle(track.title)
-							.setArtist(track.artist.ifBlank { null })
-							.setAlbumTitle(queue.name)
-							.build(),
-					)
-					.build()
-			}
-			player.setMediaItems(items)
-			player.prepare()
-			player.play()
-			Log.i(TAG, "Started queue $eventID with ${items.size} tracks")
-		}.onFailure { error ->
-			Log.e(TAG, "Failed to start playback queue $eventID", error)
-			stopSelf()
-		}
-	}
-
 	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
 	override fun onDestroy() {
@@ -88,17 +52,45 @@ class PlaybackService : MediaSessionService() {
 	}
 
 	companion object {
-		private const val ACTION_PLAY_QUEUE = "dev.migi.app.action.PLAY_QUEUE"
-		private const val EXTRA_EVENT_ID = "event_id"
 		private const val PLAYBACK_ACTIVITY_REQUEST = 41
 		private const val TAG = "MigiPlayback"
 
-		fun start(context: Context, eventID: Long) {
-			context.startForegroundService(
-				Intent(context, PlaybackService::class.java)
-					.setAction(ACTION_PLAY_QUEUE)
-					.putExtra(EXTRA_EVENT_ID, eventID),
-			)
+		fun start(context: Context, eventID: Long, onComplete: (Throwable?) -> Unit) {
+			val application = context.applicationContext
+			val token = SessionToken(application, ComponentName(application, PlaybackService::class.java))
+			val controllerFuture = MediaController.Builder(application, token).buildAsync()
+			controllerFuture.addListener({
+				val result = runCatching {
+					val queue = requireNotNull(PlaybackQueueRepository(application).current()) {
+						"No playback queue is available"
+					}
+					require(queue.eventID == eventID) { "Playback queue changed before it could start" }
+					val files = PlaybackMediaCache(application).prepared(queue)
+					val items = queue.items.zip(files).map { (track, file) ->
+						MediaItem.Builder()
+							.setMediaId(track.id)
+							.setUri(Uri.fromFile(file))
+							.setMimeType(track.mime)
+							.setMediaMetadata(
+								MediaMetadata.Builder()
+									.setTitle(track.title)
+									.setArtist(track.artist.ifBlank { null })
+									.setAlbumTitle(queue.name)
+									.build(),
+							)
+							.build()
+					}
+					val controller = controllerFuture.get()
+					controller.setMediaItems(items)
+					controller.prepare()
+					controller.play()
+					Log.i(TAG, "Started queue $eventID with ${items.size} tracks through MediaController")
+				}
+				MediaController.releaseFuture(controllerFuture)
+				val error = result.exceptionOrNull()?.let { it.cause ?: it }
+				if (error != null) Log.e(TAG, "Failed to start playback queue $eventID", error)
+				onComplete(error)
+			}, context.mainExecutor)
 		}
 
 		fun stop(context: Context) {
