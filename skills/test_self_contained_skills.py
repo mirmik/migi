@@ -79,18 +79,16 @@ class MigiFixtureHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/v1/files":
-            self.send_json(
-                200,
-                [
-                    {
-                        "id": FILE_ID,
-                        "name": "phone.txt",
-                        "size": len(self.state["file_content"]),
-                        "source": "phone",
-                        "expires_at": EXPIRES,
-                    }
-                ],
-            )
+            files = [
+                {
+                    "id": FILE_ID,
+                    "name": "phone.txt",
+                    "size": len(self.state["file_content"]),
+                    "source": "phone",
+                    "expires_at": EXPIRES,
+                }
+            ]
+            self.send_json(200, None if self.state.get("files_null") else files)
             return
         if self.path == f"/v1/files/{FILE_ID}":
             self.send_json(200, {"id": FILE_ID, "name": "phone.txt"})
@@ -250,6 +248,12 @@ class SkillClientTests(unittest.TestCase):
         listed = self.run_client(skill / "scripts/migi-file", "-endpoint", self.endpoint, "list")
         self.assertEqual(listed.returncode, 0, listed.stderr)
         self.assertIn("phone.txt", listed.stdout)
+
+        self.state["files_null"] = True
+        empty = self.run_client(skill / "scripts/migi-file", "-endpoint", self.endpoint, "list")
+        self.assertEqual(empty.returncode, 0, empty.stderr)
+        self.assertEqual(empty.stdout, "")
+        self.state["files_null"] = False
 
         destination = self.root / "downloaded.txt"
         downloaded = self.run_client(

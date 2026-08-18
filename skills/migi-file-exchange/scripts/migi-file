@@ -100,6 +100,8 @@ def put(
 def list_files(client: MigiHTTPClient) -> None:
     with client.open("GET", "/v1/files") as response:
         files = _server_result(response, expected=200, label="file list")
+    if files is None:
+        files = []
     if not isinstance(files, list):
         raise MigiClientError("file list response must be a JSON array")
     for item in files:
