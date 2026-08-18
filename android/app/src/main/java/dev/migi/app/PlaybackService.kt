@@ -10,7 +10,11 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.FileDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -20,9 +24,30 @@ class PlaybackService : MediaSessionService() {
 	private lateinit var player: ExoPlayer
 	private lateinit var mediaSession: MediaSession
 
+	@UnstableApi
 	override fun onCreate() {
 		super.onCreate()
-		player = ExoPlayer.Builder(this).build().apply {
+		val application = applicationContext
+		val cache = PlaybackMediaCache(application)
+		val resolvingDataSource = ResolvingDataSource.Factory(FileDataSource.Factory()) { dataSpec ->
+			val uri = dataSpec.uri
+			require(uri.scheme == MEDIA_SCHEME) { "Unsupported playback URI" }
+			val eventID = uri.authority?.toLongOrNull() ?: error("Playback event ID is missing")
+			val trackID = uri.lastPathSegment ?: error("Playback media ID is missing")
+			val queue = requireNotNull(activeQueue) {
+				"No active playback queue is available"
+			}
+			require(queue.eventID == eventID) { "Track belongs to another playback queue" }
+			val track = queue.items.firstOrNull { it.id == trackID }
+				?: error("Track is not present in the playback queue")
+			val file = cache.prepare(track)
+			dataSpec.withUri(Uri.fromFile(file))
+		}
+		val mediaSourceFactory = DefaultMediaSourceFactory(this)
+			.setDataSourceFactory(resolvingDataSource)
+		player = ExoPlayer.Builder(this)
+			.setMediaSourceFactory(mediaSourceFactory)
+			.build().apply {
 			setAudioAttributes(
 				AudioAttributes.Builder()
 					.setUsage(C.USAGE_MEDIA)
@@ -48,12 +73,15 @@ class PlaybackService : MediaSessionService() {
 	override fun onDestroy() {
 		mediaSession.release()
 		player.release()
+		activeQueue = null
 		super.onDestroy()
 	}
 
 	companion object {
 		private const val PLAYBACK_ACTIVITY_REQUEST = 41
 		private const val TAG = "MigiPlayback"
+		private const val MEDIA_SCHEME = "migi-media"
+		@Volatile private var activeQueue: PlaybackQueue? = null
 
 		fun start(context: Context, eventID: Long, onComplete: (Throwable?) -> Unit) {
 			val application = context.applicationContext
@@ -65,11 +93,17 @@ class PlaybackService : MediaSessionService() {
 						"No playback queue is available"
 					}
 					require(queue.eventID == eventID) { "Playback queue changed before it could start" }
-					val files = PlaybackMediaCache(application).prepared(queue)
-					val items = queue.items.zip(files).map { (track, file) ->
+					activeQueue = queue
+					val items = queue.items.map { track ->
 						MediaItem.Builder()
 							.setMediaId(track.id)
-							.setUri(Uri.fromFile(file))
+							.setUri(
+								Uri.Builder()
+									.scheme(MEDIA_SCHEME)
+									.authority(queue.eventID.toString())
+									.appendPath(track.id)
+									.build(),
+							)
 							.setMimeType(track.mime)
 							.setMediaMetadata(
 								MediaMetadata.Builder()

@@ -203,7 +203,7 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 			return
 		}
 		if title == "" {
-			title = strings.TrimSuffix(name, filepath.Ext(name))
+			title = strings.TrimSpace(strings.TrimSuffix(name, filepath.Ext(name)))
 			if title == "" {
 				title = name
 			}

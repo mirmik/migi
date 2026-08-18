@@ -118,6 +118,15 @@ func TestAudioMIMEIsIndependentOfHostMimeDatabase(t *testing.T) {
 	}
 }
 
+func TestTitleFromPathTrimsWhitespaceBeforeExtension(t *testing.T) {
+	if got := titleFromPath("/music/16. Weight of the World .mp3"); got != "16. Weight of the World" {
+		t.Fatalf("titleFromPath returned %q", got)
+	}
+	if got := titleFromPath("/music/.mp3"); got != ".mp3" {
+		t.Fatalf("extension-only title = %q", got)
+	}
+}
+
 func TestConfigureClientUsesAgentConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	contents := `{"endpoint":"https://192.0.2.10:8790/v1/agent-events","token":"migi_at_id_secret","tls_fingerprint":"` + strings.Repeat("aa", sha256.Size) + `"}`

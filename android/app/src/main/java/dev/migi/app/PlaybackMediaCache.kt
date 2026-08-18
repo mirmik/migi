@@ -15,38 +15,16 @@ internal class PlaybackMediaCache(private val context: Context) {
 		check(mkdirs() || isDirectory) { "Failed to create playback media cache" }
 	}
 
-	fun prepare(
-		queue: PlaybackQueue,
-		onProgress: (completed: Int, total: Int, title: String) -> Unit = { _, _, _ -> },
-	): List<File> {
-		require(queue.items.isNotEmpty()) { "Playback queue is empty" }
-		val prepared = HashMap<String, File>()
-		for ((index, track) in queue.items.withIndex()) {
-			if (Thread.currentThread().isInterrupted) error("Playback preparation was cancelled")
-			onProgress(index, queue.items.size, track.title)
-			prepared.getOrPut(cacheKey(track)) { prepareTrack(track) }
-		}
-		val keep = prepared.values.mapTo(HashSet()) { it.name }
-		directory.listFiles()?.forEach { file ->
-			if (file.isFile && file.name !in keep) file.delete()
-		}
-		onProgress(queue.items.size, queue.items.size, "")
-		return queue.items.map { track -> checkNotNull(prepared[cacheKey(track)]) }
-	}
-
-	fun prepared(queue: PlaybackQueue): List<File> = queue.items.map { track ->
-		val file = destination(track)
-		require(file.isFile && file.length() == track.size) { "Track is not prepared: ${track.title}" }
-		file
-	}
-
 	fun clear() {
 		directory.listFiles()?.forEach(File::delete)
 	}
 
-	private fun prepareTrack(track: PlaybackTrack): File {
+	/** Materializes and verifies one track when Media3 first asks for it. */
+	@Synchronized
+	fun prepare(track: PlaybackTrack): File {
 		val destination = destination(track)
 		if (destination.isFile && destination.length() == track.size && sha256(destination) == track.sha256) {
+			destination.setLastModified(System.currentTimeMillis())
 			return destination
 		}
 		if (destination.exists() && !destination.delete()) {
@@ -89,6 +67,8 @@ internal class PlaybackMediaCache(private val context: Context) {
 					StandardCopyOption.REPLACE_EXISTING,
 				)
 			}
+			destination.setLastModified(System.currentTimeMillis())
+			trim(destination)
 			return destination
 		} finally {
 			temporary.delete()
@@ -97,6 +77,18 @@ internal class PlaybackMediaCache(private val context: Context) {
 
 	private fun destination(track: PlaybackTrack): File =
 		File(directory, cacheKey(track))
+
+	private fun trim(protected: File) {
+		val files = directory.listFiles()
+			?.filter { it.isFile && !it.name.endsWith(".tmp") }
+			.orEmpty()
+		var total = files.sumOf(File::length)
+		for (file in files.filter { it != protected }.sortedBy(File::lastModified)) {
+			if (total <= MAX_CACHE_BYTES) break
+			val bytes = file.length()
+			if (file.delete()) total -= bytes
+		}
+	}
 
 	private fun cacheKey(track: PlaybackTrack): String = track.sha256 + extensionFor(track.mime)
 
@@ -140,5 +132,6 @@ internal class PlaybackMediaCache(private val context: Context) {
 
 	companion object {
 		private const val CACHE_DIRECTORY = "playback-media"
+		private const val MAX_CACHE_BYTES = 512L * 1024 * 1024
 	}
 }

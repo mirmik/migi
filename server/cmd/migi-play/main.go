@@ -111,7 +111,7 @@ func run() error {
 		}
 		ids := make([]string, 0, len(args)-1)
 		for _, path := range args[1:] {
-			object, err := put(client, base, path, *source, *mimeType, "", "")
+			object, err := put(client, base, path, *source, *mimeType, titleFromPath(path), "")
 			if err != nil {
 				return fmt.Errorf("upload %s: %w", path, err)
 			}
@@ -122,6 +122,15 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func titleFromPath(path string) string {
+	name := strings.TrimSpace(filepath.Base(path))
+	title := strings.TrimSpace(strings.TrimSuffix(name, filepath.Ext(name)))
+	if title == "" {
+		return name
+	}
+	return title
 }
 
 func resolveConfigPath(configPath string, endpointExplicit, configExplicit bool) (string, error) {

@@ -3,12 +3,15 @@ package dev.migi.app
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
@@ -23,6 +26,11 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.media3.common.C
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -42,16 +50,34 @@ class MainActivity : Activity() {
 	private lateinit var playbackTracks: LinearLayout
 	private lateinit var playbackStatus: TextView
 	private lateinit var playbackButton: Button
+	private lateinit var playbackCurrent: TextView
+	private lateinit var playbackPosition: TextView
+	private lateinit var playbackSeek: SeekBar
+	private lateinit var playbackPlayPause: Button
+	private lateinit var playbackPrevious: Button
+	private lateinit var playbackNext: Button
+	private lateinit var playbackShuffle: Button
+	private lateinit var playbackRepeat: Button
 	private lateinit var batteryButton: Button
 	private var selectedTab = TAB_STATUS
 	private var tabButtons: List<Button> = emptyList()
 	private var tabPages: List<ScrollView> = emptyList()
 	private var pendingDownload: SharedFile? = null
-	private var activityStarted = false
 	private val releaseExecutor = Executors.newSingleThreadExecutor()
-	private val playbackExecutor = Executors.newSingleThreadExecutor()
 	private val releaseRefreshGeneration = AtomicLong()
 	private var releaseChanges: AutoCloseable? = null
+	private var playbackController: MediaController? = null
+	private var playbackControllerFuture: ListenableFuture<MediaController>? = null
+	private val playbackHandler = Handler(Looper.getMainLooper())
+	private val playbackProgress = object : Runnable {
+		override fun run() {
+			refreshPlaybackControls()
+			playbackHandler.postDelayed(this, 1_000)
+		}
+	}
+	private val playbackListener = object : Player.Listener {
+		override fun onEvents(player: Player, events: Player.Events) = refreshPlaybackControls()
+	}
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
 		if (key == KEY_FILES_GENERATION) runOnUiThread(::refreshFiles)
@@ -86,7 +112,6 @@ class MainActivity : Activity() {
 
 			override fun onStart() {
 				super.onStart()
-				activityStarted = true
 			ReleaseInstaller.foregroundActivity = this
 			preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
 			releaseChanges = ReleaseChanges.subscribe(::refreshReleases)
@@ -95,22 +120,24 @@ class MainActivity : Activity() {
 			refreshFiles()
 			refreshPlaybackQueue()
 		refreshBatteryOptimizationState()
+		connectPlaybackController()
+		playbackHandler.post(playbackProgress)
 	}
 
 			override fun onStop() {
-				activityStarted = false
 			releaseChanges?.close()
 			releaseChanges = null
 			if (ReleaseInstaller.foregroundActivity === this) {
 				ReleaseInstaller.foregroundActivity = null
 			}
 		preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+		playbackHandler.removeCallbacks(playbackProgress)
+		disconnectPlaybackController()
 			super.onStop()
 	}
 
 	override fun onDestroy() {
 		releaseExecutor.shutdownNow()
-		playbackExecutor.shutdownNow()
 		super.onDestroy()
 	}
 
@@ -223,6 +250,73 @@ class MainActivity : Activity() {
 				setPadding(0, 0, 0, 8)
 			}
 			addView(playbackStatus, matchWidth())
+			playbackCurrent = TextView(this@MainActivity).apply {
+				setText(R.string.playback_nothing_playing)
+				textSize = 18f
+				setPadding(0, 12, 0, 4)
+			}
+			addView(playbackCurrent, matchWidth())
+			playbackPosition = TextView(this@MainActivity).apply {
+				text = getString(R.string.playback_position, "0:00", "0:00")
+			}
+			addView(playbackPosition, matchWidth())
+			playbackSeek = SeekBar(this@MainActivity).apply {
+				max = PLAYBACK_SEEK_MAX
+				isEnabled = false
+				setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+					override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) = Unit
+					override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+					override fun onStopTrackingTouch(seekBar: SeekBar?) {
+						val controller = playbackController ?: return
+						val duration = controller.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: return
+						controller.seekTo(duration * (seekBar?.progress ?: 0) / PLAYBACK_SEEK_MAX)
+					}
+				})
+			}
+			addView(playbackSeek, matchWidth())
+			val transportControls = LinearLayout(this@MainActivity).apply {
+				orientation = LinearLayout.HORIZONTAL
+				playbackPrevious = Button(this@MainActivity).apply {
+					setText(R.string.playback_previous)
+					setOnClickListener { playbackController?.seekToPreviousMediaItem() }
+				}
+				playbackPlayPause = Button(this@MainActivity).apply {
+					setText(R.string.playback_play)
+					setOnClickListener {
+						playbackController?.let { if (it.isPlaying) it.pause() else it.play() }
+					}
+				}
+				playbackNext = Button(this@MainActivity).apply {
+					setText(R.string.playback_next)
+					setOnClickListener { playbackController?.seekToNextMediaItem() }
+				}
+				addView(playbackPrevious, equalWidth())
+				addView(playbackPlayPause, equalWidth())
+				addView(playbackNext, equalWidth())
+			}
+			addView(transportControls, matchWidth())
+			val playbackModes = LinearLayout(this@MainActivity).apply {
+				orientation = LinearLayout.HORIZONTAL
+				playbackShuffle = Button(this@MainActivity).apply {
+					setOnClickListener {
+						playbackController?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }
+					}
+				}
+				playbackRepeat = Button(this@MainActivity).apply {
+					setOnClickListener {
+						playbackController?.let {
+							it.repeatMode = when (it.repeatMode) {
+								Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+								Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+								else -> Player.REPEAT_MODE_OFF
+							}
+						}
+					}
+				}
+				addView(playbackShuffle, equalWidth())
+				addView(playbackRepeat, equalWidth())
+			}
+			addView(playbackModes, matchWidth())
 			playbackButton = Button(this@MainActivity).apply {
 				setText(R.string.playback_prepare_and_play)
 				setOnClickListener { prepareAndPlayQueue() }
@@ -231,6 +325,8 @@ class MainActivity : Activity() {
 			addView(Button(this@MainActivity).apply {
 				setText(R.string.playback_stop)
 				setOnClickListener {
+					playbackController?.stop()
+					playbackController?.clearMediaItems()
 					PlaybackService.stop(this@MainActivity)
 					playbackStatus.setText(R.string.playback_stopped)
 				}
@@ -420,6 +516,82 @@ class MainActivity : Activity() {
 		}
 	}
 
+	private fun connectPlaybackController() {
+		if (playbackControllerFuture != null) return
+		val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
+		val future = MediaController.Builder(this, token).buildAsync()
+		playbackControllerFuture = future
+		future.addListener({
+			if (playbackControllerFuture !== future) {
+				return@addListener
+			}
+			runCatching { future.get() }
+				.onSuccess { controller ->
+					playbackController = controller
+					controller.addListener(playbackListener)
+					refreshPlaybackControls()
+				}
+				.onFailure {
+					playbackControllerFuture = null
+					MediaController.releaseFuture(future)
+					refreshPlaybackControls()
+				}
+		}, mainExecutor)
+	}
+
+	private fun disconnectPlaybackController() {
+		playbackController?.removeListener(playbackListener)
+		playbackController = null
+		playbackControllerFuture?.let(MediaController::releaseFuture)
+		playbackControllerFuture = null
+	}
+
+	private fun refreshPlaybackControls() {
+		if (!::playbackPlayPause.isInitialized) return
+		val controller = playbackController
+		val hasMedia = controller != null && controller.mediaItemCount > 0
+		playbackPlayPause.isEnabled = hasMedia
+		playbackPrevious.isEnabled = controller?.hasPreviousMediaItem() == true
+		playbackNext.isEnabled = controller?.hasNextMediaItem() == true
+		playbackShuffle.isEnabled = hasMedia
+		playbackRepeat.isEnabled = hasMedia
+		playbackPlayPause.setText(
+			if (controller?.isPlaying == true) R.string.playback_pause else R.string.playback_play,
+		)
+		playbackShuffle.setText(
+			if (controller?.shuffleModeEnabled == true) R.string.playback_shuffle_on else R.string.playback_shuffle_off,
+		)
+		playbackRepeat.setText(when (controller?.repeatMode) {
+			Player.REPEAT_MODE_ALL -> R.string.playback_repeat_all
+			Player.REPEAT_MODE_ONE -> R.string.playback_repeat_one
+			else -> R.string.playback_repeat_off
+		})
+		val title = controller?.currentMediaItem?.mediaMetadata?.title
+		playbackCurrent.text = title?.takeIf { it.isNotBlank() } ?: getString(R.string.playback_nothing_playing)
+		val duration = controller?.duration?.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L
+		val position = controller?.currentPosition?.coerceAtLeast(0L)?.coerceAtMost(duration) ?: 0L
+		playbackPosition.text = getString(
+			R.string.playback_position,
+			formatPlaybackTime(position),
+			formatPlaybackTime(duration),
+		)
+		playbackSeek.isEnabled = duration > 0
+		if (!playbackSeek.isPressed) {
+			playbackSeek.progress = if (duration > 0) {
+				(position * PLAYBACK_SEEK_MAX / duration).toInt()
+			} else 0
+		}
+	}
+
+	private fun formatPlaybackTime(milliseconds: Long): String {
+		val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000
+		val hours = totalSeconds / 3_600
+		val minutes = totalSeconds % 3_600 / 60
+		val seconds = totalSeconds % 60
+		return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds)
+		else "%d:%02d".format(minutes, seconds)
+	}
+
 	private fun refreshPlaybackQueue() {
 		if (!::playbackSummary.isInitialized) return
 		val queue = PlaybackQueueRepository(this).current()
@@ -448,6 +620,12 @@ class MainActivity : Activity() {
 					formatFileSize(track.size),
 				)
 				setPadding(0, 8, 0, 8)
+				setOnClickListener {
+					playbackController?.takeIf { it.mediaItemCount > index }?.let { controller ->
+						controller.seekTo(index, 0)
+						controller.play()
+					}
+				}
 			})
 		}
 	}
@@ -458,64 +636,19 @@ class MainActivity : Activity() {
 			return
 		}
 		playbackButton.isEnabled = false
-		playbackStatus.setText(R.string.playback_preparing)
-		runCatching {
-			playbackExecutor.execute {
-				val result = runCatching {
-					PlaybackMediaCache(this).prepare(queue) { completed, total, title ->
-						if (isDestroyed || completed >= total) return@prepare
-						runOnUiThread {
-							if (!isDestroyed) {
-								playbackStatus.text = getString(
-									R.string.playback_downloading,
-									completed + 1,
-									total,
-									title,
-								)
-							}
-						}
-					}
+		playbackStatus.setText(R.string.playback_starting)
+		PlaybackService.start(this, queue.eventID) { playbackError ->
+			if (!isDestroyed) {
+				if (playbackError == null) {
+					playbackStatus.setText(R.string.playback_started)
+				} else {
+					playbackStatus.text = getString(
+						R.string.playback_failed,
+						playbackError.message ?: "unknown error",
+					)
 				}
-				runOnUiThread {
-					if (isDestroyed) return@runOnUiThread
-					val current = PlaybackQueueRepository(this).current()
-					if (current?.eventID != queue.eventID) {
-						refreshPlaybackQueue()
-						playbackStatus.setText(R.string.playback_queue_changed)
-						return@runOnUiThread
-					}
-					val preparationError = result.exceptionOrNull()
-					if (preparationError != null) {
-						playbackStatus.text = getString(
-							R.string.playback_failed,
-							preparationError.message ?: "unknown error",
-						)
-						playbackButton.isEnabled = true
-						return@runOnUiThread
-					}
-					if (!activityStarted) {
-						playbackStatus.setText(R.string.playback_prepared_in_background)
-						playbackButton.isEnabled = true
-						return@runOnUiThread
-					}
-					PlaybackService.start(this, queue.eventID) { playbackError ->
-						if (!isDestroyed) {
-							if (playbackError == null) {
-								playbackStatus.setText(R.string.playback_started)
-							} else {
-								playbackStatus.text = getString(
-									R.string.playback_failed,
-									playbackError.message ?: "unknown error",
-								)
-							}
-							playbackButton.isEnabled = true
-						}
-					}
-				}
+				playbackButton.isEnabled = true
 			}
-		}.onFailure {
-			playbackStatus.text = getString(R.string.playback_failed, it.message ?: "unknown error")
-			playbackButton.isEnabled = true
 		}
 	}
 
@@ -946,6 +1079,12 @@ class MainActivity : Activity() {
         ViewGroup.LayoutParams.WRAP_CONTENT,
     )
 
+	private fun equalWidth() = LinearLayout.LayoutParams(
+		0,
+		ViewGroup.LayoutParams.WRAP_CONTENT,
+		1f,
+	)
+
 	private fun updateStatus(resourceID: Int) {
 		updateStatus(getString(resourceID))
 	}
@@ -993,6 +1132,7 @@ class MainActivity : Activity() {
 			private const val REQUEST_CHOOSE_PHOTO = 22
 			private const val STATE_SELECTED_TAB = "selected_tab"
 			private const val TAB_STATUS = 0
+			private const val PLAYBACK_SEEK_MAX = 1_000
 
         private fun normalizePin(raw: String?): String? {
             if (raw == null) return null

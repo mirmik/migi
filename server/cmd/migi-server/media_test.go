@@ -122,6 +122,30 @@ func TestMediaDerivesNonEmptyTitleFromExtensionOnlyName(t *testing.T) {
 	}
 }
 
+func TestMediaTrimsDerivedTitleBeforeQueueing(t *testing.T) {
+	broker := newTestBroker(t)
+	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newIngestMuxWithStores(broker, nil, store)
+	request := httptest.NewRequest(http.MethodPost, "/v1/media", strings.NewReader("audio"))
+	request.Header.Set("Content-Type", "audio/mpeg")
+	request.Header.Set("X-Migi-Filename", "Weight of the World .mp3")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("upload returned %d: %s", response.Code, response.Body.String())
+	}
+	var object mediaObject
+	if err := json.NewDecoder(response.Body).Decode(&object); err != nil {
+		t.Fatal(err)
+	}
+	if object.Title != "Weight of the World" {
+		t.Fatalf("derived title = %q", object.Title)
+	}
+}
+
 func TestPlaybackQueueEventCannotBypassQueueValidation(t *testing.T) {
 	broker := newTestBroker(t)
 	handler := newIngestMux(broker)
