@@ -42,12 +42,16 @@ kinds are:
 - `agent.completed`
 - `agent.attention_required`
 - `pager.message`
+- `media.queue.set`
 
 Unknown kinds must remain displayable and must not terminate the stream.
 
 `file.available` announces that a file has been committed to the shared
 exchange. Its `body` is the file ID. File bytes and metadata are resolved
 through the file endpoints below; they are never embedded in the event stream.
+
+`media.queue.set` contains a bounded server-generated playlist manifest. It is
+described under **Playback media** and is not accepted as a raw agent event.
 
 ### Pager message
 
@@ -58,14 +62,13 @@ stores the current value together with the event that produced it. The phone
 persists the body before advancing and acknowledging the event cursor.
 
 Pager updates use ordinary event delivery and replay. This deliberately keeps
-the first text channel simple; a future audio channel will require separate
-framing, size limits and flow-control rules rather than embedding audio in this
-JSON object.
+the text channel simple. Playback queues use separately authenticated,
+size-bounded media objects described below; a future voice-message channel may
+add different retention and autoplay rules without embedding bytes in JSON.
 
 On Android, fresh bootstrap events may select a bundled local cue by `kind`.
-This is presentation behavior, not protocol media. Future voice messages will
-reference a separately authenticated, size-bounded media object with an
-integrity digest rather than placing audio bytes or an arbitrary URL in `body`.
+This is presentation behavior, not protocol media. Neither music nor future
+voice messages place audio bytes or an arbitrary URL in `body`.
 
 ## Submit a local event
 
@@ -216,3 +219,85 @@ The list is newest-first. Content responses carry exact `Content-Length`,
 `Content-Type`, `Content-Disposition`, and `X-Content-SHA256` headers. Clients
 must bound the download and verify both its length and digest before exposing
 it to another application.
+
+## Playback media
+
+Playback media is a separate private store, not part of the shared-file inbox.
+Remote agents authenticate with their normal agent bearer token; local agents
+use the trusted loopback listener. Uploading a track is silent and does not
+append an event:
+
+```http
+POST /v1/media
+Authorization: Bearer <agent-token>
+Content-Type: audio/opus
+Content-Length: 7340032
+X-Migi-Filename: quiet-morning.opus
+X-Migi-Title: Quiet Morning
+X-Migi-Artist: Example Artist
+```
+
+Only `audio/*` media types are accepted. The title defaults to the filename
+without its extension and the artist is optional. The response is a media
+object containing a random 32-digit ID, exact size, SHA-256 digest, source and
+expiry. Agent callers may list or resolve media through:
+
+```http
+GET /v1/media
+GET /v1/media/{mediaID}
+GET /v1/media/{mediaID}/content
+```
+
+Paired devices cannot list or upload media. Over authenticated HTTP/3 they may
+resolve or download an opaque ID received in a queue event. Content responses
+carry `Content-Length` and `X-Content-SHA256`; Android bounds and verifies both
+before atomically committing a private cached copy.
+
+An agent publishes one complete ordered queue after all uploads succeed:
+
+```http
+POST /v1/playback/queue
+Authorization: Bearer <agent-token>
+Content-Type: application/json
+
+{
+  "name": "Quiet morning",
+  "device_id": "phone-1",
+  "media_ids": [
+    "ed18f00dc8d94b33b43ff0cf5e87f1d0",
+    "26803dccab744790acc654a30eaf0105"
+  ]
+}
+```
+
+`device_id` is optional; when absent, every paired phone may accept the queue.
+A named target must be an active paired device. A queue contains 1–32 entries,
+its declared track bytes total at most 1 GiB, and its resolved manifest must fit
+the ordinary 8 KiB event-body bound. Duplicate media IDs are allowed.
+
+The server resolves every object and publishes one `media.queue.set` event.
+Its body is a server-generated manifest; callers cannot submit this reserved
+kind through `/v1/events` or `/v1/agent-events`:
+
+```json
+{
+  "version": 1,
+  "name": "Quiet morning",
+  "device_id": "phone-1",
+  "items": [
+    {
+      "id": "ed18f00dc8d94b33b43ff0cf5e87f1d0",
+      "title": "Quiet Morning",
+      "artist": "Example Artist",
+      "mime": "audio/opus",
+      "size": 7340032,
+      "sha256": "0123456789abcdef..."
+    }
+  ]
+}
+```
+
+The journal event ID is the queue revision. Android durably stores only newer
+targeted queues before acknowledging them. Applying a queue never starts audio
+by itself: the user opens the Music tab and explicitly asks Migi to download,
+verify and play it.

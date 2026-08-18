@@ -171,6 +171,10 @@ class ConnectionService : Service() {
     }
 
     private fun showEvent(event: AgentEvent) {
+		if (event.kind == PlaybackQueueCodec.EVENT_KIND) {
+			showPlaybackQueue(event)
+			return
+		}
 		if (event.kind == PAGER_EVENT_KIND) {
 			check(
 				getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE).edit()
@@ -198,10 +202,38 @@ class ConnectionService : Service() {
         )
     }
 
-    private fun mainActivityIntent(): PendingIntent = PendingIntent.getActivity(
+	private fun showPlaybackQueue(event: AgentEvent) {
+		val repository = PlaybackQueueRepository(this)
+		when (repository.accept(event)) {
+			PlaybackQueueRepository.Acceptance.NOT_TARGETED,
+			PlaybackQueueRepository.Acceptance.DUPLICATE -> return
+			PlaybackQueueRepository.Acceptance.INVALID -> {
+				Log.w(TAG, "Rejected invalid playback queue event ${event.id} from ${event.agent}")
+				return
+			}
+			PlaybackQueueRepository.Acceptance.STORED -> Unit
+		}
+		val queue = repository.current() ?: return
+		val notification = Notification.Builder(this, EVENT_CHANNEL)
+			.setSmallIcon(android.R.drawable.ic_media_play)
+			.setContentTitle(getString(R.string.playback_queue_ready, queue.name))
+			.setContentText(getString(R.string.playback_queue_summary, queue.items.size, queue.agent))
+			.setAutoCancel(true)
+			.setContentIntent(mainActivityIntent(MainActivity.TAB_MUSIC))
+			.build()
+		getSystemService(NotificationManager::class.java).notify(
+			EVENT_NOTIFICATION_BASE +
+				Math.floorMod(nextEventNotification.incrementAndGet(), MAX_ACTIVE_EVENT_NOTIFICATIONS),
+			notification,
+		)
+	}
+
+    private fun mainActivityIntent(tab: Int? = null): PendingIntent = PendingIntent.getActivity(
         this,
-        0,
-        Intent(this, MainActivity::class.java),
+		tab ?: 0,
+		Intent(this, MainActivity::class.java).apply {
+			if (tab != null) putExtra(MainActivity.EXTRA_OPEN_TAB, tab)
+		},
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 

@@ -81,6 +81,15 @@ internal object NativeQuicClient {
         fileDescriptor: Int,
         maxBytes: Long,
     ): String
+
+    external fun downloadMedia(
+		endpoint: String,
+		certificatePin: String,
+		credential: String,
+		mediaID: String,
+		fileDescriptor: Int,
+		maxBytes: Long,
+	): String
 }
 
 internal class NativeCallbacks(

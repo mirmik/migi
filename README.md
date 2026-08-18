@@ -51,6 +51,13 @@ Codex agents can install the repository-owned `migi-file-exchange` and
 `migi-android-publisher` skills with
 `./scripts/install-migi-file-exchange-skill`.
 
+Agent-curated audio is deliberately kept out of that inbox. A separate private
+media store accepts silent audio uploads and publishes only a completed
+`media.queue.set` event. Android persists the newest targeted queue, downloads
+each track over the pinned HTTP/3 connection, verifies its size and SHA-256
+digest, and starts a Media3 session only after the user taps Play. The
+`migi-play` command uploads tracks, lists media, and queues playlists.
+
 Remote agent hooks and file clients need no resident client or tunnel. The
 administration panel creates their revocable credentials and one-time
 connection configuration; see [docs/agent-hooks.md](docs/agent-hooks.md).

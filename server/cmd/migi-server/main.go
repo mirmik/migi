@@ -46,9 +46,13 @@ func run() error {
 	if transferDirectoryDefault == "" {
 		transferDirectoryDefault = "migi-files"
 	}
+	mediaDirectoryDefault := os.Getenv("MIGI_MEDIA_DIRECTORY")
+	if mediaDirectoryDefault == "" {
+		mediaDirectoryDefault = "migi-media"
+	}
 	listen := flag.String("listen", ":8443", "UDP address for the HTTP/3 server")
 	ingestListen := flag.String("ingest-listen", "127.0.0.1:8787", "trusted local TCP address for event submission")
-	agentListen := flag.String("agent-listen", "", "TLS/TCP address for authenticated agent events and files; empty disables it")
+	agentListen := flag.String("agent-listen", "", "TLS/TCP address for authenticated agent events, files, and media; empty disables it")
 	adminListen := flag.String("admin-listen", "127.0.0.1:8788", "local TCP address for the administration UI; empty disables it")
 	publicEndpoint := flag.String("public-endpoint", "", "default public https://host[:port] for pairing invitations")
 	agentEndpoint := flag.String("agent-endpoint", "", "public https://host[:port] advertised to agent hooks")
@@ -60,6 +64,10 @@ func run() error {
 	transferMaxBytes := flag.Int64("file-max-bytes", defaultTransferMaxBytes, "maximum bytes per shared file")
 	transferTotalBytes := flag.Int64("file-total-bytes", defaultTransferTotalBytes, "maximum total shared file bytes")
 	transferTTL := flag.Duration("file-ttl", defaultTransferTTL, "shared file retention period")
+	mediaDirectory := flag.String("media-dir", mediaDirectoryDefault, "private agent media directory")
+	mediaMaxBytes := flag.Int64("media-max-bytes", defaultMediaMaxBytes, "maximum bytes per media object")
+	mediaTotalBytes := flag.Int64("media-total-bytes", defaultMediaTotalBytes, "maximum total media bytes")
+	mediaTTL := flag.Duration("media-ttl", defaultMediaTTL, "media object retention period")
 	apksignerPath := flag.String("apksigner", os.Getenv("MIGI_APKSIGNER"), "path to pinned Android build-tools apksigner; empty disables release delivery")
 	aapt2Path := flag.String("aapt2", os.Getenv("MIGI_AAPT2"), "path to pinned Android build-tools aapt2; empty disables release delivery")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")
@@ -87,6 +95,18 @@ func run() error {
 		"max_file_bytes", transfers.maxBytes,
 		"max_total_bytes", transfers.totalBytes,
 		"ttl", transfers.ttl,
+	)
+	media, err := newMediaStore(
+		broker, *mediaDirectory, *mediaMaxBytes, *mediaTotalBytes, *mediaTTL,
+	)
+	if err != nil {
+		return fmt.Errorf("configure media storage: %w", err)
+	}
+	slog.Info("private media storage enabled",
+		"directory", media.root,
+		"max_object_bytes", media.maxBytes,
+		"max_total_bytes", media.totalBytes,
+		"ttl", media.ttl,
 	)
 	var releases *releaseStore
 	if *apksignerPath != "" || *aapt2Path != "" {
@@ -132,7 +152,7 @@ func run() error {
 	}
 
 	publicSecurity := newPublicSecurity()
-	publicMux := newPublicMuxWithStores(broker, releases, transfers, publicSecurity)
+	publicMux := newPublicMuxWithAllStores(broker, releases, transfers, media, publicSecurity)
 	quicConfig := newPublicQUICConfig()
 	if os.Getenv("QLOGDIR") != "" {
 		quicConfig.Tracer = qlog.DefaultConnectionTracer
@@ -174,7 +194,7 @@ func run() error {
 	}
 	ingestServer := http.Server{
 		Addr:              *ingestListen,
-		Handler:           newIngestMuxWithTransfers(broker, transfers),
+		Handler:           newIngestMuxWithStores(broker, transfers, media),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
@@ -183,7 +203,7 @@ func run() error {
 	if *agentListen != "" {
 		agentServer = &http.Server{
 			Addr:              *agentListen,
-			Handler:           newAgentMuxWithStores(broker, releases, transfers, newAgentSecurity()),
+			Handler:           newAgentMuxWithAllStores(broker, releases, transfers, media, newAgentSecurity()),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       30 * time.Second,
 			MaxHeaderBytes:    16 << 10,
@@ -319,6 +339,16 @@ func newPublicMuxWithStores(
 	transfers *transferStore,
 	security *publicSecurity,
 ) http.Handler {
+	return newPublicMuxWithAllStores(broker, releases, transfers, nil, security)
+}
+
+func newPublicMuxWithAllStores(
+	broker *events.Broker,
+	releases *releaseStore,
+	transfers *transferStore,
+	media *mediaStore,
+	security *publicSecurity,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/pair", security.rateLimit("pair", security.pairRequests, pairHandler(broker)))
@@ -336,6 +366,11 @@ func newPublicMuxWithStores(
 			return "device:" + device.ID
 		})
 	}
+	if media != nil {
+		media.deviceRoutes(mux, func(next http.Handler) http.Handler {
+			return authenticateDevice(broker, security, next)
+		})
+	}
 	return security.limitConcurrency(mux)
 }
 
@@ -344,6 +379,14 @@ func newIngestMux(broker *events.Broker) http.Handler {
 }
 
 func newIngestMuxWithTransfers(broker *events.Broker, transfers *transferStore) http.Handler {
+	return newIngestMuxWithStores(broker, transfers, nil)
+}
+
+func newIngestMuxWithStores(
+	broker *events.Broker,
+	transfers *transferStore,
+	media *mediaStore,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(broker))
 	mux.HandleFunc("POST /v1/events", publishHandler(broker))
@@ -354,6 +397,11 @@ func newIngestMuxWithTransfers(broker *events.Broker, transfers *transferStore) 
 				return "agent"
 			}
 			return "agent:" + source
+		})
+	}
+	if media != nil {
+		media.agentRoutes(mux, func(next http.Handler) http.Handler { return next }, func(r *http.Request) string {
+			return r.Header.Get("X-Migi-Source")
 		})
 	}
 	return mux
@@ -372,6 +420,10 @@ func publishHandler(broker *events.Broker) http.HandlerFunc {
 		}
 		if input.Kind == "" || input.Title == "" {
 			http.Error(w, "kind and title are required", http.StatusBadRequest)
+			return
+		}
+		if input.Kind == playbackQueueEventKind {
+			http.Error(w, "media.queue.set must use /v1/playback/queue", http.StatusBadRequest)
 			return
 		}
 

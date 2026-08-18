@@ -93,8 +93,8 @@ event replay. Android saves the value before advancing its durable event cursor
 and displays it on the main screen. An empty value represents a cleared pager.
 
 The pager establishes a stateful server-to-device channel without treating
-large media as JSON. A later audio channel will define its own framing and flow
-control while reusing the authenticated HTTP/3 connection.
+large media as JSON. Voice messages remain a future protocol; agent-curated
+music uses the separate bounded media-object and playback-queue path below.
 
 ### Shared file exchange
 
@@ -113,41 +113,68 @@ The first version is one server-wide inbox. It deliberately does not claim to
 deliver an upload into a particular live agent session; session addressing and
 agent wake-up are a separate future protocol layer.
 
+### Agent playback media
+
+Music is not stored in the shared inbox and media uploads do not append
+`file.available` events. Authenticated agents upload `audio/*` objects to a
+separate random-ID media store with independent per-object, aggregate and TTL
+limits. Bodies are staged, hashed and atomically committed just like other
+untrusted uploads, but remain invisible to the Files tab.
+
+An agent commits a complete ordered queue through `/v1/playback/queue`. The
+server resolves every media ID, copies authoritative size, MIME type and digest
+metadata into a bounded versioned manifest, and publishes one
+`media.queue.set` event. The event ID is the queue revision. A queue may target
+one active device or every paired phone. Raw agent events cannot use the
+reserved queue kind, so they cannot bypass media lookup and manifest checks.
+
+Android validates and synchronously persists a targeted manifest before
+acknowledging its event. Playback is deliberately user-initiated. After the
+user taps Play, Android downloads each object through the pinned HTTP/3 client,
+verifies both its exact length and SHA-256 digest, atomically commits it to a
+private content-addressed cache, and starts a separate Media3
+`MediaSessionService`. Replayed or older queue events cannot restart playback.
+
 ### Minimal Android surface
 
-The bootstrap UI uses platform Views rather than Compose. The application needs
-only endpoint configuration, start/stop controls, and connection state, so the
-additional UI dependency graph is not justified yet.
+The UI continues to use platform Views rather than Compose. Media3 is included
+for ExoPlayer, media-session integration and system playback controls; it does
+not require replacing the existing small tabbed UI toolkit.
 
-The foreground service type is `remoteMessaging`. Event notifications use
-separate Android notification channels from the permanent connection-status
-notification. The event channel itself is silent; `EventAudioPlayer` maps fresh
-event kinds to short bundled `SoundPool` cues, avoiding the ordinary device
-notification sound and suppressing old replay noise.
+The connection foreground service type is `remoteMessaging`; the independent
+Media3 service uses `mediaPlayback`. Event notifications use separate Android
+notification channels from the permanent connection-status notification. The
+event channel itself is silent; `EventAudioPlayer` maps fresh event kinds to
+short bundled `SoundPool` cues, avoiding the ordinary device notification sound
+and suppressing old replay noise.
 
-Short cues and future voice messages intentionally have different playback
-paths. Voice media will be represented by authenticated metadata (media ID,
-MIME type, byte size, digest and duration), fetched over the pinned connection,
-bounded before storage, and handed to a streaming player. Audio bytes are not
-embedded in the event JSON and do not pass through `SoundPool`.
+Short cues and music intentionally have different playback paths. Queue tracks
+use `USAGE_MEDIA`, audio focus and a Media3 session; their bytes are never
+embedded in event JSON and never pass through `SoundPool`. Future voice
+messages may reuse the authenticated media metadata but will define their own
+autoplay and retention policy.
 
 ## Component view
 
 ```text
 local agents ---- HTTP POST /v1/events on loopback TCP ----+
              +---- HTTP /v1/files on loopback TCP --------+
+             +---- HTTP /v1/media + playback/queue -------+
                                                           |
 remote agents -- HTTPS POST with per-agent token ----------> Go event server
                                                           |       |
 local web administration ---------------------------------+       +---- event journal / device state
+                                                                  +---- private media object store
                                                                   |
                                                                   | public HTTP/3 stream over QUIC (UDP)
                                                                   v
-                                                        Android foreground service
+                                                        Android foreground services
     |
     +---- local cursor / deduplication
     |
     +---- Android notification channels and sound
+    |
+    +---- verified media cache + Media3 playback session
 ```
 
 ## Security boundary

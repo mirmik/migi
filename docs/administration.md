@@ -36,6 +36,10 @@ shows the source and expiry of every live object and serves downloads with the
 stored MIME type, exact length and SHA-256 header. Access inherits the panel's
 configured administration-listener security boundary.
 
+Playback media is intentionally absent from **Shared files**. Agents manage the
+separate media store with `migi-play`; silent track uploads do not create inbox
+rows or `file.available` events.
+
 ## Start it
 
 ```bash
@@ -58,7 +62,7 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-listen` | UDP | Local bind for public HTTP/3/QUIC traffic |
 | `-public-endpoint` | HTTPS URL | Default address offered by the pairing form |
 | `-ingest-listen` | TCP | Trusted agent event submission |
-| `-agent-listen` | TLS/TCP | Authenticated event and file access by remote agents; empty disables it |
+| `-agent-listen` | TLS/TCP | Authenticated event, file and playback-media access by remote agents; empty disables it |
 | `-agent-endpoint` | HTTPS URL | Default external address offered when creating agent credentials |
 | `-admin-listen` | TCP | Local administration panel |
 | `-artifact-dir` | filesystem | Immutable APK storage and staging directory |
@@ -69,6 +73,10 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-file-max-bytes` | bytes | Maximum accepted shared file (default 100 MiB) |
 | `-file-total-bytes` | bytes | Aggregate shared-file limit (default 1 GiB) |
 | `-file-ttl` | duration | Retention from upload time (default 7 days) |
+| `-media-dir` | filesystem | Private playback-media storage and staging directory |
+| `-media-max-bytes` | bytes | Maximum accepted audio object (default 256 MiB) |
+| `-media-total-bytes` | bytes | Aggregate playback-media limit (default 4 GiB) |
+| `-media-ttl` | duration | Playback-media retention from upload time (default 30 days) |
 
 For example, a router can forward public UDP `10443` to server UDP `8443`; in
 that case use `-listen :8443` and

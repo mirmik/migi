@@ -46,6 +46,7 @@ for required in \
     '    -artifact-max-bytes 268435456 \' \
     '    -artifact-total-bytes 2147483648 \' \
     '    -file-dir %S/migi/migi-files \' \
+    '    -media-dir %S/migi/migi-media \' \
     '    -apksigner %h/Android/Sdk/build-tools/36.0.0/apksigner \' \
     '    -aapt2 %h/Android/Sdk/build-tools/36.0.0/aapt2 \'
 do

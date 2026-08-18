@@ -167,6 +167,7 @@ go run ./cmd/migi-server \
   -db ./migi.db \
   -artifact-dir ./migi-artifacts \
   -file-dir ./migi-files \
+  -media-dir ./migi-media \
   -apksigner "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
   -aapt2 "$ANDROID_HOME/build-tools/36.0.0/aapt2" \
   -cert /path/to/fullchain.pem \
@@ -223,6 +224,40 @@ curl -X POST http://127.0.0.1:8787/v1/events \
 
 Production deployment must keep `/v1/events` submission on a trusted interface
 or add authentication before exposing it.
+
+### Queue agent-curated audio
+
+Build the dedicated media client. It does not use or populate the shared-file
+inbox:
+
+```bash
+cd server
+go build -o ./bin/migi-play ./cmd/migi-play
+```
+
+Upload tracks silently, inspect the private media store, and publish one queue:
+
+```bash
+./bin/migi-play -source builder-1 put ./one.opus
+./bin/migi-play list
+./bin/migi-play -source builder-1 -name "Quiet morning" \
+  -device phone-1 queue MEDIA_ID_1 MEDIA_ID_2
+```
+
+For local files, `play` combines upload and queue creation. Uploads that finish
+before a later failure remain private and expire normally; no partial queue is
+published:
+
+```bash
+./bin/migi-play -source builder-1 -name "Focus" \
+  -device phone-1 play ./one.opus ./two.mp3
+```
+
+The phone receives one playlist notification. It never autoplays the event:
+open the **Music** tab and tap **Download, verify, and play**. The client uses
+the same remote agent-config discovery, bearer authentication and exact TLS
+certificate pinning as `migi-file` when it is not pointed explicitly at the
+trusted loopback endpoint.
 
 ### Exchange files with the phone
 
@@ -306,6 +341,7 @@ go vet ./...
 go build -o ./bin/migi-server ./cmd/migi-server
 go build -o ./bin/migi-publish ./cmd/migi-publish
 go build -o ./bin/migi-file ./cmd/migi-file
+go build -o ./bin/migi-play ./cmd/migi-play
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -mode binary ./bin/migi-server
 go version -m ./bin/migi-server

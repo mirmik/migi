@@ -308,6 +308,53 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadSharedFile(
         .unwrap_or(std::ptr::null_mut())
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadMedia(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    media_id: JString,
+    file_descriptor: jint,
+    max_bytes: jlong,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let media_id: String = env.get_string(&media_id)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_media_id(&media_id)?;
+        if file_descriptor < 0 || max_bytes <= 0 {
+            return Err(invalid(
+                "valid destination descriptor and size limit are required",
+            ));
+        }
+        let duplicated = unsafe { dup(file_descriptor) };
+        if duplicated < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let mut destination = unsafe { File::from_raw_fd(duplicated) };
+        download_request(
+            &endpoint,
+            &expected_pin,
+            &credential,
+            &format!("/v1/media/{media_id}/content"),
+            &mut destination,
+            max_bytes as u64,
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 fn run_client(
     env: &mut JNIEnv,
     callback: &JObject,
@@ -1235,6 +1282,17 @@ fn validate_shared_file_id(value: &str) -> Result<(), AnyError> {
     Ok(())
 }
 
+fn validate_media_id(value: &str) -> Result<(), AnyError> {
+    if value.len() != 32
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    {
+        return Err(invalid("media ID is malformed"));
+    }
+    Ok(())
+}
+
 fn validate_shared_file_name(value: &str) -> Result<(), AnyError> {
     if value.is_empty()
         || value.as_bytes().len() > 255
@@ -1289,6 +1347,8 @@ mod tests {
         assert!(validate_shared_file_name("../screenshot.png").is_err());
         assert!(validate_mime("image/png").is_ok());
         assert!(validate_mime("image/png\r\nx-evil: yes").is_err());
+        assert!(validate_media_id("fedcba9876543210fedcba9876543210").is_ok());
+        assert!(validate_media_id("../../media").is_err());
     }
 
     #[test]

@@ -58,6 +58,16 @@ func newAgentMuxWithStores(
 	transfers *transferStore,
 	security *agentSecurity,
 ) http.Handler {
+	return newAgentMuxWithAllStores(broker, releases, transfers, nil, security)
+}
+
+func newAgentMuxWithAllStores(
+	broker *events.Broker,
+	releases *releaseStore,
+	transfers *transferStore,
+	media *mediaStore,
+	security *agentSecurity,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/agent-events", security.rateLimit(
@@ -87,6 +97,18 @@ func newAgentMuxWithStores(
 		}, func(r *http.Request) string {
 			agent, _ := r.Context().Value(agentContextKey{}).(events.AgentTokenInfo)
 			return "agent:" + agent.Name
+		})
+	}
+	if media != nil {
+		media.agentRoutes(mux, func(next http.Handler) http.Handler {
+			return security.rateLimit(
+				"media",
+				security.publishRequests,
+				authenticateAgent(broker, security, next),
+			)
+		}, func(r *http.Request) string {
+			agent, _ := r.Context().Value(agentContextKey{}).(events.AgentTokenInfo)
+			return agent.Name
 		})
 	}
 	return security.limitConcurrency(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +309,10 @@ func publishAgentEventHandler(broker *events.Broker) http.HandlerFunc {
 		input.Title = strings.TrimSpace(input.Title)
 		if !agentEventKindPattern.MatchString(input.Kind) || input.Title == "" {
 			http.Error(w, "valid kind and non-empty title are required", http.StatusBadRequest)
+			return
+		}
+		if input.Kind == playbackQueueEventKind {
+			http.Error(w, "media.queue.set must use /v1/playback/queue", http.StatusBadRequest)
 			return
 		}
 		if !utf8.ValidString(input.Title) || !utf8.ValidString(input.Body) ||

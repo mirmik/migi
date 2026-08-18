@@ -38,28 +38,37 @@ class MainActivity : Activity() {
 	private lateinit var pagerMessage: TextView
 	private lateinit var releaseList: LinearLayout
 	private lateinit var fileList: LinearLayout
+	private lateinit var playbackSummary: TextView
+	private lateinit var playbackTracks: LinearLayout
+	private lateinit var playbackStatus: TextView
+	private lateinit var playbackButton: Button
 	private lateinit var batteryButton: Button
 	private var selectedTab = TAB_STATUS
 	private var tabButtons: List<Button> = emptyList()
 	private var tabPages: List<ScrollView> = emptyList()
 	private var pendingDownload: SharedFile? = null
+	private var activityStarted = false
 	private val releaseExecutor = Executors.newSingleThreadExecutor()
+	private val playbackExecutor = Executors.newSingleThreadExecutor()
 	private val releaseRefreshGeneration = AtomicLong()
 	private var releaseChanges: AutoCloseable? = null
 	private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
 		if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
 		if (key == KEY_FILES_GENERATION) runOnUiThread(::refreshFiles)
+		if (key == PlaybackQueueRepository.KEY_QUEUE) runOnUiThread(::refreshPlaybackQueue)
 	}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        selectedTab = savedInstanceState?.getInt(STATE_SELECTED_TAB, TAB_STATUS) ?: TAB_STATUS
+		selectedTab = savedInstanceState?.getInt(STATE_SELECTED_TAB, TAB_STATUS)
+			?: intent.getIntExtra(EXTRA_OPEN_TAB, TAB_STATUS)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         buildContentView()
-        handlePairingIntent(intent)
-        handleSharedFileIntent(intent)
+		handlePairingIntent(intent)
+		handleSharedFileIntent(intent)
+		openRequestedTab(intent)
     }
 
 	override fun onSaveInstanceState(outState: Bundle) {
@@ -70,22 +79,26 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handlePairingIntent(intent)
-        handleSharedFileIntent(intent)
+		handlePairingIntent(intent)
+		handleSharedFileIntent(intent)
+		openRequestedTab(intent)
     }
 
-		override fun onStart() {
-			super.onStart()
+			override fun onStart() {
+				super.onStart()
+				activityStarted = true
 			ReleaseInstaller.foregroundActivity = this
 			preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
 			releaseChanges = ReleaseChanges.subscribe(::refreshReleases)
 			refreshPagerMessage()
 			refreshReleases(reconcile = true)
 			refreshFiles()
+			refreshPlaybackQueue()
 		refreshBatteryOptimizationState()
 	}
 
-		override fun onStop() {
+			override fun onStop() {
+				activityStarted = false
 			releaseChanges?.close()
 			releaseChanges = null
 			if (ReleaseInstaller.foregroundActivity === this) {
@@ -97,6 +110,7 @@ class MainActivity : Activity() {
 
 	override fun onDestroy() {
 		releaseExecutor.shutdownNow()
+		playbackExecutor.shutdownNow()
 		super.onDestroy()
 	}
 
@@ -192,6 +206,40 @@ class MainActivity : Activity() {
 			})
 			addView(pagerMessage, matchWidth())
 		}
+		val playbackPage = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			setPadding(padding, padding, padding, padding)
+			addView(TextView(this@MainActivity).apply {
+				setText(R.string.playback_title)
+				textSize = 20f
+			})
+			playbackSummary = TextView(this@MainActivity).apply {
+				textSize = 16f
+				setPadding(0, 8, 0, 8)
+			}
+			addView(playbackSummary, matchWidth())
+			playbackStatus = TextView(this@MainActivity).apply {
+				textSize = 14f
+				setPadding(0, 0, 0, 8)
+			}
+			addView(playbackStatus, matchWidth())
+			playbackButton = Button(this@MainActivity).apply {
+				setText(R.string.playback_prepare_and_play)
+				setOnClickListener { prepareAndPlayQueue() }
+			}
+			addView(playbackButton, matchWidth())
+			addView(Button(this@MainActivity).apply {
+				setText(R.string.playback_stop)
+				setOnClickListener {
+					PlaybackService.stop(this@MainActivity)
+					playbackStatus.setText(R.string.playback_stopped)
+				}
+			}, matchWidth())
+			playbackTracks = LinearLayout(this@MainActivity).apply {
+				orientation = LinearLayout.VERTICAL
+			}
+			addView(playbackTracks, matchWidth())
+		}
 		val filesPage = LinearLayout(this).apply {
 			orientation = LinearLayout.VERTICAL
 			setPadding(padding, padding, padding, padding)
@@ -284,13 +332,14 @@ class MainActivity : Activity() {
 			addView(audioVolume, matchWidth())
 		}
 
-		tabPages = listOf(statusPage, filesPage, updatesPage, settingsPage).map { page ->
+		tabPages = listOf(statusPage, playbackPage, filesPage, updatesPage, settingsPage).map { page ->
 			ScrollView(this).apply {
 				addView(page, matchWidth())
 			}
 		}
 		val tabLabels = listOf(
 			R.string.tab_status,
+			R.string.tab_playback,
 			R.string.tab_files,
 			R.string.tab_updates,
 			R.string.tab_settings,
@@ -360,6 +409,104 @@ class MainActivity : Activity() {
 			val selected = tabIndex == selectedTab
 			button.isEnabled = !selected
 			button.isSelected = selected
+		}
+	}
+
+	private fun openRequestedTab(intent: Intent?) {
+		if (tabPages.isEmpty()) return
+		if (intent?.hasExtra(EXTRA_OPEN_TAB) == true) {
+			showTab(intent.getIntExtra(EXTRA_OPEN_TAB, TAB_STATUS))
+			intent.removeExtra(EXTRA_OPEN_TAB)
+		}
+	}
+
+	private fun refreshPlaybackQueue() {
+		if (!::playbackSummary.isInitialized) return
+		val queue = PlaybackQueueRepository(this).current()
+		playbackTracks.removeAllViews()
+		if (queue == null) {
+			playbackSummary.setText(R.string.playback_empty)
+			playbackStatus.text = ""
+			playbackButton.isEnabled = false
+			return
+		}
+		playbackSummary.text = getString(
+			R.string.playback_queue_summary_full,
+			queue.name,
+			queue.items.size,
+			queue.agent,
+		)
+		playbackStatus.setText(R.string.playback_ready_to_prepare)
+		playbackButton.isEnabled = true
+		for ((index, track) in queue.items.withIndex()) {
+			playbackTracks.addView(TextView(this).apply {
+				val credit = if (track.artist.isBlank()) track.title else "${track.title} — ${track.artist}"
+				text = getString(
+					R.string.playback_track_summary,
+					index + 1,
+					credit,
+					formatFileSize(track.size),
+				)
+				setPadding(0, 8, 0, 8)
+			})
+		}
+	}
+
+	private fun prepareAndPlayQueue() {
+		val queue = PlaybackQueueRepository(this).current() ?: run {
+			refreshPlaybackQueue()
+			return
+		}
+		playbackButton.isEnabled = false
+		playbackStatus.setText(R.string.playback_preparing)
+		runCatching {
+			playbackExecutor.execute {
+				val result = runCatching {
+					PlaybackMediaCache(this).prepare(queue) { completed, total, title ->
+						if (isDestroyed || completed >= total) return@prepare
+						runOnUiThread {
+							if (!isDestroyed) {
+								playbackStatus.text = getString(
+									R.string.playback_downloading,
+									completed + 1,
+									total,
+									title,
+								)
+							}
+						}
+					}
+				}
+				runOnUiThread {
+					if (isDestroyed) return@runOnUiThread
+					val current = PlaybackQueueRepository(this).current()
+					if (current?.eventID != queue.eventID) {
+						refreshPlaybackQueue()
+						playbackStatus.setText(R.string.playback_queue_changed)
+						return@runOnUiThread
+					}
+					val preparationError = result.exceptionOrNull()
+					if (preparationError != null) {
+						playbackStatus.text = getString(
+							R.string.playback_failed,
+							preparationError.message ?: "unknown error",
+						)
+						playbackButton.isEnabled = true
+						return@runOnUiThread
+					}
+					if (!activityStarted) {
+						playbackStatus.setText(R.string.playback_prepared_in_background)
+						playbackButton.isEnabled = true
+						return@runOnUiThread
+					}
+					runCatching { PlaybackService.start(this, queue.eventID) }
+						.onSuccess { playbackStatus.setText(R.string.playback_started) }
+						.onFailure { playbackStatus.text = getString(R.string.playback_failed, it.message ?: "unknown error") }
+					playbackButton.isEnabled = true
+				}
+			}
+		}.onFailure {
+			playbackStatus.text = getString(R.string.playback_failed, it.message ?: "unknown error")
+			playbackButton.isEnabled = true
 		}
 	}
 
@@ -764,7 +911,9 @@ class MainActivity : Activity() {
                         .putString(KEY_CERTIFICATE_PIN, invitation.pin)
 	                        .commit(),
 	                ) { "Failed to save paired server" }
-	                ReleaseRepository(this).resetForPairing()
+		                ReleaseRepository(this).resetForPairing()
+						PlaybackQueueRepository(this).reset()
+						PlaybackMediaCache(this).clear()
             }
             runOnUiThread {
                 result.onSuccess {
@@ -828,6 +977,8 @@ class MainActivity : Activity() {
 			const val KEY_AUDIO_VOLUME = "audio_volume"
 			const val KEY_CONNECTION_RECOVERY_ERROR = "connection_recovery_error"
 			const val DEFAULT_AUDIO_VOLUME = 100
+			const val EXTRA_OPEN_TAB = "dev.migi.app.extra.OPEN_TAB"
+			const val TAB_MUSIC = 1
 			private const val REQUEST_CHOOSE_FILE = 20
 			private const val REQUEST_SAVE_FILE = 21
 			private const val REQUEST_CHOOSE_PHOTO = 22

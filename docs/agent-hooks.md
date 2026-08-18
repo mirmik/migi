@@ -65,6 +65,21 @@ loads `MIGI_AGENT_CONFIG` or `~/.config/migi/agent.json` and verifies its
 certificate pin before sending the bearer token. On uploads, Migi derives the
 source agent name from the credential and ignores caller-supplied identity.
 
+## Queue playback media remotely
+
+The same agent credential also authorizes the private `/v1/media` and
+`/v1/playback/queue` routes. These objects never appear in the shared-file
+inbox and uploading them emits no event. `migi-play` discovers the same config
+file and applies the same certificate pin before sending the bearer token:
+
+```bash
+migi-play -name "Quiet morning" -device phone-1 \
+  play ./one.opus ./two.mp3
+```
+
+Only the final validated queue emits `media.queue.set`. The phone persists it
+but requires a user tap before downloading or starting audio.
+
 ## Codex notifications and lifecycle hooks
 
 The integration under `integrations/codex/` uses only the Python standard

@@ -33,8 +33,9 @@ Inspect logs with `journalctl --user -u migi.service`. The user deployment uses
 `~/.config/migi` for its environment and TLS material and
 `~/.local/state/migi` for SQLite state. Immutable APKs live in
 `~/.local/state/migi/artifacts` and shared files in
-`~/.local/state/migi/migi-files`; the service umask and state-directory mode
-keep both private to the login user.
+`~/.local/state/migi/migi-files`. Silent playback-media uploads use the
+separate `~/.local/state/migi/migi-media` directory; the service umask and
+state-directory mode keep every store private to the login user.
 
 The user unit enables release delivery with the pinned Android Build Tools
 36.0.0 under `~/Android/Sdk`. Both verifier paths are explicit systemd
@@ -68,6 +69,8 @@ tool.
 | server private key | `/etc/migi/server.key` | `0600 root:root` |
 | SQLite journal | `/var/lib/migi/migi.db` | `0600 migi:migi` |
 | APK artifacts | `/var/lib/migi/artifacts` | `0700 migi:migi` |
+| Shared files | `/var/lib/migi/migi-files` | `0700 migi:migi` |
+| Playback media | `/var/lib/migi/migi-media` | `0700 migi:migi` |
 
 The private key is not placed in the environment file and is not made readable
 to the service account at rest. systemd copies it into the service credential
