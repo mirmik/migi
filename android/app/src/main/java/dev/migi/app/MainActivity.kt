@@ -638,7 +638,7 @@ class MainActivity : Activity() {
             setPadding(dp(4), dp(5), dp(4), dp(4))
             setOnItemSelectedListener { item ->
                 val index = NAVIGATION_IDS.indexOf(item.itemId)
-                if (index >= 0) showTab(index)
+                if (index >= 0) displayTab(index)
                 index >= 0
             }
         }
@@ -666,15 +666,19 @@ class MainActivity : Activity() {
     }
 
     private fun showTab(index: Int) {
-        selectedTab = index.coerceIn(tabPages.indices)
-        tabPages.forEachIndexed { tabIndex, page ->
-            page.visibility = if (tabIndex == selectedTab) View.VISIBLE else View.GONE
-        }
+        displayTab(index)
         if (::bottomNavigation.isInitialized) {
             val navigationID = NAVIGATION_IDS[selectedTab]
             if (bottomNavigation.selectedItemId != navigationID) {
                 bottomNavigation.selectedItemId = navigationID
             }
+        }
+    }
+
+    private fun displayTab(index: Int) {
+        selectedTab = index.coerceIn(tabPages.indices)
+        tabPages.forEachIndexed { tabIndex, page ->
+            page.visibility = if (tabIndex == selectedTab) View.VISIBLE else View.GONE
         }
     }
 
