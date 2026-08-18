@@ -7,7 +7,7 @@ migi_skill_parent="${MIGI_SKILL_HOME:-$HOME/.agents/skills}"
 
 mkdir -p "$migi_skill_parent"
 
-for migi_skill_name in migi-file-exchange migi-android-publisher; do
+for migi_skill_name in migi-file-exchange migi-android-publisher migi-audio-player; do
 	migi_skill_source="$migi_repo_root/skills/$migi_skill_name"
 	migi_skill_target="$migi_skill_parent/$migi_skill_name"
 

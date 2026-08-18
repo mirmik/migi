@@ -47,8 +47,8 @@ Android can upload through the system share sheet and save verified downloads;
 agents use the loopback-only `migi-file` command, and the administration panel
 can upload, list, and download the same objects. File bodies stay outside the
 event journal, while `file.available` events announce committed objects.
-Codex agents can install the repository-owned `migi-file-exchange` and
-`migi-android-publisher` skills with
+Codex agents can install the repository-owned `migi-file-exchange`,
+`migi-android-publisher`, and `migi-audio-player` skills with
 `./scripts/install-migi-file-exchange-skill`.
 
 Agent-curated audio is deliberately kept out of that inbox. A separate private
@@ -57,6 +57,8 @@ media store accepts silent audio uploads and publishes only a completed
 each track over the pinned HTTP/3 connection, verifies its size and SHA-256
 digest, and starts a Media3 session only after the user taps Play. The
 `migi-play` command uploads tracks, lists media, and queues playlists.
+The `migi-audio-player` skill adds safe helpers for ordered album directories
+and teaches agents to use this transport instead of the shared file inbox.
 
 Remote agent hooks and file clients need no resident client or tunnel. The
 administration panel creates their revocable credentials and one-time

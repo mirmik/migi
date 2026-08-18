@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${MIGI_PLAY_BIN:-}" ]; then
+	if [ ! -x "$MIGI_PLAY_BIN" ]; then
+		echo "migi-play: MIGI_PLAY_BIN is not executable: $MIGI_PLAY_BIN" >&2
+		exit 1
+	fi
+	exec "$MIGI_PLAY_BIN" "$@"
+fi
+
+migi_wrapper_path=$(readlink -f "$0")
+migi_skill_dir=$(dirname "$(dirname "$migi_wrapper_path")")
+migi_repo_root=$(cd "$migi_skill_dir/../.." && pwd -P)
+migi_repo_binary="$migi_repo_root/server/bin/migi-play"
+
+if [ -x "$migi_repo_binary" ]; then
+	exec "$migi_repo_binary" "$@"
+fi
+
+if [ -f "$migi_repo_root/server/go.mod" ] && command -v go >/dev/null 2>&1; then
+	cd "$migi_repo_root/server"
+	exec go run ./cmd/migi-play "$@"
+fi
+
+if command -v migi-play >/dev/null 2>&1; then
+	exec migi-play "$@"
+fi
+
+echo "migi-play: neither the Migi repository client nor migi-play is available" >&2
+exit 1
+

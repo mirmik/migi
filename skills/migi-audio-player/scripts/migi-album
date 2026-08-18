@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+migi_name=
+migi_device=
+migi_source=codex
+
+usage() {
+	echo "usage: migi-album [--name NAME] [--device DEVICE_ID] [--source AGENT] DIRECTORY" >&2
+}
+
+while (($# > 0)); do
+	case "$1" in
+		--name)
+			(($# >= 2)) || { usage; exit 2; }
+			migi_name=$2
+			shift 2
+			;;
+		--device)
+			(($# >= 2)) || { usage; exit 2; }
+			migi_device=$2
+			shift 2
+			;;
+		--source)
+			(($# >= 2)) || { usage; exit 2; }
+			migi_source=$2
+			shift 2
+			;;
+		--)
+			shift
+			break
+			;;
+		-*)
+			usage
+			exit 2
+			;;
+		*) break ;;
+	esac
+done
+
+(($# == 1)) || { usage; exit 2; }
+migi_directory=$1
+[[ -d "$migi_directory" ]] || { echo "migi-album: not a directory: $migi_directory" >&2; exit 1; }
+[[ -n "$migi_name" ]] || migi_name=$(basename "$migi_directory")
+
+mapfile -d '' migi_tracks < <(
+	find "$migi_directory" -maxdepth 1 -type f \
+		\( -iname '*.mp3' -o -iname '*.opus' -o -iname '*.ogg' -o -iname '*.oga' \
+		-o -iname '*.flac' -o -iname '*.m4a' -o -iname '*.mp4' -o -iname '*.aac' \
+		-o -iname '*.wav' \) -print0 | sort -z -V
+)
+
+((${#migi_tracks[@]} > 0)) || { echo "migi-album: no supported audio files found" >&2; exit 1; }
+((${#migi_tracks[@]} <= 32)) || { echo "migi-album: album has more than 32 tracks" >&2; exit 1; }
+
+migi_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+migi_arguments=(-name "$migi_name" -source "$migi_source")
+[[ -z "$migi_device" ]] || migi_arguments+=(-device "$migi_device")
+
+printf 'Queueing %d tracks as %s\n' "${#migi_tracks[@]}" "$migi_name" >&2
+printf '  %s\n' "${migi_tracks[@]}" >&2
+exec "$migi_script_dir/migi-play" "${migi_arguments[@]}" play "${migi_tracks[@]}"
+

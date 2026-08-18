@@ -1,0 +1,4 @@
+interface:
+  display_name: "Migi Audio Player"
+  short_description: "Send agent-curated playlists to paired phones"
+  default_prompt: "Use $migi-audio-player to send this album to my phone as a playable queue."

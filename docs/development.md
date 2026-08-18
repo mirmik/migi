@@ -296,8 +296,9 @@ request, and verifies the configured TLS certificate fingerprint. Use
 
 ### Install the Codex Migi skills
 
-The repository contains `skills/migi-file-exchange` for ordinary file transfer
-and `skills/migi-android-publisher` for installable APK releases. Install both
+The repository contains `skills/migi-file-exchange` for ordinary file transfer,
+`skills/migi-android-publisher` for installable APK releases, and
+`skills/migi-audio-player` for agent-curated audio queues. Install all three
 for the current user with:
 
 ```bash
@@ -307,12 +308,14 @@ for the current user with:
 The script creates idempotent symlinks under `~/.agents/skills` pointing at the
 repository copies. It refuses to replace an existing directory or a link to
 another target. Codex normally detects skill changes automatically; restart
-the session if either skill does not appear.
+the session if a skill does not appear.
 
 The file-exchange wrapper prefers `migi-file` from `PATH`, then
 `server/bin/migi-file`, and finally runs `go run ./cmd/migi-file` from this
 repository. The Android publisher wrapper follows the same lookup order for
-`migi-publish`.
+`migi-publish`. The audio skill includes `migi-play` plus an album helper that
+filters supported audio, version-sorts numbered tracks, and publishes one
+queue only after every upload succeeds.
 
 Open `http://127.0.0.1:8788/admin/` on the server to view status, create a
 pairing QR, and revoke devices. For browsers on a trusted LAN, bind
