@@ -97,10 +97,12 @@ class MainActivity : Activity() {
     private var releaseChanges: AutoCloseable? = null
     private var playbackController: MediaController? = null
     private var playbackControllerFuture: ListenableFuture<MediaController>? = null
+    private var lastConnectionRunning: Boolean? = null
     private val playbackHandler = Handler(Looper.getMainLooper())
     private val playbackProgress = object : Runnable {
         override fun run() {
             refreshPlaybackControls()
+            refreshConnectionStatus()
             playbackHandler.postDelayed(this, 1_000)
         }
     }
@@ -111,6 +113,9 @@ class MainActivity : Activity() {
         if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
         if (key == KEY_FILES_GENERATION) runOnUiThread(::refreshFiles)
         if (key == PlaybackQueueRepository.KEY_QUEUE) runOnUiThread(::refreshPlaybackQueue)
+        if (key == KEY_CONNECTION_RECOVERY_ERROR) {
+            runOnUiThread { refreshConnectionStatus(force = true) }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,6 +155,7 @@ class MainActivity : Activity() {
         refreshFiles()
         refreshPlaybackQueue()
         refreshBatteryOptimizationState()
+        refreshConnectionStatus(force = true)
         connectPlaybackController()
         playbackHandler.post(playbackProgress)
     }
@@ -1559,6 +1565,24 @@ class MainActivity : Activity() {
 
     private fun updateStatus(resourceID: Int) {
         updateStatus(getString(resourceID))
+    }
+
+    private fun refreshConnectionStatus(force: Boolean = false) {
+        val running = ConnectionService.isRunning
+        if (!force && lastConnectionRunning == running) return
+        lastConnectionRunning = running
+        val recoveryError = preferences.getString(KEY_CONNECTION_RECOVERY_ERROR, null)
+        updateStatus(
+            when {
+                recoveryError != null -> getString(
+                    R.string.connection_recovery_failed,
+                    recoveryError,
+                )
+                running -> getString(R.string.service_running)
+                CredentialStore(this).load() == null -> getString(R.string.device_not_paired)
+                else -> getString(R.string.service_stopped)
+            },
+        )
     }
 
     private fun updateStatus(message: CharSequence) {
