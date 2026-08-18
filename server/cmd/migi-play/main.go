@@ -18,7 +18,10 @@ import (
 	"time"
 )
 
-const maxResponseBytes = 1 << 20
+const (
+	maxResponseBytes = 1 << 20
+	maxArtworkBytes  = int64(8 << 20)
+)
 
 type mediaObject struct {
 	ID        string    `json:"id"`
@@ -58,6 +61,7 @@ func run() error {
 	mimeType := flag.String("type", "", "upload MIME type (guessed from extension by default)")
 	title := flag.String("title", "", "track title for put")
 	artist := flag.String("artist", "", "track artist for put")
+	cover := flag.String("cover", "", "playlist cover image path for queue or play")
 	deviceID := flag.String("device", "", "paired device ID (empty targets every paired phone)")
 	playlistName := flag.String("name", "Migi playlist", "playlist name for queue or play")
 	flag.Parse()
@@ -84,6 +88,9 @@ func run() error {
 	}
 	switch args[0] {
 	case "put":
+		if *cover != "" {
+			return errors.New("-cover applies only to queue or play")
+		}
 		if len(args) != 2 {
 			return errors.New("put requires exactly one audio file path")
 		}
@@ -93,6 +100,9 @@ func run() error {
 		}
 		return err
 	case "list":
+		if *cover != "" {
+			return errors.New("-cover applies only to queue or play")
+		}
 		if len(args) != 1 {
 			return errors.New("list takes no arguments")
 		}
@@ -101,13 +111,21 @@ func run() error {
 		if len(args) < 2 {
 			return errors.New("queue requires at least one media ID")
 		}
-		return queue(client, base, *playlistName, *deviceID, *source, args[1:])
+		artworkID, err := uploadArtwork(client, base, *cover, *source)
+		if err != nil {
+			return err
+		}
+		return queue(client, base, *playlistName, *deviceID, *source, artworkID, args[1:])
 	case "play":
 		if len(args) < 2 {
 			return errors.New("play requires at least one audio file path")
 		}
 		if *title != "" || *artist != "" {
 			return errors.New("-title and -artist apply only to put; play derives metadata from filenames")
+		}
+		artworkID, err := uploadArtwork(client, base, *cover, *source)
+		if err != nil {
+			return err
 		}
 		ids := make([]string, 0, len(args)-1)
 		for _, path := range args[1:] {
@@ -118,7 +136,7 @@ func run() error {
 			printObject(object)
 			ids = append(ids, object.ID)
 		}
-		return queue(client, base, *playlistName, *deviceID, *source, ids)
+		return queue(client, base, *playlistName, *deviceID, *source, artworkID, ids)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -262,6 +280,46 @@ func put(
 	base *url.URL,
 	path, source, contentType, title, artist string,
 ) (mediaObject, error) {
+	if contentType == "" {
+		contentType = audioMIME(filepath.Ext(path))
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "audio/") {
+		return mediaObject{}, errors.New("audio MIME type is required; use -type when the extension is unknown")
+	}
+	return putMedia(client, base, path, source, contentType, title, artist, 0)
+}
+
+func uploadArtwork(client *playClient, base *url.URL, path, source string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	contentType := artworkMIME(filepath.Ext(path))
+	if contentType == "" {
+		return "", errors.New("cover must be JPEG, PNG, or WebP")
+	}
+	object, err := putMedia(
+		client,
+		base,
+		path,
+		source,
+		contentType,
+		titleFromPath(path),
+		"",
+		maxArtworkBytes,
+	)
+	if err != nil {
+		return "", fmt.Errorf("upload cover %s: %w", path, err)
+	}
+	printObject(object)
+	return object.ID, nil
+}
+
+func putMedia(
+	client *playClient,
+	base *url.URL,
+	path, source, contentType, title, artist string,
+	maximumBytes int64,
+) (mediaObject, error) {
 	var object mediaObject
 	file, err := os.Open(path)
 	if err != nil {
@@ -272,11 +330,8 @@ func put(
 	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
 		return object, errors.New("upload must be a non-empty regular file")
 	}
-	if contentType == "" {
-		contentType = audioMIME(filepath.Ext(info.Name()))
-	}
-	if !strings.HasPrefix(strings.ToLower(contentType), "audio/") {
-		return object, errors.New("audio MIME type is required; use -type when the extension is unknown")
+	if maximumBytes > 0 && info.Size() > maximumBytes {
+		return object, fmt.Errorf("file exceeds the %d byte limit", maximumBytes)
 	}
 	request, err := client.request(http.MethodPost, endpoint(base, "/v1/media"), file)
 	if err != nil {
@@ -334,6 +389,19 @@ func audioMIME(extension string) string {
 	}
 }
 
+func artworkMIME(extension string) string {
+	switch strings.ToLower(extension) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
 func list(client *playClient, base *url.URL) error {
 	request, err := client.request(http.MethodGet, endpoint(base, "/v1/media"), nil)
 	if err != nil {
@@ -361,7 +429,12 @@ func list(client *playClient, base *url.URL) error {
 	return nil
 }
 
-func queue(client *playClient, base *url.URL, name, deviceID, source string, mediaIDs []string) error {
+func queue(
+	client *playClient,
+	base *url.URL,
+	name, deviceID, source, artworkMediaID string,
+	mediaIDs []string,
+) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("playlist name must not be empty")
 	}
@@ -374,10 +447,11 @@ func queue(client *playClient, base *url.URL, name, deviceID, source string, med
 		}
 	}
 	body, err := json.Marshal(struct {
-		Name     string   `json:"name"`
-		DeviceID string   `json:"device_id,omitempty"`
-		MediaIDs []string `json:"media_ids"`
-	}{Name: name, DeviceID: deviceID, MediaIDs: mediaIDs})
+		Name           string   `json:"name"`
+		DeviceID       string   `json:"device_id,omitempty"`
+		ArtworkMediaID string   `json:"artwork_media_id,omitempty"`
+		MediaIDs       []string `json:"media_ids"`
+	}{Name: name, DeviceID: deviceID, ArtworkMediaID: artworkMediaID, MediaIDs: mediaIDs})
 	if err != nil {
 		return err
 	}

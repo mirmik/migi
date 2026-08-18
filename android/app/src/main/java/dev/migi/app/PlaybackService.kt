@@ -94,6 +94,9 @@ class PlaybackService : MediaSessionService() {
 					}
 					require(queue.eventID == eventID) { "Playback queue changed before it could start" }
 					activeQueue = queue
+					val artworkUri = queue.artwork
+						?.let { PlaybackMediaCache(application).cached(it) }
+						?.let(Uri::fromFile)
 					val items = queue.items.map { track ->
 						MediaItem.Builder()
 							.setMediaId(track.id)
@@ -110,6 +113,7 @@ class PlaybackService : MediaSessionService() {
 									.setTitle(track.title)
 									.setArtist(track.artist.ifBlank { null })
 									.setAlbumTitle(queue.name)
+									.setArtworkUri(artworkUri)
 									.build(),
 							)
 							.build()

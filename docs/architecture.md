@@ -116,30 +116,34 @@ agent wake-up are a separate future protocol layer.
 ### Agent playback media
 
 Music is not stored in the shared inbox and media uploads do not append
-`file.available` events. Authenticated agents upload `audio/*` objects to a
-separate random-ID media store with independent per-object, aggregate and TTL
-limits. Bodies are staged, hashed and atomically committed just like other
-untrusted uploads, but remain invisible to the Files tab.
+`file.available` events. Authenticated agents upload `audio/*` objects and
+optional JPEG, PNG, or WebP playlist artwork to a separate random-ID media
+store with independent per-object, aggregate and TTL limits. Bodies are staged,
+hashed and atomically committed just like other untrusted uploads, but remain
+invisible to the Files tab.
 
 An agent commits a complete ordered queue through `/v1/playback/queue`. The
-server resolves every media ID, copies authoritative size, MIME type and digest
-metadata into a bounded versioned manifest, and publishes one
-`media.queue.set` event. The event ID is the queue revision. A queue may target
-one active device or every paired phone. Raw agent events cannot use the
+server resolves every track and optional artwork ID, copies authoritative size,
+MIME type and digest metadata into a bounded versioned manifest, and publishes
+one `media.queue.set` event. The event ID is the queue revision. A queue may
+target one active device or every paired phone. Raw agent events cannot use the
 reserved queue kind, so they cannot bypass media lookup and manifest checks.
 
 Android validates and synchronously persists a targeted manifest before
-acknowledging its event. Playback is deliberately user-initiated. After the
-user taps Play, Android downloads each object through the pinned HTTP/3 client,
+acknowledging its event. It may download verified artwork for display without
+starting audio. Playback remains deliberately user-initiated. After the user
+taps Play, Android downloads each track through the pinned HTTP/3 client,
 verifies both its exact length and SHA-256 digest, atomically commits it to a
 private content-addressed cache, and starts a separate Media3
 `MediaSessionService`. Replayed or older queue events cannot restart playback.
 
 ### Minimal Android surface
 
-The UI continues to use platform Views rather than Compose. Media3 is included
-for ExoPlayer, media-session integration and system playback controls; it does
-not require replacing the existing small tabbed UI toolkit.
+The UI uses platform Views with Material components rather than Compose. A
+dark card-based shell, bottom navigation and a persistent mini-player keep the
+small application direct while giving playback a clear visual hierarchy.
+Media3 remains responsible for ExoPlayer, media-session integration and system
+playback controls.
 
 The connection foreground service type is `remoteMessaging`; the independent
 Media3 service uses `mediaPlayback`. Event notifications use separate Android

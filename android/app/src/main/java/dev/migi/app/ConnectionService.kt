@@ -217,7 +217,12 @@ class ConnectionService : Service() {
 		val notification = Notification.Builder(this, EVENT_CHANNEL)
 			.setSmallIcon(android.R.drawable.ic_media_play)
 			.setContentTitle(getString(R.string.playback_queue_ready, queue.name))
-			.setContentText(getString(R.string.playback_queue_summary, queue.items.size, queue.agent))
+			.setContentText(resources.getQuantityString(
+				R.plurals.playback_queue_summary,
+				queue.items.size,
+				queue.items.size,
+				queue.agent,
+			))
 			.setAutoCancel(true)
 			.setContentIntent(mainActivityIntent(MainActivity.TAB_MUSIC))
 			.build()

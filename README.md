@@ -52,11 +52,12 @@ Codex agents can install the repository-owned `migi-file-exchange`,
 `./scripts/install-migi-file-exchange-skill`.
 
 Agent-curated audio is deliberately kept out of that inbox. A separate private
-media store accepts silent audio uploads and publishes only a completed
-`media.queue.set` event. Android persists the newest targeted queue, downloads
-each track over the pinned HTTP/3 connection, verifies its size and SHA-256
-digest, and starts a Media3 session only after the user taps Play. The
-`migi-play` command uploads tracks, lists media, and queues playlists.
+media store accepts silent audio and optional playlist-artwork uploads, then
+publishes only a completed `media.queue.set` event. Android persists the newest
+targeted queue, verifies artwork before displaying it, downloads each track
+over the pinned HTTP/3 connection, verifies its size and SHA-256 digest, and
+starts a Media3 session only after the user taps Play. The `migi-play` command
+uploads tracks and covers, lists media, and queues playlists.
 The `migi-audio-player` skill adds safe helpers for ordered album directories
 and teaches agents to use this transport instead of the shared file inbox.
 

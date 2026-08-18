@@ -21,14 +21,40 @@ internal class PlaybackMediaCache(private val context: Context) {
 
 	/** Materializes and verifies one track when Media3 first asks for it. */
 	@Synchronized
-	fun prepare(track: PlaybackTrack): File {
-		val destination = destination(track)
-		if (destination.isFile && destination.length() == track.size && sha256(destination) == track.sha256) {
+	fun prepare(track: PlaybackTrack): File = prepareAsset(
+		track.id,
+		track.mime,
+		track.size,
+		track.sha256,
+		"track",
+	)
+
+	/** Downloads playlist artwork through the same pinned and verified media path. */
+	@Synchronized
+	fun prepare(artwork: PlaybackArtwork): File = prepareAsset(
+		artwork.id,
+		artwork.mime,
+		artwork.size,
+		artwork.sha256,
+		"artwork",
+	)
+
+	@Synchronized
+	fun cached(artwork: PlaybackArtwork): File? {
+		val destination = destination(artwork.sha256, artwork.mime)
+		return destination.takeIf {
+			it.isFile && it.length() == artwork.size && sha256(it) == artwork.sha256
+		}
+	}
+
+	private fun prepareAsset(id: String, mime: String, size: Long, digest: String, label: String): File {
+		val destination = destination(digest, mime)
+		if (destination.isFile && destination.length() == size && sha256(destination) == digest) {
 			destination.setLastModified(System.currentTimeMillis())
 			return destination
 		}
 		if (destination.exists() && !destination.delete()) {
-			error("Cannot replace invalid cached track")
+			error("Cannot replace invalid cached $label")
 		}
 		val config = config()
 		val temporary = File.createTempFile("media-", ".tmp", directory)
@@ -41,18 +67,18 @@ internal class PlaybackMediaCache(private val context: Context) {
 					config.endpoint,
 					config.pin,
 					config.credential,
-					track.id,
+					id,
 					descriptor.fd,
-					track.size,
+					size,
 				)
 				check(!response.startsWith("MIGI_ERROR:")) { response.removePrefix("MIGI_ERROR:") }
 				val verified = JSONObject(response)
-				require(verified.getLong("bytes") == track.size) { "Downloaded track size differs from queue" }
-				require(verified.getString("sha256").equals(track.sha256, ignoreCase = true)) {
-					"Downloaded track digest differs from queue"
-				}
+					require(verified.getLong("bytes") == size) { "Downloaded $label size differs from queue" }
+					require(verified.getString("sha256").equals(digest, ignoreCase = true)) {
+						"Downloaded $label digest differs from queue"
+					}
 			}
-			require(temporary.length() == track.size) { "Downloaded track size differs from queue" }
+			require(temporary.length() == size) { "Downloaded $label size differs from queue" }
 			try {
 				Files.move(
 					temporary.toPath(),
@@ -75,8 +101,8 @@ internal class PlaybackMediaCache(private val context: Context) {
 		}
 	}
 
-	private fun destination(track: PlaybackTrack): File =
-		File(directory, cacheKey(track))
+	private fun destination(digest: String, mime: String): File =
+		File(directory, digest + extensionFor(mime))
 
 	private fun trim(protected: File) {
 		val files = directory.listFiles()
@@ -89,8 +115,6 @@ internal class PlaybackMediaCache(private val context: Context) {
 			if (file.delete()) total -= bytes
 		}
 	}
-
-	private fun cacheKey(track: PlaybackTrack): String = track.sha256 + extensionFor(track.mime)
 
 	private fun config(): Config {
 		val endpoint = preferences.getString(MainActivity.KEY_ENDPOINT, null)
@@ -125,6 +149,9 @@ internal class PlaybackMediaCache(private val context: Context) {
 		"audio/flac" -> ".flac"
 		"audio/mp4", "audio/aac", "audio/x-m4a" -> ".m4a"
 		"audio/wav", "audio/x-wav" -> ".wav"
+		"image/jpeg" -> ".jpg"
+		"image/png" -> ".png"
+		"image/webp" -> ".webp"
 		else -> ".audio"
 	}
 

@@ -1,10 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#3949AB</item>
-        <item name="android:navigationBarColor">#FAFAFA</item>
-        <item name="android:statusBarColor">#FAFAFA</item>
-        <item name="android:windowLightStatusBar">true</item>
+    <style name="AppTheme" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/migi_background</item>
+        <item name="android:windowBackground">@color/migi_background</item>
+        <item name="colorPrimary">@color/migi_primary</item>
+        <item name="colorOnPrimary">@color/migi_on_primary</item>
+        <item name="colorSecondary">@color/migi_secondary</item>
+        <item name="colorOnSecondary">@color/migi_on_primary</item>
+        <item name="colorSurface">@color/migi_surface</item>
+        <item name="colorSurfaceVariant">@color/migi_surface_high</item>
+        <item name="colorOnSurface">@color/migi_text</item>
+        <item name="colorOnSurfaceVariant">@color/migi_text_muted</item>
+        <item name="colorOutline">@color/migi_outline</item>
+        <item name="colorError">@color/migi_danger</item>
+        <item name="android:colorAccent">@color/migi_primary</item>
     </style>
 </resources>

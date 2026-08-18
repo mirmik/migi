@@ -73,12 +73,13 @@ inbox and uploading them emits no event. `migi-play` discovers the same config
 file and applies the same certificate pin before sending the bearer token:
 
 ```bash
-migi-play -name "Quiet morning" -device phone-1 \
+migi-play -name "Quiet morning" -device phone-1 -cover ./cover.jpg \
   play ./one.opus ./two.mp3
 ```
 
-Only the final validated queue emits `media.queue.set`. The phone persists it
-but requires a user tap before downloading or starting audio.
+Only the final validated queue emits `media.queue.set`. JPEG, PNG, and WebP
+covers use the same silent private media upload and are verified before display.
+The phone persists the queue but requires a user tap before starting audio.
 
 ## Codex notifications and lifecycle hooks
 

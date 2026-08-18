@@ -224,8 +224,8 @@ it to another application.
 
 Playback media is a separate private store, not part of the shared-file inbox.
 Remote agents authenticate with their normal agent bearer token; local agents
-use the trusted loopback listener. Uploading a track is silent and does not
-append an event:
+use the trusted loopback listener. Uploading a track or playlist cover is
+silent and does not append an event:
 
 ```http
 POST /v1/media
@@ -237,10 +237,11 @@ X-Migi-Title: Quiet Morning
 X-Migi-Artist: Example Artist
 ```
 
-Only `audio/*` media types are accepted. The title defaults to the filename
-without its extension and the artist is optional. The response is a media
-object containing a random 32-digit ID, exact size, SHA-256 digest, source and
-expiry. Agent callers may list or resolve media through:
+Tracks accept `audio/*`. Optional artwork accepts `image/jpeg`, `image/png`, or
+`image/webp` and is limited to 8 MiB. The title defaults to the filename without
+its extension and the artist is optional. Every upload returns a media object
+containing a random 32-digit ID, exact size, SHA-256 digest, source and expiry.
+Agent callers may list or resolve media through:
 
 ```http
 GET /v1/media
@@ -263,6 +264,7 @@ Content-Type: application/json
 {
   "name": "Quiet morning",
   "device_id": "phone-1",
+  "artwork_media_id": "453b429992934f589f9bc4188a9e879d",
   "media_ids": [
     "ed18f00dc8d94b33b43ff0cf5e87f1d0",
     "26803dccab744790acc654a30eaf0105"
@@ -270,10 +272,12 @@ Content-Type: application/json
 }
 ```
 
-`device_id` is optional; when absent, every paired phone may accept the queue.
-A named target must be an active paired device. A queue contains 1–32 entries,
-its declared track bytes total at most 1 GiB, and its resolved manifest must fit
-the ordinary 8 KiB event-body bound. Duplicate media IDs are allowed.
+`device_id` and `artwork_media_id` are optional. When `device_id` is absent,
+every paired phone may accept the queue. A named target must be an active paired
+device. Artwork must reference a supported image object. A queue contains 1–32
+audio entries, its declared track bytes total at most 1 GiB, and its resolved
+manifest must fit the ordinary 8 KiB event-body bound. Duplicate track IDs are
+allowed.
 
 The server resolves every object and publishes one `media.queue.set` event.
 Its body is a server-generated manifest; callers cannot submit this reserved
@@ -284,6 +288,12 @@ kind through `/v1/events` or `/v1/agent-events`:
   "version": 1,
   "name": "Quiet morning",
   "device_id": "phone-1",
+  "artwork": {
+    "id": "453b429992934f589f9bc4188a9e879d",
+    "mime": "image/jpeg",
+    "size": 524288,
+    "sha256": "abcdef0123456789..."
+  },
   "items": [
     {
       "id": "ed18f00dc8d94b33b43ff0cf5e87f1d0",
@@ -297,7 +307,9 @@ kind through `/v1/events` or `/v1/agent-events`:
 }
 ```
 
-The journal event ID is the queue revision. Android durably stores only newer
-targeted queues before acknowledging them. Applying a queue never starts audio
-by itself: the user opens the Music tab and explicitly asks Migi to download,
-verify and play it.
+The journal event ID is the queue revision. The optional `artwork` member was
+added without changing manifest version 1, so older clients ignore it and
+queues without covers remain valid. Android durably stores only newer targeted
+queues before acknowledging them. It may download and verify artwork for the
+UI, but applying a queue never starts audio by itself: the user opens the Music
+tab and explicitly asks Migi to download, verify and play it.

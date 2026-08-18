@@ -44,10 +44,27 @@ func TestMediaUploadIsSilentAndQueuePublishesOneEvent(t *testing.T) {
 		t.Fatalf("silent media upload published %d events", stats.EventCount)
 	}
 
+	artworkUpload := httptest.NewRequest(http.MethodPost, "/v1/media", strings.NewReader("jpeg artwork"))
+	artworkUpload.Header.Set("Content-Type", "image/jpeg")
+	artworkUpload.Header.Set("X-Migi-Filename", "cover.jpg")
+	artworkUpload.Header.Set("X-Migi-Source", "playlist-agent")
+	artworkResponse := httptest.NewRecorder()
+	handler.ServeHTTP(artworkResponse, artworkUpload)
+	if artworkResponse.Code != http.StatusCreated {
+		t.Fatalf("artwork upload returned %d: %s", artworkResponse.Code, artworkResponse.Body.String())
+	}
+	var artwork mediaObject
+	if err := json.NewDecoder(artworkResponse.Body).Decode(&artwork); err != nil {
+		t.Fatal(err)
+	}
+	if artwork.MIME != "image/jpeg" || artwork.Name != "cover.jpg" {
+		t.Fatalf("artwork object = %#v", artwork)
+	}
+
 	queue := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/playback/queue",
-		strings.NewReader(`{"name":"Quiet morning","media_ids":["`+object.ID+`"]}`),
+		strings.NewReader(`{"name":"Quiet morning","artwork_media_id":"`+artwork.ID+`","media_ids":["`+object.ID+`"]}`),
 	)
 	queue.Header.Set("Content-Type", "application/json")
 	queue.Header.Set("X-Migi-Source", "playlist-agent")
@@ -70,6 +87,10 @@ func TestMediaUploadIsSilentAndQueuePublishesOneEvent(t *testing.T) {
 	if manifest.Version != 1 || manifest.Name != "Quiet morning" || len(manifest.Items) != 1 {
 		t.Fatalf("queue manifest = %#v", manifest)
 	}
+	if manifest.Artwork == nil || manifest.Artwork.ID != artwork.ID ||
+		manifest.Artwork.MIME != artwork.MIME || manifest.Artwork.SHA256 != artwork.SHA256 {
+		t.Fatalf("queue artwork = %#v, media = %#v", manifest.Artwork, artwork)
+	}
 	item := manifest.Items[0]
 	if item.ID != object.ID || item.SHA256 != object.SHA256 || item.Size != object.Size ||
 		item.Title != object.Title || item.Artist != object.Artist {
@@ -77,7 +98,7 @@ func TestMediaUploadIsSilentAndQueuePublishesOneEvent(t *testing.T) {
 	}
 }
 
-func TestMediaRejectsNonAudioWithoutPublishingEvent(t *testing.T) {
+func TestMediaRejectsUnsupportedTypeWithoutPublishingEvent(t *testing.T) {
 	broker := newTestBroker(t)
 	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)
 	if err != nil {
@@ -95,6 +116,46 @@ func TestMediaRejectsNonAudioWithoutPublishingEvent(t *testing.T) {
 	objects, err := store.list(time.Now().UTC())
 	if err != nil || len(objects) != 0 {
 		t.Fatalf("objects after rejected upload = %#v, %v", objects, err)
+	}
+}
+
+func TestPlaybackQueueKeepsArtworkAndTracksInTheirOwnRoles(t *testing.T) {
+	broker := newTestBroker(t)
+	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audio, err := store.store(
+		t.Context(), "track.ogg", "Track", "", "audio/ogg", "agent:test",
+		strings.NewReader("audio"), 5,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artwork, err := store.store(
+		t.Context(), "cover.png", "Cover", "", "image/png", "agent:test",
+		strings.NewReader("image"), 5,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newIngestMuxWithStores(broker, nil, store)
+	postQueue := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/playback/queue", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	imageAsTrack := postQueue(`{"media_ids":["` + artwork.ID + `"]}`)
+	if imageAsTrack.Code != http.StatusBadRequest {
+		t.Fatalf("image track returned %d: %s", imageAsTrack.Code, imageAsTrack.Body.String())
+	}
+	audioAsArtwork := postQueue(
+		`{"artwork_media_id":"` + audio.ID + `","media_ids":["` + audio.ID + `"]}`,
+	)
+	if audioAsArtwork.Code != http.StatusBadRequest {
+		t.Fatalf("audio artwork returned %d: %s", audioAsArtwork.Code, audioAsArtwork.Body.String())
 	}
 }
 

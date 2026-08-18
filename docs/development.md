@@ -249,12 +249,12 @@ before a later failure remain private and expire normally; no partial queue is
 published:
 
 ```bash
-./bin/migi-play -source builder-1 -name "Focus" \
+./bin/migi-play -source builder-1 -name "Focus" -cover ./cover.jpg \
   -device phone-1 play ./one.opus ./two.mp3
 ```
 
 The phone receives one playlist notification. It never autoplays the event:
-open the **Music** tab and tap **Download, verify, and play**. The client uses
+open the **Music** tab and tap **Start playlist**. The client uses
 the same remote agent-config discovery, bearer authentication and exact TLS
 certificate pinning as `migi-file` when it is not pointed explicitly at the
 trusted loopback endpoint.

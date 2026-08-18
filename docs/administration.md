@@ -37,8 +37,8 @@ stored MIME type, exact length and SHA-256 header. Access inherits the panel's
 configured administration-listener security boundary.
 
 Playback media is intentionally absent from **Shared files**. Agents manage the
-separate media store with `migi-play`; silent track uploads do not create inbox
-rows or `file.available` events.
+separate media store with `migi-play`; silent track and artwork uploads do not
+create inbox rows or `file.available` events.
 
 ## Start it
 
@@ -74,7 +74,7 @@ Open `http://127.0.0.1:8788/admin/`. The relevant network values are independent
 | `-file-total-bytes` | bytes | Aggregate shared-file limit (default 1 GiB) |
 | `-file-ttl` | duration | Retention from upload time (default 7 days) |
 | `-media-dir` | filesystem | Private playback-media storage and staging directory |
-| `-media-max-bytes` | bytes | Maximum accepted audio object (default 256 MiB) |
+| `-media-max-bytes` | bytes | Maximum accepted media object (default 256 MiB; artwork has an additional 8 MiB limit) |
 | `-media-total-bytes` | bytes | Aggregate playback-media limit (default 4 GiB) |
 | `-media-ttl` | duration | Playback-media retention from upload time (default 30 days) |
 

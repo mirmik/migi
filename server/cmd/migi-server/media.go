@@ -34,6 +34,7 @@ const (
 	maxMediaTextRunes      = 256
 	maxPlaybackQueueItems  = 32
 	maxPlaybackQueueBytes  = int64(1 << 30)
+	maxPlaybackArtwork     = int64(8 << 20)
 	maxPlaybackManifest    = 8 << 10
 	playbackQueueEventKind = "media.queue.set"
 )
@@ -65,11 +66,19 @@ type playbackMediaReference struct {
 	SHA256 string `json:"sha256"`
 }
 
+type playbackArtworkReference struct {
+	ID     string `json:"id"`
+	MIME   string `json:"mime"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
 type playbackQueueManifest struct {
-	Version  int                      `json:"version"`
-	Name     string                   `json:"name"`
-	DeviceID string                   `json:"device_id,omitempty"`
-	Items    []playbackMediaReference `json:"items"`
+	Version  int                       `json:"version"`
+	Name     string                    `json:"name"`
+	DeviceID string                    `json:"device_id,omitempty"`
+	Artwork  *playbackArtworkReference `json:"artwork,omitempty"`
+	Items    []playbackMediaReference  `json:"items"`
 }
 
 type mediaStore struct {
@@ -193,8 +202,8 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 			return
 		}
 		contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || !isAudioMIME(contentType) {
-			http.Error(w, "Content-Type must be audio/*", http.StatusUnsupportedMediaType)
+		if err != nil || !isPlaybackMediaMIME(contentType) {
+			http.Error(w, "Content-Type must be audio/*, image/jpeg, image/png, or image/webp", http.StatusUnsupportedMediaType)
 			return
 		}
 		title, err := normalizeMediaText(r.Header.Get("X-Migi-Title"), false)
@@ -219,6 +228,10 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 		}
 		if r.ContentLength > s.maxBytes {
 			http.Error(w, "media exceeds configured size", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if isArtworkMIME(contentType) && r.ContentLength > maxPlaybackArtwork {
+			http.Error(w, "artwork exceeds the 8 MiB size limit", http.StatusRequestEntityTooLarge)
 			return
 		}
 		object, err := s.store(
@@ -247,9 +260,10 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 
 func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Handler {
 	type requestBody struct {
-		Name     string   `json:"name"`
-		DeviceID string   `json:"device_id,omitempty"`
-		MediaIDs []string `json:"media_ids"`
+		Name           string   `json:"name"`
+		DeviceID       string   `json:"device_id,omitempty"`
+		ArtworkMediaID string   `json:"artwork_media_id,omitempty"`
+		MediaIDs       []string `json:"media_ids"`
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -297,6 +311,24 @@ func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Han
 			Version: 1, Name: request.Name, DeviceID: request.DeviceID,
 			Items: make([]playbackMediaReference, 0, len(request.MediaIDs)),
 		}
+		if request.ArtworkMediaID != "" {
+			object, err := s.get(request.ArtworkMediaID, time.Now().UTC())
+			if errors.Is(err, os.ErrNotExist) {
+				http.Error(w, "queue references missing or expired artwork", http.StatusNotFound)
+				return
+			}
+			if err != nil {
+				http.Error(w, "failed to resolve queue artwork", http.StatusInternalServerError)
+				return
+			}
+			if !isArtworkMIME(object.MIME) || object.Size > maxPlaybackArtwork {
+				http.Error(w, "artwork_media_id must reference a supported image", http.StatusBadRequest)
+				return
+			}
+			manifest.Artwork = &playbackArtworkReference{
+				ID: object.ID, MIME: object.MIME, Size: object.Size, SHA256: object.SHA256,
+			}
+		}
 		var totalBytes int64
 		for _, id := range request.MediaIDs {
 			object, err := s.get(id, time.Now().UTC())
@@ -306,6 +338,10 @@ func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Han
 			}
 			if err != nil {
 				http.Error(w, "failed to resolve queue media", http.StatusInternalServerError)
+				return
+			}
+			if !isAudioMIME(object.MIME) {
+				http.Error(w, "queue tracks must reference audio media", http.StatusBadRequest)
 				return
 			}
 			totalBytes += object.Size
@@ -545,7 +581,7 @@ func (s *mediaStore) readMetadataLocked(id string) (mediaObject, error) {
 		return mediaObject{}, fmt.Errorf("decode media metadata for %s: %w", id, err)
 	}
 	if object.ID != id || object.Size <= 0 || object.Name == "" || object.Title == "" ||
-		!isAudioMIME(object.MIME) || !mediaSHA256Pattern.MatchString(object.SHA256) {
+		!isPlaybackMediaMIME(object.MIME) || !mediaSHA256Pattern.MatchString(object.SHA256) {
 		return mediaObject{}, fmt.Errorf("invalid media metadata for %s", id)
 	}
 	info, err := os.Stat(s.blobPath(id))
@@ -593,6 +629,19 @@ func validMediaText(value string, maxRunes int) bool {
 
 func isAudioMIME(value string) bool {
 	return strings.HasPrefix(strings.ToLower(value), "audio/") && len(value) <= 127
+}
+
+func isArtworkMIME(value string) bool {
+	switch strings.ToLower(value) {
+	case "image/jpeg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPlaybackMediaMIME(value string) bool {
+	return isAudioMIME(value) || isArtworkMIME(value)
 }
 
 func normalizeMediaAgent(raw string) string {

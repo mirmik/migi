@@ -4,9 +4,11 @@ set -euo pipefail
 migi_name=
 migi_device=
 migi_source=codex
+migi_cover=
+migi_cover_mode=auto
 
 usage() {
-	echo "usage: migi-album [--name NAME] [--device DEVICE_ID] [--source AGENT] DIRECTORY" >&2
+	echo "usage: migi-album [--name NAME] [--device DEVICE_ID] [--source AGENT] [--cover IMAGE|--no-cover] DIRECTORY" >&2
 }
 
 while (($# > 0)); do
@@ -25,6 +27,16 @@ while (($# > 0)); do
 			(($# >= 2)) || { usage; exit 2; }
 			migi_source=$2
 			shift 2
+			;;
+		--cover)
+			(($# >= 2)) || { usage; exit 2; }
+			migi_cover=$2
+			migi_cover_mode=explicit
+			shift 2
+			;;
+		--no-cover)
+			migi_cover_mode=none
+			shift
 			;;
 		--)
 			shift
@@ -53,11 +65,28 @@ mapfile -d '' migi_tracks < <(
 ((${#migi_tracks[@]} > 0)) || { echo "migi-album: no supported audio files found" >&2; exit 1; }
 ((${#migi_tracks[@]} <= 32)) || { echo "migi-album: album has more than 32 tracks" >&2; exit 1; }
 
+if [[ "$migi_cover_mode" == explicit ]]; then
+	[[ -f "$migi_cover" ]] || { echo "migi-album: cover is not a file: $migi_cover" >&2; exit 1; }
+elif [[ "$migi_cover_mode" == auto ]]; then
+	for migi_stem in cover folder front; do
+		mapfile -d '' migi_covers < <(
+			find "$migi_directory" -maxdepth 1 -type f \
+				\( -iname "$migi_stem.jpg" -o -iname "$migi_stem.jpeg" -o -iname "$migi_stem.png" \
+				-o -iname "$migi_stem.webp" \) -print0 | sort -z
+		)
+		if ((${#migi_covers[@]} > 0)); then
+			migi_cover=${migi_covers[0]}
+			break
+		fi
+	done
+fi
+
 migi_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 migi_arguments=(-name "$migi_name" -source "$migi_source")
 [[ -z "$migi_device" ]] || migi_arguments+=(-device "$migi_device")
+[[ -z "$migi_cover" ]] || migi_arguments+=(-cover "$migi_cover")
 
 printf 'Queueing %d tracks as %s\n' "${#migi_tracks[@]}" "$migi_name" >&2
+[[ -z "$migi_cover" ]] || printf '  artwork: %s\n' "$migi_cover" >&2
 printf '  %s\n' "${migi_tracks[@]}" >&2
 exec "$migi_script_dir/migi-play" "${migi_arguments[@]}" play "${migi_tracks[@]}"
-

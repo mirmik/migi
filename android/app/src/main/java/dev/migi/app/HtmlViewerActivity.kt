@@ -3,18 +3,22 @@ package dev.migi.app
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.google.android.material.button.MaterialButton
 import java.io.ByteArrayInputStream
 import java.io.File
 
@@ -81,13 +85,15 @@ class HtmlViewerActivity : Activity() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
-            addView(Button(this@HtmlViewerActivity).apply {
-                text = "×"
-                textSize = 24f
-                minWidth = 0
-                minHeight = 0
-                setPadding(0, 0, 0, 0)
-                alpha = 0.72f
+            addView(ImageButton(this@HtmlViewerActivity).apply {
+                setImageResource(R.drawable.ic_close)
+                imageTintList = ColorStateList.valueOf(MigiPalette.text)
+                scaleType = ImageView.ScaleType.CENTER
+                minimumWidth = 0
+                minimumHeight = 0
+                setPadding(dp(13), dp(13), dp(13), dp(13))
+                background = rippleDrawable(this@HtmlViewerActivity, 0xDD192231.toInt(), 24)
+                elevation = dp(4).toFloat()
                 contentDescription = getString(R.string.close_html_viewer)
                 setOnClickListener { finish() }
             }, FrameLayout.LayoutParams(closeSize, closeSize, Gravity.TOP or Gravity.END).apply {
@@ -109,14 +115,20 @@ class HtmlViewerActivity : Activity() {
     private fun showError(message: String) {
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(MigiPalette.background)
             val padding = (20 * resources.displayMetrics.density).toInt()
             setPadding(padding, padding, padding, padding)
             addView(TextView(this@HtmlViewerActivity).apply {
                 text = getString(R.string.html_viewer_failed, message)
-                textSize = 18f
+                applyMigiText(19f)
             }, matchWidth())
-            addView(Button(this@HtmlViewerActivity).apply {
+            addView(View(this@HtmlViewerActivity), LinearLayout.LayoutParams(1, dp(18)))
+            addView(MaterialButton(this@HtmlViewerActivity).apply {
                 setText(R.string.close_html_viewer)
+                isAllCaps = false
+                backgroundTintList = ColorStateList.valueOf(MigiPalette.primary)
+                setTextColor(MigiPalette.onPrimary)
+                cornerRadius = dp(16)
                 setOnClickListener { finish() }
             }, matchWidth())
         })

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="migi_background">#090D15</color>
+    <color name="migi_surface">#111722</color>
+    <color name="migi_surface_high">#192231</color>
+    <color name="migi_primary">#829BFF</color>
+    <color name="migi_on_primary">#07102F</color>
+    <color name="migi_secondary">#6CE5A3</color>
+    <color name="migi_text">#F2F5FC</color>
+    <color name="migi_text_muted">#98A5BA</color>
+    <color name="migi_outline">#2A3548</color>
+    <color name="migi_danger">#FF8F9C</color>
+</resources>

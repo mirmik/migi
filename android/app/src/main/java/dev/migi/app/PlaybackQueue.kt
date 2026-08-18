@@ -12,12 +12,20 @@ data class PlaybackTrack(
 	val sha256: String,
 )
 
+data class PlaybackArtwork(
+	val id: String,
+	val mime: String,
+	val size: Long,
+	val sha256: String,
+)
+
 data class PlaybackQueue(
 	val eventID: Long,
 	val name: String,
 	val agent: String,
 	val deviceID: String,
 	val items: List<PlaybackTrack>,
+	val artwork: PlaybackArtwork? = null,
 )
 
 internal object PlaybackQueueCodec {
@@ -38,6 +46,7 @@ internal object PlaybackQueueCodec {
 			agent = event.agent.ifBlank { "agent" },
 			deviceID = deviceID,
 			items = items,
+			artwork = manifest.optJSONObject("artwork")?.let(::parseArtwork),
 		))
 	}
 
@@ -57,6 +66,12 @@ internal object PlaybackQueueCodec {
 			totalBytes = Math.addExact(totalBytes, track.size)
 			require(totalBytes <= MAX_QUEUE_BYTES) { "Playback queue is too large" }
 		}
+		queue.artwork?.let { artwork ->
+			require(MEDIA_ID.matches(artwork.id)) { "Artwork media ID is invalid" }
+			require(artwork.mime in ARTWORK_MIME_TYPES) { "Artwork MIME type is invalid" }
+			require(artwork.size in 1..MAX_ARTWORK_BYTES) { "Artwork size is invalid" }
+			require(SHA256.matches(artwork.sha256)) { "Artwork digest is invalid" }
+		}
 		return queue
 	}
 
@@ -70,6 +85,13 @@ internal object PlaybackQueueCodec {
 		return PlaybackTrack(id, title, artist, mime, size, sha256)
 	}
 
+	private fun parseArtwork(json: JSONObject): PlaybackArtwork = PlaybackArtwork(
+		id = json.getString("id"),
+		mime = json.getString("mime").lowercase(),
+		size = json.getLong("size"),
+		sha256 = json.getString("sha256").lowercase(),
+	)
+
 	private fun validText(value: String, maxLength: Int): Boolean =
 		value.isNotBlank() && value == value.trim() && value.length <= maxLength && value.none(Char::isISOControl)
 
@@ -78,11 +100,13 @@ internal object PlaybackQueueCodec {
 	const val MAX_ITEMS = 32
 	const val MAX_TRACK_BYTES = 256L * 1024 * 1024
 	const val MAX_QUEUE_BYTES = 1024L * 1024 * 1024
+	const val MAX_ARTWORK_BYTES = 8L * 1024 * 1024
 	private const val MAX_QUEUE_NAME_LENGTH = 128
 	private const val MAX_TRACK_TEXT_LENGTH = 256
 	private val MEDIA_ID = Regex("^[a-f0-9]{32}$")
 	private val SHA256 = Regex("^[a-f0-9]{64}$")
 	private val DEVICE_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+	private val ARTWORK_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp")
 }
 
 internal class PlaybackQueueRepository(private val context: Context) {

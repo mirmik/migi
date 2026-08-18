@@ -18,6 +18,7 @@ import (
 func TestQueuePostsAuthenticatedManifest(t *testing.T) {
 	const first = "0123456789abcdef0123456789abcdef"
 	const second = "fedcba9876543210fedcba9876543210"
+	const artwork = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/playback/queue" {
 			http.NotFound(w, r)
@@ -29,14 +30,15 @@ func TestQueuePostsAuthenticatedManifest(t *testing.T) {
 			t.Errorf("request headers = %#v", r.Header)
 		}
 		var body struct {
-			Name     string   `json:"name"`
-			DeviceID string   `json:"device_id"`
-			MediaIDs []string `json:"media_ids"`
+			Name           string   `json:"name"`
+			DeviceID       string   `json:"device_id"`
+			ArtworkMediaID string   `json:"artwork_media_id"`
+			MediaIDs       []string `json:"media_ids"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body.Name != "Focus" || body.DeviceID != "phone-1" ||
+		if body.Name != "Focus" || body.DeviceID != "phone-1" || body.ArtworkMediaID != artwork ||
 			len(body.MediaIDs) != 2 || body.MediaIDs[0] != first || body.MediaIDs[1] != second {
 			t.Errorf("queue body = %#v", body)
 		}
@@ -47,7 +49,7 @@ func TestQueuePostsAuthenticatedManifest(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	client := &playClient{http: server.Client(), token: "agent-token"}
-	if err := queue(client, base, "Focus", "phone-1", "codex", []string{first, second}); err != nil {
+	if err := queue(client, base, "Focus", "phone-1", "codex", artwork, []string{first, second}); err != nil {
 		t.Fatal(err)
 	}
 }
