@@ -16,3 +16,4 @@ server/dev-certs/
 *.db-shm
 *.db-wal
 .codex/
+__pycache__
