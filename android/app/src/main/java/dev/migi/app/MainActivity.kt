@@ -909,15 +909,24 @@ class MainActivity : Activity() {
     }
 
     private fun loadPlaylistArtwork(queue: PlaybackQueue) {
-        val artwork = queue.artwork ?: run {
-            loadedArtworkKey = null
-            artworkRefreshGeneration.incrementAndGet()
-            return
+        val artwork = queue.artwork
+        when (PlaybackArtworkRefreshPolicy.action(loadedArtworkKey, artwork)) {
+            PlaybackArtworkRefreshAction.KEEP -> return
+            PlaybackArtworkRefreshAction.CLEAR -> {
+                loadedArtworkKey = null
+                artworkRefreshGeneration.incrementAndGet()
+                playbackArtwork.showFallback(queue.name)
+                miniArtwork.showFallback(queue.name)
+                return
+            }
+            PlaybackArtworkRefreshAction.LOAD -> Unit
         }
-        val key = "${artwork.id}:${artwork.sha256}"
-        if (loadedArtworkKey == key) return
+        checkNotNull(artwork)
+        val key = PlaybackArtworkRefreshPolicy.key(artwork)
         loadedArtworkKey = key
         val generation = artworkRefreshGeneration.incrementAndGet()
+        playbackArtwork.showFallback(queue.name)
+        miniArtwork.showFallback(queue.name)
         artworkExecutor.execute {
             val result = runCatching {
                 decodeArtwork(PlaybackMediaCache(applicationContext).prepare(artwork))
@@ -1085,8 +1094,6 @@ class MainActivity : Activity() {
         refreshPlaybackStatus(queue)
         playbackButton.isEnabled = true
         val artworkQueue = PlaybackService.activeQueueSnapshot() ?: queue
-        playbackArtwork.showFallback(artworkQueue.name)
-        miniArtwork.showFallback(artworkQueue.name)
         loadPlaylistArtwork(artworkQueue)
         val rows = ArrayList<PlaybackTrackRow>(queue.items.size)
         for ((index, track) in queue.items.withIndex()) {
