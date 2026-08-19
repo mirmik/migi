@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Serve registered Migi media origins over an outbound authenticated connection."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import stat
+import sys
+import time
+from pathlib import Path
+
+from _migi_transport import (
+    MigiClientError,
+    MigiHTTPClient,
+    decode_json,
+    read_bounded,
+    resolve_agent_client,
+    response_error,
+)
+
+
+MAX_REGISTRY_BYTES = 4 << 20
+MEDIA_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+class OriginSourceError(MigiClientError):
+    """The registered source is missing, replaced, or modified."""
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog="migi-origin")
+    result.add_argument("-config", "--config", default=None, help="agent JSON configuration")
+    result.add_argument("--registry", default="", help="media origin registry path")
+    result.add_argument(
+        "--once",
+        action="store_true",
+        help="poll once and exit after serving at most one request",
+    )
+    return result
+
+
+def default_registry_path() -> Path:
+    explicit = os.environ.get("MIGI_ORIGIN_REGISTRY")
+    if explicit:
+        return Path(explicit).expanduser()
+    root = os.environ.get("XDG_STATE_HOME")
+    if root:
+        return Path(root).expanduser() / "migi" / "media-origin.json"
+    return Path("~/.local/state/migi/media-origin.json").expanduser()
+
+
+def read_registry(path: Path) -> dict[str, dict]:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise OriginSourceError(f"open media origin registry: {exc}") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise OriginSourceError(
+                "media origin registry must be a private regular file owned by the current user"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(MAX_REGISTRY_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if len(raw) > MAX_REGISTRY_BYTES:
+        raise OriginSourceError("media origin registry exceeds 4 MiB")
+    try:
+        registry = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OriginSourceError(f"decode media origin registry: {exc}") from exc
+    if (
+        not isinstance(registry, dict)
+        or registry.get("version") != 1
+        or not isinstance(registry.get("entries"), dict)
+    ):
+        raise OriginSourceError("media origin registry has an unsupported format")
+    return registry["entries"]
+
+
+def poll(client: MigiHTTPClient) -> dict | None:
+    with client.open("GET", "/v1/media/origin/requests") as response:
+        body = read_bounded(response)
+        if response.status == 204:
+            return None
+        if response.status != 200:
+            raise response_error(response, body)
+        job = decode_json(body, label="media origin request")
+    if not isinstance(job, dict):
+        raise MigiClientError("media origin request must be a JSON object")
+    request_id = job.get("id")
+    media_id = job.get("media_id")
+    if (
+        not isinstance(request_id, str)
+        or not MEDIA_ID_RE.fullmatch(request_id)
+        or not isinstance(media_id, str)
+        or not MEDIA_ID_RE.fullmatch(media_id)
+        or not isinstance(job.get("size"), int)
+        or job["size"] <= 0
+        or not isinstance(job.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", job["sha256"])
+        or not isinstance(job.get("mime"), str)
+    ):
+        raise MigiClientError("media origin request contains invalid metadata")
+    return job
+
+
+def open_source(entry: dict, job: dict):
+    required = {
+        "path": str,
+        "mime": str,
+        "size": int,
+        "sha256": str,
+        "device": int,
+        "inode": int,
+        "modified_at_unix_nano": int,
+    }
+    if not isinstance(entry, dict) or any(
+        not isinstance(entry.get(key), expected) for key, expected in required.items()
+    ):
+        raise OriginSourceError("media origin registry entry is invalid")
+    if (
+        entry["mime"] != job["mime"]
+        or entry["size"] != job["size"]
+        or entry["sha256"] != job["sha256"]
+    ):
+        raise OriginSourceError("media origin request does not match the local registry")
+    path = Path(entry["path"])
+    try:
+        if path.resolve(strict=True) != path:
+            raise OriginSourceError("media origin path no longer resolves to its registered file")
+        flags = os.O_RDONLY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+    except OriginSourceError:
+        raise
+    except OSError as exc:
+        raise OriginSourceError(f"open media origin source: {exc}") from exc
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_dev != entry["device"]
+        or info.st_ino != entry["inode"]
+        or info.st_size != entry["size"]
+        or info.st_mtime_ns != entry["modified_at_unix_nano"]
+    ):
+        os.close(descriptor)
+        raise OriginSourceError("media origin source changed after registration")
+    return os.fdopen(descriptor, "rb")
+
+
+def upload(client: MigiHTTPClient, job: dict, entry: dict) -> None:
+    with open_source(entry, job) as source:
+        headers = {
+            "Content-Length": str(job["size"]),
+            "Content-Type": job["mime"],
+        }
+        with client.open(
+            "PUT",
+            f"/v1/media/origin/requests/{job['id']}",
+            body=source,
+            headers=headers,
+        ) as response:
+            body = read_bounded(response)
+            if response.status != 204:
+                raise response_error(response, body)
+
+
+def report_failure(client: MigiHTTPClient, request_id: str) -> None:
+    with client.open(
+        "POST",
+        f"/v1/media/origin/requests/{request_id}/fail",
+        body=b"",
+        headers={"Content-Length": "0"},
+    ) as response:
+        body = read_bounded(response)
+        if response.status not in (204, 404):
+            raise response_error(response, body)
+
+
+def serve(client: MigiHTTPClient, registry_path: Path, *, once: bool) -> int:
+    if not client.token:
+        raise MigiClientError("migi-origin requires an authenticated agent configuration")
+    delay = 1.0
+    while True:
+        try:
+            job = poll(client)
+            delay = 1.0
+            if job is not None:
+                try:
+                    entries = read_registry(registry_path)
+                    entry = entries.get(job["media_id"])
+                    if entry is None:
+                        raise OriginSourceError("requested media ID is absent from the origin registry")
+                    upload(client, job, entry)
+                    print(f"streamed {job['media_id']}", flush=True)
+                except OriginSourceError as exc:
+                    report_failure(client, job["id"])
+                    print(f"migi-origin: {exc}", file=sys.stderr, flush=True)
+                    if once:
+                        return 1
+            if once:
+                return 0
+        except MigiClientError as exc:
+            print(f"migi-origin: {exc}", file=sys.stderr, flush=True)
+            if once:
+                return 1
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+
+
+def run(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    client = resolve_agent_client(config=args.config)
+    registry = Path(args.registry).expanduser() if args.registry else default_registry_path()
+    return serve(client, registry, once=args.once)
+
+
+def main() -> int:
+    try:
+        return run()
+    except (KeyboardInterrupt, MigiClientError, OSError, json.JSONDecodeError) as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            return 130
+        print(f"migi-origin: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

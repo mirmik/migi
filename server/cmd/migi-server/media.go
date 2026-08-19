@@ -54,7 +54,21 @@ type mediaObject struct {
 	SHA256    string    `json:"sha256"`
 	Source    string    `json:"source"`
 	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// mediaStoredObject keeps server-private origin information in the sidecar.
+// The embedded mediaObject is the complete public representation; RemoteOrigin
+// is never returned by the metadata or list handlers and never enters a queue
+// event.
+type mediaStoredObject struct {
+	mediaObject
+	RemoteOrigin *mediaRemoteOrigin `json:"remote_origin,omitempty"`
+	Pinned       bool               `json:"pinned,omitempty"`
+}
+
+type mediaRemoteOrigin struct {
+	AgentTokenID string `json:"agent_token_id"`
 }
 
 type playbackMediaReference struct {
@@ -86,9 +100,15 @@ type mediaStore struct {
 	broker     *events.Broker
 	root       string
 	staging    string
+	playlists  string
 	maxBytes   int64
 	totalBytes int64
 	ttl        time.Duration
+	playlistMu sync.Mutex
+
+	originMu      sync.Mutex
+	originByID    map[string]*mediaOriginRequest
+	originChanged chan struct{}
 }
 
 func newMediaStore(
@@ -112,9 +132,18 @@ func newMediaStore(
 	if err := os.MkdirAll(staging, 0o700); err != nil {
 		return nil, fmt.Errorf("create media staging directory: %w", err)
 	}
+	playlists := filepath.Join(absolute, "playlists")
+	if err := os.MkdirAll(playlists, 0o700); err != nil {
+		return nil, fmt.Errorf("create saved playlist directory: %w", err)
+	}
 	store := &mediaStore{
-		broker: broker, root: absolute, staging: staging,
+		broker: broker, root: absolute, staging: staging, playlists: playlists,
 		maxBytes: maxBytes, totalBytes: totalBytes, ttl: ttl,
+		originByID:    make(map[string]*mediaOriginRequest),
+		originChanged: make(chan struct{}),
+	}
+	if err := store.reconcilePlaylistPins(); err != nil {
+		return nil, err
 	}
 	if err := store.reconcile(); err != nil {
 		return nil, err
@@ -134,6 +163,7 @@ func (s *mediaStore) agentRoutes(
 	mux.Handle("GET /v1/media/{mediaID}", wrap(http.HandlerFunc(s.metadataHandler)))
 	mux.Handle("GET /v1/media/{mediaID}/content", wrap(http.HandlerFunc(s.contentHandler)))
 	mux.Handle("POST /v1/playback/queue", wrap(s.queueHandler(agentName)))
+	s.savedPlaylistRoutes(mux, wrap, agentName)
 }
 
 // deviceRoutes deliberately omits listing and upload. A paired phone may fetch
@@ -147,11 +177,36 @@ func (s *mediaStore) deviceRoutes(
 }
 
 func (s *mediaStore) listHandler(w http.ResponseWriter, r *http.Request) {
+	queryValues, exists := r.URL.Query()["q"]
+	if exists && (len(queryValues) != 1 || !validMediaText(strings.TrimSpace(queryValues[0]), 128)) {
+		http.Error(w, "q must be a single search string of at most 128 characters", http.StatusBadRequest)
+		return
+	}
 	objects, err := s.list(time.Now().UTC())
 	if err != nil {
 		slog.Error("failed to list media", "error", err)
 		http.Error(w, "failed to list media", http.StatusInternalServerError)
 		return
+	}
+	if exists {
+		terms := strings.Fields(strings.ToLower(queryValues[0]))
+		filtered := objects[:0]
+		for _, object := range objects {
+			haystack := strings.ToLower(strings.Join([]string{
+				object.Name, object.Title, object.Artist, object.Source,
+			}, "\n"))
+			matches := true
+			for _, term := range terms {
+				if !strings.Contains(haystack, term) {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				filtered = append(filtered, object)
+			}
+		}
+		objects = filtered
 	}
 	writeJSON(w, http.StatusOK, objects)
 }
@@ -170,7 +225,7 @@ func (s *mediaStore) metadataHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *mediaStore) contentHandler(w http.ResponseWriter, r *http.Request) {
-	object, err := s.get(r.PathValue("mediaID"), time.Now().UTC())
+	record, err := s.getRecord(r.PathValue("mediaID"), time.Now().UTC())
 	if errors.Is(err, os.ErrNotExist) {
 		http.Error(w, "media does not exist or has expired", http.StatusNotFound)
 		return
@@ -179,18 +234,27 @@ func (s *mediaStore) contentHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read media metadata", http.StatusInternalServerError)
 		return
 	}
-	content, err := os.Open(s.blobPath(object.ID))
+	if record.RemoteOrigin != nil {
+		s.proxyRemoteMedia(w, r, record)
+		return
+	}
+	content, err := os.Open(s.blobPath(record.ID))
 	if err != nil {
 		http.Error(w, "media content is unavailable", http.StatusInternalServerError)
 		return
 	}
 	defer content.Close()
+	writeMediaContentHeaders(w, record.mediaObject)
+	_, _ = io.Copy(w, content)
+}
+
+func writeMediaContentHeaders(w http.ResponseWriter, object mediaObject) {
 	w.Header().Set("Content-Type", object.MIME)
 	w.Header().Set("Content-Length", fmt.Sprint(object.Size))
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": object.Name}))
 	w.Header().Set("X-Content-SHA256", object.SHA256)
+	w.Header().Set("ETag", `"`+object.SHA256+`"`)
 	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
-	_, _ = io.Copy(w, content)
 }
 
 func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Handler {
@@ -439,22 +503,24 @@ func (s *mediaStore) store(
 		Size: written, SHA256: hex.EncodeToString(hash.Sum(nil)), Source: source,
 		CreatedAt: now, ExpiresAt: now.Add(s.ttl),
 	}
-	metadata, err := json.Marshal(object)
+	metadata, err := json.Marshal(mediaStoredObject{mediaObject: object})
 	if err != nil {
 		return mediaObject{}, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	objects, err := s.listLocked(now, true)
+	records, err := s.listRecordsLocked(now, true)
 	if err != nil {
 		return mediaObject{}, err
 	}
 	var used int64
-	for _, existing := range objects {
-		used += existing.Size
+	for _, existing := range records {
+		if existing.RemoteOrigin == nil {
+			used += existing.Size
+		}
 	}
-	if len(objects) >= maxMediaCount || used+written > s.totalBytes {
+	if len(records) >= maxMediaCount || used+written > s.totalBytes {
 		return mediaObject{}, errMediaStorageFull
 	}
 	if err := os.Rename(stagedPath, s.blobPath(id)); err != nil {
@@ -485,13 +551,15 @@ func (s *mediaStore) reconcile() error {
 			_ = os.Remove(filepath.Join(s.staging, entry.Name()))
 		}
 	}
-	objects, err := s.listLocked(time.Now().UTC(), true)
+	records, err := s.listRecordsLocked(time.Now().UTC(), true)
 	if err != nil {
 		return err
 	}
-	referenced := make(map[string]struct{}, len(objects))
-	for _, object := range objects {
-		referenced[object.ID] = struct{}{}
+	referenced := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if record.RemoteOrigin == nil {
+			referenced[record.ID] = struct{}{}
+		}
 	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
@@ -523,11 +591,23 @@ func (s *mediaStore) list(now time.Time) ([]mediaObject, error) {
 }
 
 func (s *mediaStore) listLocked(now time.Time, purge bool) ([]mediaObject, error) {
+	records, err := s.listRecordsLocked(now, purge)
+	if err != nil {
+		return nil, err
+	}
+	objects := make([]mediaObject, 0, len(records))
+	for _, record := range records {
+		objects = append(objects, record.mediaObject)
+	}
+	return objects, nil
+}
+
+func (s *mediaStore) listRecordsLocked(now time.Time, purge bool) ([]mediaStoredObject, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		return nil, err
 	}
-	objects := make([]mediaObject, 0)
+	records := make([]mediaStoredObject, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -536,59 +616,78 @@ func (s *mediaStore) listLocked(now time.Time, purge bool) ([]mediaObject, error
 		if !mediaIDPattern.MatchString(id) {
 			continue
 		}
-		object, err := s.readMetadataLocked(id)
+		record, err := s.readMetadataLocked(id)
 		if err != nil {
 			return nil, err
 		}
-		if !object.ExpiresAt.After(now) {
+		if mediaRecordExpired(record, now) {
 			if purge {
 				_ = os.Remove(s.metadataPath(id))
 				_ = os.Remove(s.blobPath(id))
 			}
 			continue
 		}
-		objects = append(objects, object)
+		records = append(records, record)
 	}
-	sort.Slice(objects, func(i, j int) bool { return objects[i].CreatedAt.After(objects[j].CreatedAt) })
-	return objects, nil
+	sort.Slice(records, func(i, j int) bool { return records[i].CreatedAt.After(records[j].CreatedAt) })
+	return records, nil
 }
 
 func (s *mediaStore) get(id string, now time.Time) (mediaObject, error) {
-	if !mediaIDPattern.MatchString(id) {
-		return mediaObject{}, os.ErrNotExist
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	object, err := s.readMetadataLocked(id)
+	record, err := s.getRecord(id, now)
 	if err != nil {
 		return mediaObject{}, err
 	}
-	if !object.ExpiresAt.After(now) {
-		_ = os.Remove(s.metadataPath(id))
-		_ = os.Remove(s.blobPath(id))
-		return mediaObject{}, os.ErrNotExist
-	}
-	return object, nil
+	return record.mediaObject, nil
 }
 
-func (s *mediaStore) readMetadataLocked(id string) (mediaObject, error) {
-	var object mediaObject
+func (s *mediaStore) getRecord(id string, now time.Time) (mediaStoredObject, error) {
+	if !mediaIDPattern.MatchString(id) {
+		return mediaStoredObject{}, os.ErrNotExist
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, err := s.readMetadataLocked(id)
+	if err != nil {
+		return mediaStoredObject{}, err
+	}
+	if mediaRecordExpired(record, now) {
+		_ = os.Remove(s.metadataPath(id))
+		_ = os.Remove(s.blobPath(id))
+		return mediaStoredObject{}, os.ErrNotExist
+	}
+	return record, nil
+}
+
+func mediaRecordExpired(record mediaStoredObject, now time.Time) bool {
+	return record.RemoteOrigin == nil && !record.Pinned && !record.ExpiresAt.After(now)
+}
+
+func (s *mediaStore) readMetadataLocked(id string) (mediaStoredObject, error) {
+	var record mediaStoredObject
 	data, err := os.ReadFile(s.metadataPath(id))
 	if err != nil {
-		return object, err
+		return record, err
 	}
-	if err := json.Unmarshal(data, &object); err != nil {
-		return mediaObject{}, fmt.Errorf("decode media metadata for %s: %w", id, err)
+	if err := json.Unmarshal(data, &record); err != nil {
+		return mediaStoredObject{}, fmt.Errorf("decode media metadata for %s: %w", id, err)
 	}
+	object := record.mediaObject
 	if object.ID != id || object.Size <= 0 || object.Name == "" || object.Title == "" ||
 		!isPlaybackMediaMIME(object.MIME) || !mediaSHA256Pattern.MatchString(object.SHA256) {
-		return mediaObject{}, fmt.Errorf("invalid media metadata for %s", id)
+		return mediaStoredObject{}, fmt.Errorf("invalid media metadata for %s", id)
 	}
-	info, err := os.Stat(s.blobPath(id))
-	if err != nil || !info.Mode().IsRegular() || info.Size() != object.Size {
-		return mediaObject{}, fmt.Errorf("content for media %s is missing or inconsistent", id)
+	if record.RemoteOrigin != nil {
+		if !agentTokenIDPattern.MatchString(record.RemoteOrigin.AgentTokenID) {
+			return mediaStoredObject{}, fmt.Errorf("invalid remote origin metadata for %s", id)
+		}
+	} else {
+		info, err := os.Stat(s.blobPath(id))
+		if err != nil || !info.Mode().IsRegular() || info.Size() != object.Size {
+			return mediaStoredObject{}, fmt.Errorf("content for media %s is missing or inconsistent", id)
+		}
 	}
-	return object, nil
+	return record, nil
 }
 
 func (s *mediaStore) blobPath(id string) string     { return filepath.Join(s.root, id+".blob") }

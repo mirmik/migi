@@ -67,7 +67,7 @@ func run() error {
 	mediaDirectory := flag.String("media-dir", mediaDirectoryDefault, "private agent media directory")
 	mediaMaxBytes := flag.Int64("media-max-bytes", defaultMediaMaxBytes, "maximum bytes per media object")
 	mediaTotalBytes := flag.Int64("media-total-bytes", defaultMediaTotalBytes, "maximum total media bytes")
-	mediaTTL := flag.Duration("media-ttl", defaultMediaTTL, "media object retention period")
+	mediaTTL := flag.Duration("media-ttl", defaultMediaTTL, "unreferenced directly uploaded media retention period")
 	apksignerPath := flag.String("apksigner", os.Getenv("MIGI_APKSIGNER"), "path to pinned Android build-tools apksigner; empty disables release delivery")
 	aapt2Path := flag.String("aapt2", os.Getenv("MIGI_AAPT2"), "path to pinned Android build-tools aapt2; empty disables release delivery")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")

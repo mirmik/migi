@@ -1,89 +1,131 @@
 ---
 name: migi-audio-player
-description: Send audio tracks, album artwork, and agent-curated playlists through Migi's dedicated media transport to paired Android phones, manage or requeue existing media IDs, and diagnose rejected or missing playback queues. Use when a user asks an agent to put on music, send an album or playlist to their phone, queue audio in Migi, or troubleshoot Migi music delivery. Do not use migi-file-exchange for playable music or covers.
+description: Index audio on a remote storage host, run a pull-on-demand Migi media origin, search the shared media catalog, save and replay persistent playlists, or send one-off audio queues to paired Android phones. Use when a user asks an agent to put on music, catalog an album, save or start a playlist, send album artwork, or diagnose Migi music delivery. Do not use migi-file-exchange for playable music or covers.
 ---
 
 # Migi Audio Player
 
-Use the bundled `scripts/migi-play` and `scripts/migi-album` clients. They are
-self-contained Python and must work from a copied skill directory without a
-Migi repository checkout, Go toolchain, installed `migi-play`, or third-party
-Python packages. They use the authenticated, certificate-pinned agent
-connection from `${MIGI_AGENT_CONFIG}` or `~/.config/migi/agent.json`; use
-`-config PATH` to select another file. Use `-endpoint URL` only for a trusted
-local HTTP listener.
+Use the self-contained Python clients in `scripts/`. They require no repository
+checkout, Go toolchain, installed Migi binary, or third-party package. They load
+the certificate-pinned agent connection from `${MIGI_AGENT_CONFIG}` or
+`~/.config/migi/agent.json`; use `-config PATH` for another identity and
+`-endpoint URL` only for a trusted local HTTP listener. Run
+`scripts/migi-play --check-config` to validate configuration without printing
+the bearer token.
 
-Run `scripts/migi-play --check-config` to validate configuration and print only
-the secret-free server origin. Never print or copy the token into a command.
+Keep three roles distinct even when two happen to share a machine:
 
-## Send an album directory
+- the **origin** indexes and reads music from its own filesystem;
+- the **agent** searches opaque media IDs and curates saved playlists;
+- the **phone** receives a queue and fetches a track when playback needs it.
 
-Run:
+The Migi server may be a fourth machine. It never needs the origin's filesystem
+mounted and never exposes origin paths to agents or phones.
+
+## Index music on its storage host
+
+On the machine that can read the files, use an authenticated origin credential:
 
 ```text
-scripts/migi-album [--config PATH|--endpoint URL] [--name NAME] [--device DEVICE_ID] [--source AGENT] [--cover IMAGE|--no-cover] DIRECTORY
+scripts/migi-album --config ORIGIN_CONFIG --index-only [--cover IMAGE|--no-cover] DIRECTORY
+scripts/migi-play -config ORIGIN_CONFIG [-cover IMAGE] index FILE...
+scripts/migi-origin -config ORIGIN_CONFIG [--registry PATH]
 ```
 
-The helper selects only supported audio files in the directory, version-sorts
-them (`01`, `02`, …), and sends one queue. It automatically attaches the first
-matching `cover`, `folder`, or `front` JPEG, PNG, or WebP image. Pass
-`--cover IMAGE` to choose one explicitly or `--no-cover` to omit artwork.
-Inspect its file list before running when ordering is ambiguous. Migi accepts
-1–32 tracks, at most 256 MiB per track, 1 GiB per queue, and an optional cover
-of at most 8 MiB.
+`index` hashes each regular file, sends only its name, media metadata, length,
+and digest, and stores the returned media ID beside the private local path in a
+mode-0600 registry. `migi-album --index-only` finds supported tracks, sorts
+names naturally (`01`, `02`, …), finds `cover`, `folder`, or `front` artwork,
+and performs the same registration without publishing a queue.
 
-Use `--device` only for a known Migi device ID. It is not an ADB serial. With
-no device ID the queue targets every active paired phone, which is appropriate
-only when that matches the user's intent.
+Keep `migi-origin` running after indexing. It makes an outbound authenticated
+long poll; no inbound port or server-side mount is required. When a phone first
+requests an indexed ID, the server asks the credential that registered it for
+that exact ID. The origin reopens the recorded file, verifies its device,
+inode, size, and modification time, then streams only that object. The server
+relays it to that one phone request with backpressure and checks length and
+SHA-256 while bytes pass; it does not retain an origin copy. The phone verifies
+the complete temporary download before committing its private cache. A
+different agent credential cannot claim the request.
 
-## Send explicit tracks or manage media IDs
+Origin catalog entries are persistent metadata and have no media TTL. Keep the
+origin process and indexed source available: every phone cache miss creates a
+new fetch request, including concurrent misses. Re-index changed files and use
+the new IDs; there is currently no catalog-delete command.
 
-Keep every flag before the operation:
+Do not move or edit indexed files silently. Re-index changed files and update
+the playlist to the new IDs. Never copy the origin registry to the curator
+machine or send hand-written path manifests: paths are private origin state.
+
+## Search, save, and start playlists
+
+The curator agent may run on any machine with an authenticated Migi config:
 
 ```text
-scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-device DEVICE_ID] [-source AGENT] [-cover IMAGE] play FILE...
-scripts/migi-play [-config PATH|-endpoint URL] [-title TITLE] [-artist ARTIST] put FILE
 scripts/migi-play [-config PATH|-endpoint URL] list
-scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-device DEVICE_ID] [-cover IMAGE] queue MEDIA_ID...
+scripts/migi-play [-config PATH|-endpoint URL] search WORD...
+scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-artwork-id MEDIA_ID] save MEDIA_ID...
+scripts/migi-play [-config PATH|-endpoint URL] playlists
+scripts/migi-play [-config PATH|-endpoint URL] [-device DEVICE_ID] start PLAYLIST_ID
+scripts/migi-play [-config PATH|-endpoint URL] forget PLAYLIST_ID
 ```
 
-Use `play` for a new ordered set. It uploads each audio object and publishes
-the queue only after all uploads succeed. Use `queue` to retry or rearrange
-known, unexpired IDs without uploading their bytes again.
+`search` matches all supplied terms across filename, title, artist, and source.
+`save` creates a durable server-side playlist without notifying the phone. It
+pins directly uploaded track and artwork objects beyond their ordinary media
+TTL. Origin-backed catalog entries already persist, while their bytes remain
+only at the origin. `start` resolves the saved references and publishes one
+ordinary `media.queue.set` event, so a playlist can be replayed without being
+reconstructed. `forget` removes it and releases any direct-upload retention
+pins.
 
-Prefer an album's own cover when one is available; do not invent or download
-artwork unless the user asks. Do not use `migi-file-exchange` for covers: the
-audio helper sends them through the private media store without a Files event.
+Use `-device` only for a known Migi device ID, not an ADB serial. Omitting it
+targets every active paired phone; do that only when it matches the user's
+intent. Use an existing catalog artwork ID with `-artwork-id`; do not fetch or
+invent artwork unless the user asks.
 
-## Delivery semantics
+## One-off delivery
 
-Uploading media does not notify the phone. Publishing the queue emits one
-`media.queue.set` event containing immutable track metadata and, when present,
-an artwork reference with its MIME type, size, and SHA-256 digest. The phone
-initially receives only this manifest. It downloads and verifies artwork for
-display; Media3 downloads and verifies a track when playback needs it. Both
-stay in a bounded private cache.
+For files available on the caller's machine:
 
-Report a successful command as "queued" or "available on the phone", not as
-fully downloaded or already playing. An idle player starts only after the user
-taps Play. If the phone's **Hot-swap playlists** setting is enabled and a queue
-is already active, the phone keeps the old queue playing while it verifies the
-new first track and opportunistically prefetches optional artwork, then
-atomically replaces the Media3 timeline and preserves Play/Pause. Do not assume
-that opt-in setting is enabled, and do not drive the phone through ADB unless
-the user authorized device control.
+```text
+scripts/migi-album [--config PATH|--endpoint URL] [--name NAME] [--device DEVICE_ID] [--cover IMAGE|--no-cover] [--lazy] DIRECTORY
+scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-device DEVICE_ID] [-cover IMAGE|-artwork-id MEDIA_ID] play FILE...
+scripts/migi-play [-config PATH|-endpoint URL] [-title TITLE] [-artist ARTIST] put FILE
+scripts/migi-play [-config PATH|-endpoint URL] [-name NAME] [-device DEVICE_ID] [-cover IMAGE|-artwork-id MEDIA_ID] queue MEDIA_ID...
+```
 
-## Validate and diagnose
+Ordinary `play` uploads complete files, then publishes a queue only after every
+upload succeeds. `queue` rearranges known IDs without resending bytes. Add
+`--lazy` to `play`, `put`, or album delivery only when this caller is also the
+storage origin and its `migi-origin` process will remain available; it registers
+origin metadata instead of transferring bytes immediately.
 
-- Require a successful `queued event N` result before claiming delivery.
-- If config validation rejects ownership or permissions, make the file owned
-  by the current user and mode `0600`; do not weaken that check.
-- If a phone appears unchanged, distinguish transport acknowledgement from
-  Android acceptance. When ADB access is authorized, inspect logs for
-  `Rejected invalid playback queue event` and confirm the Music screen.
-- Titles must be trimmed, non-empty text. The current helpers normalize names
-  such as `Weight of the World .mp3`; do not recreate manifests by hand.
-- If the target is wrong, identify the active Migi device ID from authorized
-  Migi administration, then requeue existing IDs to that device.
-- Do not restart or deploy the Migi server merely to send music unless the
-  user explicitly requests operational changes.
+Migi accepts 1–32 tracks, at most 256 MiB per track, 1 GiB of declared track
+bytes per queue, and optional JPEG, PNG, or WebP artwork up to 8 MiB. Music and
+covers always use this media protocol, never `migi-file-exchange`.
+
+## Delivery semantics and diagnosis
+
+Indexing, uploading, and saving are silent. Only `queue`, `play`, or `start`
+emits `media.queue.set`. The phone persists the newest targeted manifest and
+may fetch verified artwork, but an idle player starts only after the user taps
+Play. With **Hot-swap playlists** enabled and a queue already active, Android
+prepares the newer first track, replaces the timeline atomically when ready,
+and preserves Play/Pause.
+
+- Require `queued event N` or `queued saved playlist event N` before claiming
+  that a queue is available on the phone; do not claim it is fully downloaded
+  or already playing.
+- An origin failure means the registered file is unavailable or changed, the
+  origin process/config is offline, the transfer to the phone was interrupted,
+  or the server rejected its bytes. Check the origin process before rebuilding
+  a playlist.
+- If configuration ownership or permissions are rejected, keep the credential
+  owned by the current user and mode `0600`; never weaken the check or print its
+  token.
+- If the phone appears unchanged, distinguish transport acknowledgement from
+  Android queue acceptance. Use ADB only when the user authorized device
+  control.
+- Do not restart, deploy, or publish Migi merely to send music unless the user
+  explicitly requests operational changes.

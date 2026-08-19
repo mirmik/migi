@@ -52,14 +52,25 @@ Codex agents can install the repository-owned `migi-file-exchange`,
 `./scripts/install-migi-file-exchange-skill`.
 
 Agent-curated audio is deliberately kept out of that inbox. A separate private
-media store accepts silent audio and optional playlist-artwork uploads, then
-publishes only a completed `media.queue.set` event. Android persists the newest
-targeted queue, verifies artwork before displaying it, downloads each track
-over the pinned HTTP/3 connection, verifies its size and SHA-256 digest, and
-starts a Media3 session only after the user taps Play. An opt-in setting can
-prepare a newer queue while that session remains active and atomically replace
-it without autoplaying from an idle state. The `migi-play` command uploads
-tracks and covers, lists media, and queues playlists.
+media catalog accepts silent audio and optional playlist-artwork uploads. A
+storage-side origin may instead index names and digests under opaque media IDs,
+keep filesystem paths in its own private registry, and maintain an outbound
+authenticated connection to the Migi server. When a phone requests an indexed
+track, the server asks that origin for only the selected object and verifies it
+while relaying it directly to the phone with backpressure. Origin content is
+never retained on the server; the phone verifies the complete object before
+committing its own private cache. The server, curator agent, storage, and phone
+may all be different machines. Agents can also persist named playlists of
+catalog IDs and requeue them later without rebuilding the manifest. Only a
+completed one-off queue or an explicit start of a saved playlist publishes a
+`media.queue.set` event. Android persists the newest targeted queue, verifies
+artwork before displaying it, downloads each track over the pinned HTTP/3
+connection, verifies its size and SHA-256 digest, and starts a Media3 session
+only after the user taps Play. An opt-in setting can prepare a newer queue
+while that session remains active and atomically replace it without
+autoplaying from an idle state. The `migi-play` command indexes or uploads
+media, searches the catalog, and saves or starts playlists; `migi-origin`
+serves indexed objects on demand.
 The `migi-audio-player` skill adds safe helpers for ordered album directories
 and teaches agents to use this transport instead of the shared file inbox.
 

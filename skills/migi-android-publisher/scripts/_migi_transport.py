@@ -108,7 +108,16 @@ class MigiHTTPClient:
         body: Any = None,
         headers: dict[str, str | bytes] | None = None,
     ) -> OpenResponse:
-        if not path.startswith("/") or "?" in path or "#" in path:
+        target = urlsplit(path)
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or "#" in path
+            or target.scheme
+            or target.netloc
+            or target.fragment
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in path)
+        ):
             raise MigiClientError("Migi request path is invalid")
         try:
             connection = self._connect()

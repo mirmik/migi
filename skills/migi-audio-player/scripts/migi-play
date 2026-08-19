@@ -4,13 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import mimetypes
 import os
 import re
 import stat
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlencode
 
 from _migi_transport import (
     MigiClientError,
@@ -25,6 +30,8 @@ from _migi_transport import (
 
 
 MAX_ARTWORK_BYTES = 8 << 20
+MAX_MEDIA_BYTES = 256 << 20
+MAX_ORIGIN_REGISTRY_BYTES = 4 << 20
 MEDIA_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 AUDIO_MIME = {
     ".mp3": "audio/mpeg",
@@ -54,6 +61,17 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("-title", "--title", default="", help="track title for put")
     result.add_argument("-artist", "--artist", default="", help="track artist for put")
     result.add_argument("-cover", "--cover", default="", help="playlist artwork")
+    result.add_argument(
+        "-artwork-id",
+        "--artwork-id",
+        default="",
+        help="existing artwork media ID",
+    )
+    result.add_argument(
+        "--lazy",
+        action="store_true",
+        help="register remote-origin metadata and transfer tracks only on demand",
+    )
     result.add_argument("-device", "--device", default="", help="paired device ID")
     result.add_argument("-name", "--name", default="Migi playlist", help="playlist name")
     result.add_argument(
@@ -61,7 +79,22 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate configuration and print the secret-free endpoint",
     )
-    result.add_argument("command", nargs="?", choices=("put", "list", "queue", "play"))
+    result.add_argument(
+        "command",
+        nargs="?",
+        choices=(
+            "put",
+            "index",
+            "list",
+            "search",
+            "queue",
+            "play",
+            "save",
+            "playlists",
+            "start",
+            "forget",
+        ),
+    )
     result.add_argument("operands", nargs="*")
     return result
 
@@ -149,6 +182,184 @@ def put_audio(
     )
 
 
+@dataclass(frozen=True)
+class OriginMediaItem:
+    path: str
+    name: str
+    title: str
+    artist: str
+    mime: str
+    size: int
+    sha256: str
+    device: int
+    inode: int
+    modified_at_unix_nano: int
+
+    def manifest(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "name": self.name,
+            "mime": self.mime,
+            "size": self.size,
+            "sha256": self.sha256,
+        }
+        if self.title:
+            result["title"] = self.title
+        if self.artist:
+            result["artist"] = self.artist
+        return result
+
+
+def origin_media_input(
+    path_text: str,
+    *,
+    mime_type: str,
+    title: str = "",
+    artist: str = "",
+    maximum_bytes: int = MAX_MEDIA_BYTES,
+) -> OriginMediaItem:
+    try:
+        path = Path(path_text).expanduser().resolve(strict=True)
+        flags = os.O_RDONLY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise MigiClientError(f"open media origin: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
+            raise MigiClientError("media origin must be a non-empty regular file")
+        if maximum_bytes and before.st_size > maximum_bytes:
+            raise MigiClientError(f"file exceeds the {maximum_bytes} byte limit")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            while chunk := stream.read(256 << 10):
+                digest.update(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise MigiClientError("media origin changed while it was hashed")
+    finally:
+        os.close(descriptor)
+    return OriginMediaItem(
+        path=str(path),
+        name=path.name,
+        title=title,
+        artist=artist,
+        mime=mime_type,
+        size=before.st_size,
+        sha256=digest.hexdigest(),
+        device=before.st_dev,
+        inode=before.st_ino,
+        modified_at_unix_nano=before.st_mtime_ns,
+    )
+
+
+def origin_registry_path() -> Path:
+    explicit = os.environ.get("MIGI_ORIGIN_REGISTRY")
+    if explicit:
+        return Path(explicit).expanduser()
+    root = os.environ.get("XDG_STATE_HOME")
+    if root:
+        return Path(root).expanduser() / "migi" / "media-origin.json"
+    return Path("~/.local/state/migi/media-origin.json").expanduser()
+
+
+def save_origin_registry(items: list[OriginMediaItem], objects: list[dict]) -> None:
+    path = origin_registry_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    temporary = ""
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        registry: dict[str, object] = {"version": 1, "entries": {}}
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            raw = b""
+        if len(raw) > MAX_ORIGIN_REGISTRY_BYTES:
+            raise MigiClientError("media origin registry exceeds 4 MiB")
+        if raw:
+            try:
+                loaded = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise MigiClientError(f"decode media origin registry: {exc}") from exc
+            if (
+                not isinstance(loaded, dict)
+                or loaded.get("version") != 1
+                or not isinstance(loaded.get("entries"), dict)
+            ):
+                raise MigiClientError("media origin registry has an unsupported format")
+            registry = loaded
+        entries = registry["entries"]
+        assert isinstance(entries, dict)
+        for source, object_ in zip(items, objects, strict=True):
+            media_id = str(object_["id"])
+            entries[media_id] = {
+                "path": source.path,
+                "name": source.name,
+                "mime": source.mime,
+                "size": source.size,
+                "sha256": source.sha256,
+                "device": source.device,
+                "inode": source.inode,
+                "modified_at_unix_nano": source.modified_at_unix_nano,
+            }
+        descriptor, temporary = tempfile.mkstemp(prefix=".media-origin-", dir=path.parent)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(registry, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = ""
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        os.close(lock)
+
+
+def register_origin_media(
+    client: MigiHTTPClient,
+    items: list[OriginMediaItem],
+    *,
+    source: str = "",
+) -> list[dict]:
+    if not client.token:
+        raise MigiClientError(
+            "media origin registration requires an authenticated agent configuration"
+        )
+    body = json.dumps(
+        {"items": [item.manifest() for item in items]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers: dict[str, str | bytes] = {
+        "Content-Length": str(len(body)),
+        "Content-Type": "application/json",
+    }
+    with client.open("POST", "/v1/media/origin", body=body, headers=headers) as response:
+        result = _server_result(response, expected=201, label="media origin manifest")
+    if not isinstance(result, list) or len(result) != len(items):
+        raise MigiClientError("media origin response must match the requested items")
+    for item in result:
+        if not isinstance(item, dict):
+            raise MigiClientError("media origin response contains a non-object item")
+        media_id = item.get("id")
+        if not isinstance(media_id, str) or not MEDIA_ID_RE.fullmatch(media_id):
+            raise MigiClientError("media origin response returned an invalid media ID")
+    save_origin_registry(items, result)
+    return result
+
+
 def upload_artwork(
     client: MigiHTTPClient,
     path_text: str,
@@ -177,8 +388,86 @@ def upload_artwork(
     return media_id
 
 
-def list_media(client: MigiHTTPClient) -> None:
-    with client.open("GET", "/v1/media") as response:
+def prepare_artwork(
+    client: MigiHTTPClient,
+    path_text: str,
+    *,
+    source: str = "",
+    lazy: bool = False,
+) -> str:
+    if not lazy:
+        return upload_artwork(client, path_text, source=source)
+    if not path_text:
+        return ""
+    path = Path(path_text)
+    mime_type = ARTWORK_MIME.get(path.suffix.lower())
+    if mime_type is None:
+        raise MigiClientError("cover must be JPEG, PNG, or WebP")
+    inputs = [
+        origin_media_input(
+            path_text,
+            mime_type=mime_type,
+            title=title_from_path(path_text),
+            maximum_bytes=MAX_ARTWORK_BYTES,
+        )
+    ]
+    result = register_origin_media(client, inputs, source=source)[0]
+    print_object(result)
+    return str(result["id"])
+
+
+def resolve_artwork(
+    client: MigiHTTPClient,
+    path_text: str,
+    existing_id: str,
+    *,
+    source: str = "",
+    lazy: bool = False,
+) -> str:
+    if existing_id:
+        if not MEDIA_ID_RE.fullmatch(existing_id):
+            raise MigiClientError("-artwork-id must be a valid media ID")
+        return existing_id
+    return prepare_artwork(client, path_text, source=source, lazy=lazy)
+
+
+def origin_inputs(
+    paths: list[str],
+    *,
+    cover: str = "",
+    mime_type: str = "",
+) -> list[OriginMediaItem]:
+    result: list[OriginMediaItem] = []
+    if cover:
+        cover_path = Path(cover)
+        cover_mime = ARTWORK_MIME.get(cover_path.suffix.lower())
+        if cover_mime is None:
+            raise MigiClientError("cover must be JPEG, PNG, or WebP")
+        result.append(
+            origin_media_input(
+                cover,
+                mime_type=cover_mime,
+                title=title_from_path(cover),
+                maximum_bytes=MAX_ARTWORK_BYTES,
+            )
+        )
+    for path_text in paths:
+        path = Path(path_text)
+        result.append(
+            origin_media_input(
+                path_text,
+                mime_type=audio_mime(path, mime_type),
+                title=title_from_path(path_text),
+            )
+        )
+    return result
+
+
+def list_media(client: MigiHTTPClient, query: str = "") -> None:
+    path = "/v1/media"
+    if query:
+        path += "?" + urlencode({"q": query})
+    with client.open("GET", path) as response:
         items = _server_result(response, expected=200, label="media list")
     if not isinstance(items, list):
         raise MigiClientError("media list response must be a JSON array")
@@ -186,6 +475,94 @@ def list_media(client: MigiHTTPClient) -> None:
         if not isinstance(item, dict):
             raise MigiClientError("media list contains a non-object entry")
         print_object(item)
+
+
+def save_playlist(
+    client: MigiHTTPClient,
+    media_ids: list[str],
+    *,
+    name: str,
+    source: str = "",
+    artwork_id: str = "",
+) -> dict:
+    if not name.strip():
+        raise MigiClientError("playlist name must not be empty")
+    if not 1 <= len(media_ids) <= 32:
+        raise MigiClientError("save requires 1-32 media IDs")
+    invalid = next((item for item in media_ids if not MEDIA_ID_RE.fullmatch(item)), None)
+    if invalid is not None:
+        raise MigiClientError(f"invalid media ID {invalid!r}")
+    payload: dict[str, object] = {"name": name, "media_ids": media_ids}
+    if artwork_id:
+        if not MEDIA_ID_RE.fullmatch(artwork_id):
+            raise MigiClientError("invalid artwork media ID")
+        payload["artwork_media_id"] = artwork_id
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    headers: dict[str, str | bytes] = {
+        "Content-Length": str(len(body)),
+        "Content-Type": "application/json",
+    }
+    if source:
+        headers["X-Migi-Source"] = utf8_header(source, label="source")
+    with client.open("POST", "/v1/playlists", body=body, headers=headers) as response:
+        result = _server_result(response, expected=201, label="saved playlist")
+    if not isinstance(result, dict):
+        raise MigiClientError("saved playlist response must be a JSON object")
+    playlist_id = result.get("id")
+    if not isinstance(playlist_id, str) or not MEDIA_ID_RE.fullmatch(playlist_id):
+        raise MigiClientError("saved playlist response has an invalid ID")
+    print_playlist(result)
+    return result
+
+
+def list_playlists(client: MigiHTTPClient) -> None:
+    with client.open("GET", "/v1/playlists") as response:
+        items = _server_result(response, expected=200, label="saved playlist list")
+    if not isinstance(items, list):
+        raise MigiClientError("saved playlist list must be a JSON array")
+    for item in items:
+        if not isinstance(item, dict):
+            raise MigiClientError("saved playlist list contains a non-object entry")
+        print_playlist(item)
+
+
+def start_playlist(
+    client: MigiHTTPClient,
+    playlist_id: str,
+    *,
+    device: str = "",
+    source: str = "",
+) -> None:
+    if not MEDIA_ID_RE.fullmatch(playlist_id):
+        raise MigiClientError("invalid saved playlist ID")
+    payload = {"device_id": device} if device else {}
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    headers: dict[str, str | bytes] = {
+        "Content-Length": str(len(body)),
+        "Content-Type": "application/json",
+    }
+    if source:
+        headers["X-Migi-Source"] = utf8_header(source, label="source")
+    with client.open(
+        "POST",
+        f"/v1/playlists/{playlist_id}/queue",
+        body=body,
+        headers=headers,
+    ) as response:
+        result = _server_result(response, expected=201, label="saved playlist queue")
+    if not isinstance(result, dict) or not isinstance(result.get("id"), int):
+        raise MigiClientError("saved playlist queue response has no numeric event ID")
+    print(f"queued saved playlist event {result['id']}")
+
+
+def forget_playlist(client: MigiHTTPClient, playlist_id: str) -> None:
+    if not MEDIA_ID_RE.fullmatch(playlist_id):
+        raise MigiClientError("invalid saved playlist ID")
+    with client.open("DELETE", f"/v1/playlists/{playlist_id}") as response:
+        body = read_bounded(response)
+        if response.status != 204:
+            raise response_error(response, body)
+    print(f"forgot saved playlist {playlist_id}")
 
 
 def queue(
@@ -229,9 +606,19 @@ def print_object(item: dict) -> None:
     title = item.get("title", "")
     artist = item.get("artist", "")
     credit = f"{title} — {artist}" if artist else str(title)
+    expiry = format_timestamp(item.get("expires_at")) or "persistent"
     print(
         f"{item.get('id', '')}\t{item.get('size', 0)}\t"
-        f"{format_timestamp(item.get('expires_at'))}\t{credit}\t{item.get('name', '')}"
+        f"{expiry}\t{credit}\t{item.get('name', '')}"
+    )
+
+
+def print_playlist(item: dict) -> None:
+    media_ids = item.get("media_ids", [])
+    tracks = len(media_ids) if isinstance(media_ids, list) else 0
+    print(
+        f"{item.get('id', '')}\t{tracks} tracks\t"
+        f"{item.get('name', '')}\t{item.get('source', '')}"
     )
 
 
@@ -245,30 +632,77 @@ def run(argv: list[str] | None = None) -> int:
         return 0
     if args.command is None:
         raise MigiClientError(
-            "usage: migi-play [flags] put PATH | list | queue MEDIA_ID... | play PATH..."
+            "usage: migi-play [flags] put PATH | index PATH... | list | search QUERY | "
+            "queue MEDIA_ID... | play PATH... | save MEDIA_ID... | playlists | "
+            "start PLAYLIST_ID | forget PLAYLIST_ID"
         )
+    if args.cover and args.artwork_id:
+        raise MigiClientError("-cover and -artwork-id cannot be used together")
     if args.command == "put":
-        if args.cover:
-            raise MigiClientError("-cover applies only to queue or play")
+        if args.cover or args.artwork_id:
+            raise MigiClientError("-cover and -artwork-id do not apply to put")
         if len(args.operands) != 1:
             raise MigiClientError("put requires exactly one audio file path")
-        item = put_audio(
-            client,
-            args.operands[0],
-            source=args.source,
-            mime_type=args.mime_type,
-            title=args.title,
-            artist=args.artist,
-        )
+        if args.lazy:
+            path = Path(args.operands[0])
+            inputs = [
+                origin_media_input(
+                    args.operands[0],
+                    mime_type=audio_mime(path, args.mime_type),
+                    title=args.title,
+                    artist=args.artist,
+                )
+            ]
+            item = register_origin_media(client, inputs, source=args.source)[0]
+        else:
+            item = put_audio(
+                client,
+                args.operands[0],
+                source=args.source,
+                mime_type=args.mime_type,
+                title=args.title,
+                artist=args.artist,
+            )
         print_object(item)
+    elif args.command == "index":
+        if not args.operands:
+            raise MigiClientError("index requires at least one audio file path")
+        if args.artwork_id:
+            raise MigiClientError("-artwork-id does not apply to index")
+        if args.title or args.artist:
+            raise MigiClientError(
+                "-title and -artist apply only to put; index derives metadata from filenames"
+            )
+        objects = register_origin_media(
+            client,
+            origin_inputs(args.operands, cover=args.cover, mime_type=args.mime_type),
+            source=args.source,
+        )
+        for item in objects:
+            print_object(item)
     elif args.command == "list":
-        if args.cover:
-            raise MigiClientError("-cover applies only to queue or play")
+        if args.cover or args.artwork_id:
+            raise MigiClientError("-cover and -artwork-id do not apply to list")
         if args.operands:
             raise MigiClientError("list takes no arguments")
+        if args.lazy:
+            raise MigiClientError("--lazy does not apply to list")
         list_media(client)
+    elif args.command == "search":
+        if args.cover or args.artwork_id:
+            raise MigiClientError("-cover and -artwork-id do not apply to search")
+        query = " ".join(args.operands).strip()
+        if not query:
+            raise MigiClientError("search requires a query")
+        list_media(client, query)
     elif args.command == "queue":
-        artwork_id = upload_artwork(client, args.cover, source=args.source)
+        artwork_id = resolve_artwork(
+            client,
+            args.cover,
+            args.artwork_id,
+            source=args.source,
+            lazy=args.lazy,
+        )
         queue(
             client,
             args.operands,
@@ -277,29 +711,49 @@ def run(argv: list[str] | None = None) -> int:
             source=args.source,
             artwork_id=artwork_id,
         )
-    else:
+    elif args.command == "play":
         if not args.operands:
             raise MigiClientError("play requires at least one audio file path")
         if args.title or args.artist:
             raise MigiClientError("-title and -artist apply only to put")
-        artwork_id = upload_artwork(client, args.cover, source=args.source)
-        media_ids = []
-        for path in args.operands:
-            try:
-                item = put_audio(
-                    client,
-                    path,
-                    source=args.source,
-                    mime_type=args.mime_type,
-                    title=title_from_path(path),
-                )
-            except Exception as exc:
-                raise MigiClientError(f"upload {path}: {exc}") from exc
-            print_object(item)
-            media_id = item.get("id")
-            if not isinstance(media_id, str) or not MEDIA_ID_RE.fullmatch(media_id):
-                raise MigiClientError("media upload returned an invalid media ID")
-            media_ids.append(media_id)
+        if args.lazy:
+            inputs = origin_inputs(
+                args.operands,
+                cover=args.cover,
+                mime_type=args.mime_type,
+            )
+            objects = register_origin_media(client, inputs, source=args.source)
+            for item in objects:
+                print_object(item)
+            first_track = 1 if args.cover else 0
+            artwork_id = (
+                str(objects[0]["id"]) if args.cover else args.artwork_id
+            )
+            media_ids = [str(item["id"]) for item in objects[first_track:]]
+        else:
+            artwork_id = resolve_artwork(
+                client,
+                args.cover,
+                args.artwork_id,
+                source=args.source,
+            )
+            media_ids = []
+            for path in args.operands:
+                try:
+                    item = put_audio(
+                        client,
+                        path,
+                        source=args.source,
+                        mime_type=args.mime_type,
+                        title=title_from_path(path),
+                    )
+                except Exception as exc:
+                    raise MigiClientError(f"upload {path}: {exc}") from exc
+                print_object(item)
+                media_id = item.get("id")
+                if not isinstance(media_id, str) or not MEDIA_ID_RE.fullmatch(media_id):
+                    raise MigiClientError("media upload returned an invalid media ID")
+                media_ids.append(media_id)
         queue(
             client,
             media_ids,
@@ -308,6 +762,38 @@ def run(argv: list[str] | None = None) -> int:
             source=args.source,
             artwork_id=artwork_id,
         )
+    elif args.command == "save":
+        artwork_id = resolve_artwork(
+            client,
+            args.cover,
+            args.artwork_id,
+            source=args.source,
+            lazy=args.lazy,
+        )
+        save_playlist(
+            client,
+            args.operands,
+            name=args.name,
+            source=args.source,
+            artwork_id=artwork_id,
+        )
+    elif args.command == "playlists":
+        if args.operands:
+            raise MigiClientError("playlists takes no arguments")
+        list_playlists(client)
+    elif args.command == "start":
+        if len(args.operands) != 1:
+            raise MigiClientError("start requires exactly one saved playlist ID")
+        start_playlist(
+            client,
+            args.operands[0],
+            device=args.device,
+            source=args.source,
+        )
+    else:
+        if len(args.operands) != 1:
+            raise MigiClientError("forget requires exactly one saved playlist ID")
+        forget_playlist(client, args.operands[0])
     return 0
 
 

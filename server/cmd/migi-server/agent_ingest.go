@@ -100,16 +100,18 @@ func newAgentMuxWithAllStores(
 		})
 	}
 	if media != nil {
-		media.agentRoutes(mux, func(next http.Handler) http.Handler {
+		wrapMedia := func(next http.Handler) http.Handler {
 			return security.rateLimit(
 				"media",
 				security.publishRequests,
 				authenticateAgent(broker, security, next),
 			)
-		}, func(r *http.Request) string {
+		}
+		media.agentRoutes(mux, wrapMedia, func(r *http.Request) string {
 			agent, _ := r.Context().Value(agentContextKey{}).(events.AgentTokenInfo)
 			return agent.Name
 		})
+		media.originRoutes(mux, wrapMedia)
 	}
 	return security.limitConcurrency(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

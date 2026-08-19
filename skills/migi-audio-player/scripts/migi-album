@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Queue a naturally ordered album with the bundled migi-play client."""
+"""Index or queue a naturally ordered album with the bundled migi-play client."""
 
 from __future__ import annotations
 
@@ -38,6 +38,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source", default="codex", help="source label")
     result.add_argument("--config", default=None, help="agent JSON configuration")
     result.add_argument("--endpoint", default=None, help="trusted local HTTP endpoint")
+    result.add_argument(
+        "--lazy",
+        action="store_true",
+        help="register this machine as the media origin and transfer tracks on demand",
+    )
+    result.add_argument(
+        "--index-only",
+        action="store_true",
+        help="add the album to the remote catalog without publishing a playback queue",
+    )
     cover = result.add_mutually_exclusive_group()
     cover.add_argument("--cover", default="", help="explicit JPEG, PNG, or WebP artwork")
     cover.add_argument("--no-cover", action="store_true", help="do not attach artwork")
@@ -100,12 +110,15 @@ def run(argv: list[str] | None = None) -> int:
         command.extend(("-endpoint", args.endpoint))
     if args.device:
         command.extend(("-device", args.device))
+    if args.lazy and not args.index_only:
+        command.append("--lazy")
     if cover is not None:
         command.extend(("-cover", str(cover)))
-    command.append("play")
+    command.append("index" if args.index_only else "play")
     command.extend(str(track) for track in tracks)
 
-    print(f"Queueing {len(tracks)} tracks as {name}", file=sys.stderr)
+    action = "Indexing" if args.index_only else "Queueing"
+    print(f"{action} {len(tracks)} tracks as {name}", file=sys.stderr)
     if cover is not None:
         print(f"  artwork: {cover}", file=sys.stderr)
     for track in tracks:

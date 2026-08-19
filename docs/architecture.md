@@ -116,11 +116,41 @@ agent wake-up are a separate future protocol layer.
 ### Agent playback media
 
 Music is not stored in the shared inbox and media uploads do not append
-`file.available` events. Authenticated agents upload `audio/*` objects and
+`file.available` events. Authenticated agents may upload `audio/*` objects and
 optional JPEG, PNG, or WebP playlist artwork to a separate random-ID media
-store with independent per-object, aggregate and TTL limits. Bodies are staged,
-hashed and atomically committed just like other untrusted uploads, but remain
-invisible to the Files tab.
+store with independent per-object, aggregate and TTL limits. Those directly
+uploaded bodies are staged, hashed and atomically committed just like other
+untrusted uploads, but remain invisible to the Files tab.
+
+An optional remote media origin avoids copying a whole album into that store.
+The process that can read the music hashes each regular file and registers only
+its display metadata, exact size, and digest over the authenticated agent
+listener. It keeps the returned opaque ID, canonical path, and filesystem
+fingerprint in its own mode-0600 registry. Paths never reach the server, a
+curator agent, a phone, or an event.
+
+The origin maintains an outbound authenticated long poll. Each device content
+request for an origin-backed ID creates its own fetch job bound to the
+credential that registered it. That origin reopens and revalidates its local
+file, then uploads exactly the requested object. The server relays the request
+body directly to that device with network backpressure while counting bytes and
+hashing the stream. It retains no origin content or staging file. The origin's
+PUT succeeds only after the complete stream was delivered and matched the
+registered length and SHA-256; independently, Android verifies those values
+before committing its private cache. A new server-side request therefore needs
+the origin to be online, unless the phone already has its own verified copy.
+Byte ranges and shared fan-out between concurrent downloads are not implemented.
+The storage host, Migi server, curator agent, and phone require no shared
+filesystem and may all be different machines.
+
+Media IDs form a server-wide catalog searchable by filename, title, artist, or
+source. Origin-backed catalog records are persistent metadata and have no media
+TTL. Saved playlists persist a name, ordered audio IDs, and optional artwork ID
+separately from queue events. A saved playlist pins directly uploaded media
+past its normal TTL; origin records already persist independently. Saving is
+silent; explicitly starting the playlist resolves current authoritative
+metadata and publishes the same version-1 queue manifest as a one-off queue.
+Deleting the playlist releases any direct-upload retention pins.
 
 An agent commits a complete ordered queue through `/v1/playback/queue`. The
 server resolves every track and optional artwork ID, copies authoritative size,
@@ -167,18 +197,17 @@ autoplay and retention policy.
 ## Component view
 
 ```text
-local agents ---- HTTP POST /v1/events on loopback TCP ----+
-             +---- HTTP /v1/files on loopback TCP --------+
-             +---- HTTP /v1/media + playback/queue -------+
-                                                          |
-remote agents -- HTTPS POST with per-agent token ----------> Go event server
-                                                          |       |
-local web administration ---------------------------------+       +---- event journal / device state
-                                                                  +---- private media object store
-                                                                  |
-                                                                  | public HTTP/3 stream over QUIC (UDP)
-                                                                  v
-                                                        Android foreground services
+local agents ------ events / files / catalog / playlists --+
+                                                            |
+remote curators ---- HTTPS with per-agent token ------------> Go event server
+                                                            |       |
+storage origin ----- register + long-poll + requested PUT --+       +---- event journal / device state
+                               (live byte stream)                    +---- media catalog / saved playlists
+                                                                    +---- TTL-bound uploaded-media blobs
+local web administration -----------------------------------+       |
+                                                                    | public HTTP/3 stream over QUIC (UDP)
+                                                                    v
+                                                          Android foreground services
     |
     +---- local cursor / deduplication
     |

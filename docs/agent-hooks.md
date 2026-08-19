@@ -67,10 +67,11 @@ source agent name from the credential and ignores caller-supplied identity.
 
 ## Queue playback media remotely
 
-The same agent credential also authorizes the private `/v1/media` and
-`/v1/playback/queue` routes. These objects never appear in the shared-file
-inbox and uploading them emits no event. `migi-play` discovers the same config
-file and applies the same certificate pin before sending the bearer token:
+The same agent credential also authorizes the private media catalog, saved
+playlist, and one-off queue routes. These objects never appear in the
+shared-file inbox; indexing, uploading, and saving emit no event. `migi-play`
+discovers the same config file and applies the same certificate pin before
+sending the bearer token:
 
 ```bash
 migi-play -name "Quiet morning" -device phone-1 -cover ./cover.jpg \
@@ -83,6 +84,35 @@ The phone persists the queue and requires a user tap before starting an idle
 player. If **Hot-swap playlists** is enabled and a playlist is already active,
 the phone verifies the new first track, opportunistically prefetches its cover,
 and replaces the active queue when ready.
+
+The music filesystem may be on a different machine from both this agent and
+the Migi server. On that storage host, the bundled audio skill registers names
+and digests and keeps paths in a private local registry:
+
+```bash
+scripts/migi-album --config ./origin-agent.json --index-only /srv/music/Album
+scripts/migi-origin --config ./origin-agent.json
+```
+
+`migi-origin` makes only outbound authenticated requests. When a phone asks for
+an opaque media ID, the server asks the credential that registered it for that
+one file and relays it without keeping a server copy; another agent cannot see
+the path or claim the request.
+
+A curator on another machine can search the catalog, save a reusable playlist,
+and start it any number of times:
+
+```bash
+scripts/migi-play -config ./curator-agent.json search album artist
+scripts/migi-play -config ./curator-agent.json -name "Album" \
+  -artwork-id COVER_MEDIA_ID save TRACK_MEDIA_ID...
+scripts/migi-play -config ./curator-agent.json playlists
+scripts/migi-play -config ./curator-agent.json -device phone-1 start PLAYLIST_ID
+```
+
+Saving remains silent. It pins referenced direct uploads past their ordinary
+TTL; origin catalog entries already persist without retaining content on the
+server. Only `start` creates `media.queue.set`.
 
 ## Codex notifications and lifecycle hooks
 

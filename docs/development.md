@@ -258,6 +258,23 @@ Upload tracks silently, inspect the private media store, and publish one queue:
   -device phone-1 queue MEDIA_ID_1 MEDIA_ID_2
 ```
 
+The catalog can be searched and an ordered set of IDs can be saved once and
+started repeatedly:
+
+```bash
+./bin/migi-play search quiet morning
+./bin/migi-play -source builder-1 -name "Quiet morning" \
+  -artwork-id COVER_MEDIA_ID save MEDIA_ID_1 MEDIA_ID_2
+./bin/migi-play playlists
+./bin/migi-play -source builder-1 -device phone-1 start PLAYLIST_ID
+./bin/migi-play forget PLAYLIST_ID
+```
+
+Saving is silent and pins directly uploaded media past the ordinary TTL.
+Origin-backed catalog entries are persistent without server-side content.
+`start` emits the ordinary validated queue event; `forget` releases any upload
+pins.
+
 For local files, `play` combines upload and queue creation. Uploads that finish
 before a later failure remain private and expire normally; no partial queue is
 published:
@@ -266,6 +283,25 @@ published:
 ./bin/migi-play -source builder-1 -name "Focus" -cover ./cover.jpg \
   -device phone-1 play ./one.opus ./two.mp3
 ```
+
+When files live on another storage machine, give that host a dedicated remote
+agent configuration. `index` sends metadata and digests but keeps paths in the
+origin registry; `origin` then long-polls over an outbound authenticated
+connection and uploads only the ID requested by a phone:
+
+```bash
+MIGI_ORIGIN_REGISTRY=~/.local/state/migi/music-origin.json \
+  ./bin/migi-play -config ./origin-agent.json -cover ./cover.jpg \
+  index ./one.opus ./two.mp3
+MIGI_ORIGIN_REGISTRY=~/.local/state/migi/music-origin.json \
+  ./bin/migi-play -config ./origin-agent.json origin
+```
+
+The storage host, Migi server, curator agent, and phone may all be separate;
+no filesystem path is sent in the protocol. The server relays each requested
+object to that phone with backpressure, verifies it while it passes, and keeps
+no origin-backed content. A device cache miss therefore requires the origin
+process and source file to remain available.
 
 The phone receives one playlist notification. An idle player never autoplays
 the event: open the **Music** tab and tap **Start playlist**. With

@@ -21,6 +21,7 @@ import (
 const (
 	maxResponseBytes = 1 << 20
 	maxArtworkBytes  = int64(8 << 20)
+	maxTrackBytes    = int64(256 << 20)
 )
 
 type mediaObject struct {
@@ -36,6 +37,29 @@ type mediaObject struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type savedPlaylist struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	ArtworkMediaID string    `json:"artwork_media_id,omitempty"`
+	MediaIDs       []string  `json:"media_ids"`
+	Source         string    `json:"source"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type originMediaRegistration struct {
+	Path               string `json:"-"`
+	Name               string `json:"name"`
+	Title              string `json:"title,omitempty"`
+	Artist             string `json:"artist,omitempty"`
+	MIME               string `json:"mime"`
+	Size               int64  `json:"size"`
+	SHA256             string `json:"sha256"`
+	Device             uint64 `json:"-"`
+	Inode              uint64 `json:"-"`
+	ModifiedAtUnixNano int64  `json:"-"`
+}
+
 type agentConfig struct {
 	Endpoint       string `json:"endpoint"`
 	Token          string `json:"token"`
@@ -43,8 +67,9 @@ type agentConfig struct {
 }
 
 type playClient struct {
-	http  *http.Client
-	token string
+	http           *http.Client
+	token          string
+	originRegistry string
 }
 
 func main() {
@@ -61,9 +86,13 @@ func run() error {
 	mimeType := flag.String("type", "", "upload MIME type (guessed from extension by default)")
 	title := flag.String("title", "", "track title for put")
 	artist := flag.String("artist", "", "track artist for put")
+	lazy := flag.Bool("lazy", false, "register a remote origin and transfer tracks only on demand")
+	originRegistry := flag.String("origin-registry", "", "private media origin registry path")
+	originOnce := flag.Bool("origin-once", false, "poll and serve at most one origin request")
 	cover := flag.String("cover", "", "playlist cover image path for queue or play")
+	artworkID := flag.String("artwork-id", "", "existing artwork media ID for queue or saved playlist")
 	deviceID := flag.String("device", "", "paired device ID (empty targets every paired phone)")
-	playlistName := flag.String("name", "Migi playlist", "playlist name for queue or play")
+	playlistName := flag.String("name", "Migi playlist", "playlist name for queue, play, save, or index")
 	flag.Parse()
 	var endpointExplicit, configExplicit bool
 	flag.Visit(func(option *flag.Flag) {
@@ -84,21 +113,52 @@ func run() error {
 	}
 	args := flag.Args()
 	if len(args) == 0 {
-		return errors.New("usage: migi-play [flags] put PATH | list | queue MEDIA_ID... | play PATH...")
+		return errors.New("usage: migi-play [flags] put PATH | index PATH... | list | search QUERY | queue MEDIA_ID... | play PATH... | save MEDIA_ID... | playlists | start PLAYLIST_ID | forget PLAYLIST_ID | origin")
+	}
+	if *lazy || args[0] == "index" || args[0] == "origin" {
+		client.originRegistry, err = resolveOriginRegistryPath(*originRegistry)
+		if err != nil {
+			return err
+		}
+	}
+	if *cover != "" && *artworkID != "" {
+		return errors.New("-cover and -artwork-id cannot be used together")
 	}
 	switch args[0] {
+	case "origin":
+		if len(args) != 1 {
+			return errors.New("origin takes no operands")
+		}
+		return serveMediaOrigin(client, base, *originOnce)
 	case "put":
-		if *cover != "" {
-			return errors.New("-cover applies only to queue or play")
+		if *cover != "" || *artworkID != "" {
+			return errors.New("-cover and -artwork-id do not apply to put")
 		}
 		if len(args) != 2 {
 			return errors.New("put requires exactly one audio file path")
 		}
-		object, err := put(client, base, args[1], *source, *mimeType, *title, *artist)
+		var object mediaObject
+		var err error
+		if *lazy {
+			object, err = putOrigin(client, base, args[1], *source, *mimeType, *title, *artist)
+		} else {
+			object, err = put(client, base, args[1], *source, *mimeType, *title, *artist)
+		}
 		if err == nil {
 			printObject(object)
 		}
 		return err
+	case "index":
+		if len(args) < 2 {
+			return errors.New("index requires at least one audio file path")
+		}
+		if *artworkID != "" {
+			return errors.New("-artwork-id does not apply to index")
+		}
+		if *title != "" || *artist != "" {
+			return errors.New("-title and -artist apply only to put; index derives metadata from filenames")
+		}
+		return indexOrigin(client, base, *cover, *source, *mimeType, args[1:])
 	case "list":
 		if *cover != "" {
 			return errors.New("-cover applies only to queue or play")
@@ -106,16 +166,27 @@ func run() error {
 		if len(args) != 1 {
 			return errors.New("list takes no arguments")
 		}
+		if *lazy {
+			return errors.New("-lazy does not apply to list")
+		}
 		return list(client, base)
+	case "search":
+		if *cover != "" || *artworkID != "" {
+			return errors.New("-cover and -artwork-id do not apply to search")
+		}
+		if len(args) < 2 {
+			return errors.New("search requires a query")
+		}
+		return search(client, base, strings.Join(args[1:], " "))
 	case "queue":
 		if len(args) < 2 {
 			return errors.New("queue requires at least one media ID")
 		}
-		artworkID, err := uploadArtwork(client, base, *cover, *source)
+		resolvedArtworkID, err := resolveArtwork(client, base, *cover, *artworkID, *source, *lazy)
 		if err != nil {
 			return err
 		}
-		return queue(client, base, *playlistName, *deviceID, *source, artworkID, args[1:])
+		return queue(client, base, *playlistName, *deviceID, *source, resolvedArtworkID, args[1:])
 	case "play":
 		if len(args) < 2 {
 			return errors.New("play requires at least one audio file path")
@@ -123,7 +194,12 @@ func run() error {
 		if *title != "" || *artist != "" {
 			return errors.New("-title and -artist apply only to put; play derives metadata from filenames")
 		}
-		artworkID, err := uploadArtwork(client, base, *cover, *source)
+		if *lazy {
+			return playOrigin(
+				client, base, *playlistName, *deviceID, *source, *cover, *artworkID, *mimeType, args[1:],
+			)
+		}
+		resolvedArtworkID, err := resolveArtwork(client, base, *cover, *artworkID, *source, false)
 		if err != nil {
 			return err
 		}
@@ -136,7 +212,31 @@ func run() error {
 			printObject(object)
 			ids = append(ids, object.ID)
 		}
-		return queue(client, base, *playlistName, *deviceID, *source, artworkID, ids)
+		return queue(client, base, *playlistName, *deviceID, *source, resolvedArtworkID, ids)
+	case "save":
+		if len(args) < 2 {
+			return errors.New("save requires at least one media ID")
+		}
+		resolvedArtworkID, err := resolveArtwork(client, base, *cover, *artworkID, *source, *lazy)
+		if err != nil {
+			return err
+		}
+		return savePlaylist(client, base, *playlistName, *source, resolvedArtworkID, args[1:])
+	case "playlists":
+		if len(args) != 1 {
+			return errors.New("playlists takes no arguments")
+		}
+		return listPlaylists(client, base)
+	case "start":
+		if len(args) != 2 {
+			return errors.New("start requires exactly one saved playlist ID")
+		}
+		return startPlaylist(client, base, args[1], *deviceID, *source)
+	case "forget":
+		if len(args) != 2 {
+			return errors.New("forget requires exactly one saved playlist ID")
+		}
+		return forgetPlaylist(client, base, args[1])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -289,6 +389,220 @@ func put(
 	return putMedia(client, base, path, source, contentType, title, artist, 0)
 }
 
+func putOrigin(
+	client *playClient,
+	base *url.URL,
+	path, source, contentType, title, artist string,
+) (mediaObject, error) {
+	if contentType == "" {
+		contentType = audioMIME(filepath.Ext(path))
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "audio/") {
+		return mediaObject{}, errors.New("audio MIME type is required; use -type when the extension is unknown")
+	}
+	input, err := makeOriginMediaRegistration(path, contentType, title, artist, 0)
+	if err != nil {
+		return mediaObject{}, err
+	}
+	objects, err := registerOriginMedia(client, base, source, []originMediaRegistration{input})
+	if err != nil {
+		return mediaObject{}, err
+	}
+	return objects[0], nil
+}
+
+func playOrigin(
+	client *playClient,
+	base *url.URL,
+	name, deviceID, source, cover, existingArtworkID, contentType string,
+	paths []string,
+) error {
+	inputs, err := makeOriginInputs(cover, contentType, paths)
+	if err != nil {
+		return err
+	}
+	objects, err := registerOriginMedia(client, base, source, inputs)
+	if err != nil {
+		return err
+	}
+	position := 0
+	artworkID := existingArtworkID
+	if cover != "" {
+		artworkID = objects[0].ID
+		position = 1
+	}
+	ids := make([]string, 0, len(paths))
+	for _, object := range objects {
+		printObject(object)
+	}
+	for _, object := range objects[position:] {
+		ids = append(ids, object.ID)
+	}
+	return queue(client, base, name, deviceID, source, artworkID, ids)
+}
+
+func indexOrigin(
+	client *playClient,
+	base *url.URL,
+	cover, source, contentType string,
+	paths []string,
+) error {
+	inputs, err := makeOriginInputs(cover, contentType, paths)
+	if err != nil {
+		return err
+	}
+	objects, err := registerOriginMedia(client, base, source, inputs)
+	if err != nil {
+		return err
+	}
+	for _, object := range objects {
+		printObject(object)
+	}
+	return nil
+}
+
+func makeOriginInputs(cover, contentType string, paths []string) ([]originMediaRegistration, error) {
+	inputs := make([]originMediaRegistration, 0, len(paths)+1)
+	if cover != "" {
+		coverType := artworkMIME(filepath.Ext(cover))
+		if coverType == "" {
+			return nil, errors.New("cover must be JPEG, PNG, or WebP")
+		}
+		input, err := makeOriginMediaRegistration(cover, coverType, titleFromPath(cover), "", maxArtworkBytes)
+		if err != nil {
+			return nil, fmt.Errorf("register cover %s: %w", cover, err)
+		}
+		inputs = append(inputs, input)
+	}
+	for _, path := range paths {
+		trackType := contentType
+		if trackType == "" {
+			trackType = audioMIME(filepath.Ext(path))
+		}
+		if !strings.HasPrefix(strings.ToLower(trackType), "audio/") {
+			return nil, fmt.Errorf("register %s: audio MIME type is required; use -type when the extension is unknown", path)
+		}
+		input, err := makeOriginMediaRegistration(path, trackType, titleFromPath(path), "", 0)
+		if err != nil {
+			return nil, fmt.Errorf("register %s: %w", path, err)
+		}
+		inputs = append(inputs, input)
+	}
+	return inputs, nil
+}
+
+func prepareArtwork(
+	client *playClient,
+	base *url.URL,
+	path, source string,
+	lazy bool,
+) (string, error) {
+	if !lazy {
+		return uploadArtwork(client, base, path, source)
+	}
+	if path == "" {
+		return "", nil
+	}
+	contentType := artworkMIME(filepath.Ext(path))
+	if contentType == "" {
+		return "", errors.New("cover must be JPEG, PNG, or WebP")
+	}
+	input, err := makeOriginMediaRegistration(path, contentType, titleFromPath(path), "", maxArtworkBytes)
+	if err != nil {
+		return "", fmt.Errorf("register cover %s: %w", path, err)
+	}
+	objects, err := registerOriginMedia(client, base, source, []originMediaRegistration{input})
+	if err != nil {
+		return "", err
+	}
+	printObject(objects[0])
+	return objects[0].ID, nil
+}
+
+func resolveArtwork(
+	client *playClient,
+	base *url.URL,
+	path, existingID, source string,
+	lazy bool,
+) (string, error) {
+	if existingID != "" {
+		if !validMediaID(existingID) {
+			return "", errors.New("-artwork-id must be a valid media ID")
+		}
+		return existingID, nil
+	}
+	return prepareArtwork(client, base, path, source, lazy)
+}
+
+func makeOriginMediaRegistration(
+	path, contentType, title, artist string,
+	maximumBytes int64,
+) (originMediaRegistration, error) {
+	if maximumBytes == 0 {
+		maximumBytes = maxTrackBytes
+	}
+	snapshot, err := inspectOriginFile(path, maximumBytes)
+	if err != nil {
+		return originMediaRegistration{}, err
+	}
+	return originMediaRegistration{
+		Path: snapshot.Path, Name: snapshot.Name, Title: title, Artist: artist,
+		MIME: contentType, Size: snapshot.Size, SHA256: snapshot.SHA256,
+		Device: snapshot.Device, Inode: snapshot.Inode,
+		ModifiedAtUnixNano: snapshot.ModifiedAtUnixNano,
+	}, nil
+}
+
+func registerOriginMedia(
+	client *playClient,
+	base *url.URL,
+	source string,
+	items []originMediaRegistration,
+) ([]mediaObject, error) {
+	if client.token == "" {
+		return nil, errors.New("media origin registration requires an authenticated agent configuration")
+	}
+	body, err := json.Marshal(struct {
+		Items []originMediaRegistration `json:"items"`
+	}{Items: items})
+	if err != nil {
+		return nil, err
+	}
+	request, err := client.request(http.MethodPost, endpoint(base, "/v1/media/origin"), strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, err := readResponse(response)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+	}
+	var objects []mediaObject
+	if err := json.Unmarshal(responseBody, &objects); err != nil {
+		return nil, err
+	}
+	if len(objects) != len(items) {
+		return nil, errors.New("server returned a mismatched media origin manifest")
+	}
+	for _, object := range objects {
+		if !validMediaID(object.ID) || object.Size <= 0 || len(object.SHA256) != 64 {
+			return nil, errors.New("server returned invalid media origin metadata")
+		}
+	}
+	if err := saveOriginRegistry(client.originRegistry, items, objects); err != nil {
+		return nil, err
+	}
+	return objects, nil
+}
+
 func uploadArtwork(client *playClient, base *url.URL, path, source string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -403,7 +717,27 @@ func artworkMIME(extension string) string {
 }
 
 func list(client *playClient, base *url.URL) error {
-	request, err := client.request(http.MethodGet, endpoint(base, "/v1/media"), nil)
+	return listMedia(client, base, "")
+}
+
+func search(client *playClient, base *url.URL, query string) error {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return errors.New("search query must not be empty")
+	}
+	return listMedia(client, base, query)
+}
+
+func listMedia(client *playClient, base *url.URL, query string) error {
+	target := endpoint(base, "/v1/media")
+	if query != "" {
+		parsed, _ := url.Parse(target)
+		values := parsed.Query()
+		values.Set("q", query)
+		parsed.RawQuery = values.Encode()
+		target = parsed.String()
+	}
+	request, err := client.request(http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}
@@ -427,6 +761,157 @@ func list(client *playClient, base *url.URL) error {
 		printObject(object)
 	}
 	return nil
+}
+
+func savePlaylist(
+	client *playClient,
+	base *url.URL,
+	name, source, artworkMediaID string,
+	mediaIDs []string,
+) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("playlist name must not be empty")
+	}
+	if len(mediaIDs) == 0 || len(mediaIDs) > 32 {
+		return errors.New("save requires 1-32 media IDs")
+	}
+	for _, id := range mediaIDs {
+		if !validMediaID(id) {
+			return fmt.Errorf("invalid media ID %q", id)
+		}
+	}
+	body, err := json.Marshal(struct {
+		Name           string   `json:"name"`
+		ArtworkMediaID string   `json:"artwork_media_id,omitempty"`
+		MediaIDs       []string `json:"media_ids"`
+	}{Name: name, ArtworkMediaID: artworkMediaID, MediaIDs: mediaIDs})
+	if err != nil {
+		return err
+	}
+	request, err := client.request(http.MethodPost, endpoint(base, "/v1/playlists"), strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if source != "" {
+		request.Header.Set("X-Migi-Source", source)
+	}
+	response, err := client.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	responseBody, err := readResponse(response)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+	}
+	var playlist savedPlaylist
+	if err := json.Unmarshal(responseBody, &playlist); err != nil {
+		return err
+	}
+	if !validMediaID(playlist.ID) {
+		return errors.New("server returned an invalid saved playlist ID")
+	}
+	printPlaylist(playlist)
+	return nil
+}
+
+func listPlaylists(client *playClient, base *url.URL) error {
+	request, err := client.request(http.MethodGet, endpoint(base, "/v1/playlists"), nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := readResponse(response)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	var playlists []savedPlaylist
+	if err := json.Unmarshal(body, &playlists); err != nil {
+		return err
+	}
+	for _, playlist := range playlists {
+		printPlaylist(playlist)
+	}
+	return nil
+}
+
+func startPlaylist(client *playClient, base *url.URL, id, deviceID, source string) error {
+	if !validMediaID(id) {
+		return errors.New("invalid saved playlist ID")
+	}
+	body, err := json.Marshal(struct {
+		DeviceID string `json:"device_id,omitempty"`
+	}{DeviceID: deviceID})
+	if err != nil {
+		return err
+	}
+	request, err := client.request(http.MethodPost, endpoint(base, "/v1/playlists/"+id+"/queue"), strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if source != "" {
+		request.Header.Set("X-Migi-Source", source)
+	}
+	response, err := client.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	responseBody, err := readResponse(response)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+	}
+	var event struct {
+		ID uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(responseBody, &event); err != nil {
+		return err
+	}
+	fmt.Printf("queued saved playlist event %d\n", event.ID)
+	return nil
+}
+
+func forgetPlaylist(client *playClient, base *url.URL, id string) error {
+	if !validMediaID(id) {
+		return errors.New("invalid saved playlist ID")
+	}
+	request, err := client.request(http.MethodDelete, endpoint(base, "/v1/playlists/"+id), nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := readResponse(response)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	fmt.Printf("forgot saved playlist %s\n", id)
+	return nil
+}
+
+func printPlaylist(playlist savedPlaylist) {
+	fmt.Printf("%s\t%d tracks\t%s\t%s\n", playlist.ID, len(playlist.MediaIDs), playlist.Name, playlist.Source)
 }
 
 func queue(
@@ -490,7 +975,11 @@ func printObject(object mediaObject) {
 	if object.Artist != "" {
 		credit += " — " + object.Artist
 	}
-	fmt.Printf("%s\t%d\t%s\t%s\t%s\n", object.ID, object.Size, object.ExpiresAt.Local().Format(time.RFC3339), credit, object.Name)
+	expiry := "persistent"
+	if !object.ExpiresAt.IsZero() {
+		expiry = object.ExpiresAt.Local().Format(time.RFC3339)
+	}
+	fmt.Printf("%s\t%d\t%s\t%s\t%s\n", object.ID, object.Size, expiry, credit, object.Name)
 }
 
 func validMediaID(id string) bool {
