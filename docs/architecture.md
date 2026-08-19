@@ -136,6 +136,12 @@ taps Play, Android downloads each track through the pinned HTTP/3 client,
 verifies both its exact length and SHA-256 digest, atomically commits it to a
 private content-addressed cache, and starts a separate Media3
 `MediaSessionService`. Replayed or older queue events cannot restart playback.
+The opt-in **Hot-swap playlists** setting applies only while that session has
+an active timeline. Migi continues the old queue while it verifies the first
+track and opportunistically prefetches optional artwork for the newest
+revision, then replaces the timeline in one Media3 operation while preserving
+Play/Pause. It never starts an idle session, and a superseded preparation
+cannot replace a newer queue.
 
 ### Minimal Android surface
 

@@ -267,11 +267,14 @@ published:
   -device phone-1 play ./one.opus ./two.mp3
 ```
 
-The phone receives one playlist notification. It never autoplays the event:
-open the **Music** tab and tap **Start playlist**. The client uses
-the same remote agent-config discovery, bearer authentication and exact TLS
-certificate pinning as `migi-file` when it is not pointed explicitly at the
-trusted loopback endpoint.
+The phone receives one playlist notification. An idle player never autoplays
+the event: open the **Music** tab and tap **Start playlist**. With
+**Hot-swap playlists** enabled, an already-active session instead keeps playing
+while Migi verifies the first track and opportunistically prefetches optional
+artwork, then atomically adopts the newer queue while preserving Play/Pause.
+The client uses the same remote agent-config discovery, bearer authentication
+and exact TLS certificate pinning as `migi-file` when it is not pointed
+explicitly at the trusted loopback endpoint.
 
 ### Exchange files with the phone
 

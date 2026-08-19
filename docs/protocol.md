@@ -311,5 +311,9 @@ The journal event ID is the queue revision. The optional `artwork` member was
 added without changing manifest version 1, so older clients ignore it and
 queues without covers remain valid. Android durably stores only newer targeted
 queues before acknowledging them. It may download and verify artwork for the
-UI, but applying a queue never starts audio by itself: the user opens the Music
-tab and explicitly asks Migi to download, verify and play it.
+UI. By default, applying a queue never starts audio by itself: the user opens
+the Music tab and explicitly asks Migi to download, verify and play it. If the
+user enables hot playlist replacement and a Media3 queue is already active,
+Android keeps that queue intact while it downloads and verifies the first track
+of the newer revision. It then replaces the Media3 timeline atomically and
+preserves Play/Pause. An idle player still requires an explicit user start.

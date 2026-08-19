@@ -27,6 +27,7 @@
     <string name="updates_empty_body">New applications and Migi updates will appear here.</string>
     <string name="settings_about">ABOUT</string>
     <string name="settings_connection">CONNECTION</string>
+    <string name="settings_playback">PLAYBACK</string>
     <string name="settings_sound">SOUND</string>
     <string name="content_previous">Previous track</string>
     <string name="content_next">Next track</string>
@@ -51,6 +52,11 @@
     <string name="playback_starting">Starting playback…</string>
     <string name="playback_started">Playback started; upcoming tracks load as needed</string>
     <string name="playback_failed">Cannot play this playlist: %1$s</string>
+    <string name="playback_hot_swap">Hot-swap playlists</string>
+    <string name="playback_hot_swap_description">While a playlist is active, prepare the first track of a new one and switch automatically. Paused music stays paused.</string>
+    <string name="playback_hot_swap_preparing">Preparing the new playlist; the current one keeps playing…</string>
+    <string name="playback_hot_swap_complete">Switched to the new playlist</string>
+    <string name="playback_hot_swap_failed">Could not prepare the new playlist; the current one keeps playing</string>
     <string name="playback_nothing_playing">Nothing playing</string>
     <string name="playback_position">%1$s / %2$s</string>
     <string name="playback_shuffle_off">Shuffle: off</string>

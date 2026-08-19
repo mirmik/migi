@@ -214,6 +214,7 @@ class ConnectionService : Service() {
 			PlaybackQueueRepository.Acceptance.STORED -> Unit
 		}
 		val queue = repository.current() ?: return
+		PlaybackService.replaceWhenReady(this, queue.eventID)
 		val notification = Notification.Builder(this, EVENT_CHANNEL)
 			.setSmallIcon(android.R.drawable.ic_media_play)
 			.setContentTitle(getString(R.string.playback_queue_ready, queue.name))

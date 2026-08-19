@@ -65,8 +65,13 @@ display; Media3 downloads and verifies a track when playback needs it. Both
 stay in a bounded private cache.
 
 Report a successful command as "queued" or "available on the phone", not as
-fully downloaded or already playing. Playback starts after the user taps Play;
-do not drive the phone through ADB unless the user authorized device control.
+fully downloaded or already playing. An idle player starts only after the user
+taps Play. If the phone's **Hot-swap playlists** setting is enabled and a queue
+is already active, the phone keeps the old queue playing while it verifies the
+new first track and opportunistically prefetches optional artwork, then
+atomically replaces the Media3 timeline and preserves Play/Pause. Do not assume
+that opt-in setting is enabled, and do not drive the phone through ADB unless
+the user authorized device control.
 
 ## Validate and diagnose
 

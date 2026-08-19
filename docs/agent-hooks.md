@@ -79,7 +79,10 @@ migi-play -name "Quiet morning" -device phone-1 -cover ./cover.jpg \
 
 Only the final validated queue emits `media.queue.set`. JPEG, PNG, and WebP
 covers use the same silent private media upload and are verified before display.
-The phone persists the queue but requires a user tap before starting audio.
+The phone persists the queue and requires a user tap before starting an idle
+player. If **Hot-swap playlists** is enabled and a playlist is already active,
+the phone verifies the new first track, opportunistically prefetches its cover,
+and replaces the active queue when ready.
 
 ## Codex notifications and lifecycle hooks
 

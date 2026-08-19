@@ -107,12 +107,18 @@ class MainActivity : Activity() {
         }
     }
     private val playbackListener = object : Player.Listener {
-        override fun onEvents(player: Player, events: Player.Events) = refreshPlaybackControls()
+        override fun onEvents(player: Player, events: Player.Events) {
+            refreshPlaybackControls()
+            if (events.contains(Player.EVENT_TIMELINE_CHANGED)) refreshPlaybackQueue()
+        }
     }
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == KEY_PAGER_MESSAGE) runOnUiThread(::refreshPagerMessage)
         if (key == KEY_FILES_GENERATION) runOnUiThread(::refreshFiles)
         if (key == PlaybackQueueRepository.KEY_QUEUE) runOnUiThread(::refreshPlaybackQueue)
+        if (key == KEY_PLAYBACK_HOT_SWAP_EVENT_ID || key == KEY_PLAYBACK_HOT_SWAP_STATE) {
+            runOnUiThread(::refreshPlaybackStatus)
+        }
         if (key == KEY_CONNECTION_RECOVERY_ERROR) {
             runOnUiThread { refreshConnectionStatus(force = true) }
         }
@@ -240,6 +246,29 @@ class MainActivity : Activity() {
             isChecked = preferences.getBoolean(KEY_DND_OVERRIDE, false)
             setOnCheckedChangeListener { _, enabled ->
                 preferences.edit().putBoolean(KEY_DND_OVERRIDE, enabled).apply()
+            }
+        }
+        val hotSwapPlaylists = SwitchMaterial(this).apply {
+            text = getString(R.string.playback_hot_swap)
+            applyMigiText(15f)
+            thumbTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(MigiPalette.primary, MigiPalette.muted),
+            )
+            trackTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(0x806F88E8.toInt(), MigiPalette.outline),
+            )
+            isChecked = preferences.getBoolean(KEY_PLAYBACK_HOT_SWAP, false)
+            setOnCheckedChangeListener { _, enabled ->
+                preferences.edit().putBoolean(KEY_PLAYBACK_HOT_SWAP, enabled).apply()
+                if (enabled) {
+                    PlaybackQueueRepository(this@MainActivity).current()?.let { queue ->
+                        PlaybackService.replaceWhenReady(this@MainActivity, queue.eventID)
+                    }
+                } else {
+                    PlaybackService.cancelPendingReplacement(this@MainActivity)
+                }
             }
         }
         val audioVolumeLabel = TextView(this).apply {
@@ -575,6 +604,23 @@ class MainActivity : Activity() {
                     addView(start, matchWidth())
                     addView(stop, matchWidth().apply { topMargin = dp(8) })
                     addView(batteryButton, matchWidth().apply { topMargin = dp(8) })
+                }, matchWidth())
+            }, matchWidth())
+            addGap(26)
+            addView(sectionLabel(R.string.settings_playback), matchWidth())
+            addGap(10)
+            addView(MaterialCardView(this@MainActivity).apply {
+                applyMigiCard(radiusDp = 22)
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(18), dp(16), dp(18), dp(18))
+                    addView(hotSwapPlaylists, matchWidth())
+                    addGap(7)
+                    addView(TextView(this@MainActivity).apply {
+                        setText(R.string.playback_hot_swap_description)
+                        applyMigiText(13f, MigiPalette.muted)
+                        setLineSpacing(0f, 1.15f)
+                    }, matchWidth())
                 }, matchWidth())
             }, matchWidth())
             addGap(26)
@@ -920,6 +966,7 @@ class MainActivity : Activity() {
                     playbackController = controller
                     controller.addListener(playbackListener)
                     refreshPlaybackControls()
+                    refreshPlaybackQueue()
                 }
                 .onFailure {
                     playbackControllerFuture = null
@@ -994,7 +1041,14 @@ class MainActivity : Activity() {
                 (position * PLAYBACK_SEEK_MAX / duration).toFloat()
             } else 0f
         }
-        refreshPlaybackTrackSelection(controller?.currentMediaItemIndex ?: -1)
+        val activeQueue = PlaybackService.activeQueueSnapshot()
+        refreshPlaybackTrackSelection(
+            if (activeQueue?.eventID == queue?.eventID) {
+                controller?.currentMediaItemIndex ?: -1
+            } else {
+                -1
+            },
+        )
     }
 
     private fun formatPlaybackTime(milliseconds: Long): String {
@@ -1013,7 +1067,7 @@ class MainActivity : Activity() {
         playbackTrackRows = emptyList()
         if (queue == null) {
             playbackSummary.setText(R.string.playback_empty)
-            playbackStatus.text = ""
+            refreshPlaybackStatus(null)
             playbackButton.isEnabled = false
             playbackArtwork.showFallback("migi")
             miniArtwork.showFallback("migi")
@@ -1028,11 +1082,12 @@ class MainActivity : Activity() {
             queue.items.size,
             queue.agent,
         )
-        playbackStatus.setText(R.string.playback_ready_to_prepare)
+        refreshPlaybackStatus(queue)
         playbackButton.isEnabled = true
-        playbackArtwork.showFallback(queue.name)
-        miniArtwork.showFallback(queue.name)
-        loadPlaylistArtwork(queue)
+        val artworkQueue = PlaybackService.activeQueueSnapshot() ?: queue
+        playbackArtwork.showFallback(artworkQueue.name)
+        miniArtwork.showFallback(artworkQueue.name)
+        loadPlaylistArtwork(artworkQueue)
         val rows = ArrayList<PlaybackTrackRow>(queue.items.size)
         for ((index, track) in queue.items.withIndex()) {
             val number = TextView(this).apply {
@@ -1085,6 +1140,47 @@ class MainActivity : Activity() {
         }
         playbackTrackRows = rows
         refreshPlaybackControls()
+    }
+
+    private fun refreshPlaybackStatus(
+        queue: PlaybackQueue? = PlaybackQueueRepository(this).current(),
+    ) {
+        if (!::playbackStatus.isInitialized) return
+        if (queue == null) {
+            playbackStatus.text = ""
+            return
+        }
+        val eventID = preferences.getLong(KEY_PLAYBACK_HOT_SWAP_EVENT_ID, -1L)
+        val state = preferences.getString(KEY_PLAYBACK_HOT_SWAP_STATE, null)
+            ?.takeIf { eventID == queue.eventID }
+        val activeEventID = PlaybackService.activeQueueSnapshot()?.eventID
+        playbackStatus.setText(when (state) {
+            PlaybackService.HOT_SWAP_STATE_PREPARING -> {
+                if (activeEventID != null && queue.eventID > activeEventID) {
+                    R.string.playback_hot_swap_preparing
+                } else {
+                    R.string.playback_ready_to_prepare
+                }
+            }
+            PlaybackService.HOT_SWAP_STATE_COMPLETE -> {
+                if (
+                    activeEventID == queue.eventID &&
+                    (playbackController?.mediaItemCount ?: 0) > 0
+                ) {
+                    R.string.playback_hot_swap_complete
+                } else {
+                    R.string.playback_ready_to_prepare
+                }
+            }
+            PlaybackService.HOT_SWAP_STATE_FAILED -> {
+                if (activeEventID != null && queue.eventID > activeEventID) {
+                    R.string.playback_hot_swap_failed
+                } else {
+                    R.string.playback_ready_to_prepare
+                }
+            }
+            else -> R.string.playback_ready_to_prepare
+        })
     }
 
     private fun prepareAndPlayQueue() {
@@ -1631,29 +1727,32 @@ class MainActivity : Activity() {
         const val KEY_PAGER_MESSAGE = "pager_message"
         const val KEY_FILES_GENERATION = "files_generation"
         const val KEY_DND_OVERRIDE = "dnd_override"
-            const val KEY_AUDIO_VOLUME = "audio_volume"
-            const val KEY_CONNECTION_RECOVERY_ERROR = "connection_recovery_error"
-            const val DEFAULT_AUDIO_VOLUME = 100
-            const val EXTRA_OPEN_TAB = "dev.migi.app.extra.OPEN_TAB"
-            const val TAB_MUSIC = 1
-            private const val REQUEST_CHOOSE_FILE = 20
-            private const val REQUEST_SAVE_FILE = 21
-            private const val REQUEST_CHOOSE_PHOTO = 22
-            private const val STATE_SELECTED_TAB = "selected_tab"
-            private const val TAB_STATUS = 0
-            private const val PLAYBACK_SEEK_MAX = 1_000
-            private const val NAV_HOME = 10_001
-            private const val NAV_MUSIC = 10_002
-            private const val NAV_FILES = 10_003
-            private const val NAV_UPDATES = 10_004
-            private const val NAV_SETTINGS = 10_005
-            private val NAVIGATION_IDS = intArrayOf(
-                NAV_HOME,
-                NAV_MUSIC,
-                NAV_FILES,
-                NAV_UPDATES,
-                NAV_SETTINGS,
-            )
+        const val KEY_AUDIO_VOLUME = "audio_volume"
+        const val KEY_CONNECTION_RECOVERY_ERROR = "connection_recovery_error"
+        const val KEY_PLAYBACK_HOT_SWAP = "playback_hot_swap"
+        const val KEY_PLAYBACK_HOT_SWAP_EVENT_ID = "playback_hot_swap_event_id"
+        const val KEY_PLAYBACK_HOT_SWAP_STATE = "playback_hot_swap_state"
+        const val DEFAULT_AUDIO_VOLUME = 100
+        const val EXTRA_OPEN_TAB = "dev.migi.app.extra.OPEN_TAB"
+        const val TAB_MUSIC = 1
+        private const val REQUEST_CHOOSE_FILE = 20
+        private const val REQUEST_SAVE_FILE = 21
+        private const val REQUEST_CHOOSE_PHOTO = 22
+        private const val STATE_SELECTED_TAB = "selected_tab"
+        private const val TAB_STATUS = 0
+        private const val PLAYBACK_SEEK_MAX = 1_000
+        private const val NAV_HOME = 10_001
+        private const val NAV_MUSIC = 10_002
+        private const val NAV_FILES = 10_003
+        private const val NAV_UPDATES = 10_004
+        private const val NAV_SETTINGS = 10_005
+        private val NAVIGATION_IDS = intArrayOf(
+            NAV_HOME,
+            NAV_MUSIC,
+            NAV_FILES,
+            NAV_UPDATES,
+            NAV_SETTINGS,
+        )
 
         private fun normalizePin(raw: String?): String? {
             if (raw == null) return null
