@@ -63,6 +63,8 @@ class MainActivity : Activity() {
     private lateinit var fileList: LinearLayout
     private lateinit var playbackSummary: TextView
     private lateinit var playbackTracks: LinearLayout
+    private lateinit var savedPlaylistList: LinearLayout
+    private lateinit var savedPlaylistStatus: TextView
     private lateinit var playbackStatus: TextView
     private lateinit var playbackButton: Button
     private lateinit var playbackCurrent: TextView
@@ -93,6 +95,8 @@ class MainActivity : Activity() {
     private val releaseRefreshGeneration = AtomicLong()
     private val artworkExecutor = Executors.newSingleThreadExecutor()
     private val artworkRefreshGeneration = AtomicLong()
+    private val playlistExecutor = Executors.newSingleThreadExecutor()
+    private val playlistRefreshGeneration = AtomicLong()
     private var loadedArtworkKey: String? = null
     private var releaseChanges: AutoCloseable? = null
     private var playbackController: MediaController? = null
@@ -160,6 +164,7 @@ class MainActivity : Activity() {
         refreshReleases(reconcile = true)
         refreshFiles()
         refreshPlaybackQueue()
+        refreshSavedPlaylists()
         refreshBatteryOptimizationState()
         refreshConnectionStatus(force = true)
         connectPlaybackController()
@@ -182,6 +187,8 @@ class MainActivity : Activity() {
         releaseExecutor.shutdownNow()
         artworkRefreshGeneration.incrementAndGet()
         artworkExecutor.shutdownNow()
+        playlistRefreshGeneration.incrementAndGet()
+        playlistExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -486,6 +493,20 @@ class MainActivity : Activity() {
                 }
             }
             addView(playbackStopButton, matchWidth().apply { topMargin = dp(10) })
+            addGap(34)
+            addView(sectionLabel(R.string.saved_playlists_title), matchWidth())
+            savedPlaylistStatus = TextView(this@MainActivity).apply {
+                applyMigiText(13f, MigiPalette.muted)
+                setPadding(0, dp(7), 0, dp(12))
+            }
+            addView(savedPlaylistStatus, matchWidth())
+            savedPlaylistList = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            addView(savedPlaylistList, matchWidth())
+            addView(secondaryActionButton(R.string.saved_playlists_refresh).apply {
+                setOnClickListener { refreshSavedPlaylists() }
+            }, matchWidth().apply { topMargin = dp(3) })
             addGap(34)
             addView(sectionLabel(R.string.queue_title), matchWidth())
             playbackSummary = TextView(this@MainActivity).apply {
@@ -1149,6 +1170,98 @@ class MainActivity : Activity() {
         refreshPlaybackControls()
     }
 
+    private fun refreshSavedPlaylists() {
+        if (!::savedPlaylistList.isInitialized || playlistExecutor.isShutdown) return
+        val generation = playlistRefreshGeneration.incrementAndGet()
+        savedPlaylistStatus.setText(R.string.saved_playlists_loading)
+        savedPlaylistList.removeAllViews()
+        playlistExecutor.execute {
+            val result = runCatching { SavedPlaylistClient(applicationContext).list() }
+            runOnUiThread {
+                if (isDestroyed || generation != playlistRefreshGeneration.get()) return@runOnUiThread
+                savedPlaylistList.removeAllViews()
+                result.onFailure { error ->
+                    savedPlaylistStatus.text = getString(
+                        R.string.saved_playlists_failed,
+                        error.message ?: "unknown error",
+                    )
+                }.onSuccess { playlists ->
+                    if (playlists.isEmpty()) {
+                        savedPlaylistStatus.setText(R.string.saved_playlists_empty)
+                        return@onSuccess
+                    }
+                    savedPlaylistStatus.text = resources.getQuantityString(
+                        R.plurals.saved_playlists_available,
+                        playlists.size,
+                        playlists.size,
+                    )
+                    for (playlist in playlists) {
+                        val switchButton = secondaryActionButton(R.string.saved_playlist_switch)
+                        val card = MaterialCardView(this).apply {
+                            applyMigiCard(radiusDp = 18)
+                            addView(LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(17), dp(15), dp(12), dp(15))
+                                addView(LinearLayout(this@MainActivity).apply {
+                                    orientation = LinearLayout.VERTICAL
+                                    addView(TextView(this@MainActivity).apply {
+                                        text = playlist.name
+                                        applyMigiText(16f, weight = Typeface.BOLD)
+                                        maxLines = 2
+                                    }, matchWidth())
+                                    addGap(5)
+                                    addView(TextView(this@MainActivity).apply {
+                                        text = resources.getQuantityString(
+                                            R.plurals.saved_playlist_tracks,
+                                            playlist.trackCount,
+                                            playlist.trackCount,
+                                        )
+                                        applyMigiText(13f, MigiPalette.muted)
+                                    }, matchWidth())
+                                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                    marginEnd = dp(12)
+                                })
+                                addView(switchButton, LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ))
+                            }, matchWidth())
+                        }
+                        switchButton.setOnClickListener {
+                            queueSavedPlaylist(playlist, switchButton)
+                        }
+                        savedPlaylistList.addView(card, matchWidth().apply { bottomMargin = dp(9) })
+                    }
+                }
+            }
+        }
+    }
+
+    private fun queueSavedPlaylist(playlist: SavedPlaylistSummary, button: MaterialButton) {
+        if (playlistExecutor.isShutdown) return
+        button.isEnabled = false
+        savedPlaylistStatus.text = getString(R.string.saved_playlist_switching, playlist.name)
+        playlistExecutor.execute {
+            val result = runCatching { SavedPlaylistClient(applicationContext).start(playlist.id) }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                button.isEnabled = true
+                savedPlaylistStatus.text = result.fold(
+                    onSuccess = { eventID ->
+                        getString(R.string.saved_playlist_queued, playlist.name, eventID)
+                    },
+                    onFailure = { error ->
+                        getString(
+                            R.string.saved_playlist_switch_failed,
+                            error.message ?: "unknown error",
+                        )
+                    },
+                )
+            }
+        }
+    }
+
     private fun refreshPlaybackStatus(
         queue: PlaybackQueue? = PlaybackQueueRepository(this).current(),
     ) {
@@ -1642,6 +1755,7 @@ class MainActivity : Activity() {
                 result.onSuccess {
                     endpoint.setText(invitation.endpoint)
                     certificatePin.setText(invitation.pin)
+                    refreshSavedPlaylists()
                     startForegroundService(
                         Intent(this, ConnectionService::class.java)
                             .setAction(ConnectionService.ACTION_RECONFIGURE),

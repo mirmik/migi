@@ -34,6 +34,18 @@ class PlaybackQueuePolicyTest {
 	}
 
 	@Test
+	fun acceptsMoreThanThirtyTwoTracksWithinByteLimit() {
+		val queue = PlaybackQueue(
+			eventID = 42,
+			name = "Long album",
+			agent = "playlist-agent",
+			deviceID = "phone-1",
+			items = List(40) { track },
+		)
+		assertEquals(40, PlaybackQueueCodec.validate(queue).items.size)
+	}
+
+	@Test
 	fun rejectsUnsupportedOrOversizedArtwork() {
 		val queue = PlaybackQueue(
 			eventID = 42,

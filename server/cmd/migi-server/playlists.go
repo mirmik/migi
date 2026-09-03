@@ -35,6 +35,16 @@ type savedPlaylist struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// savedPlaylistSummary is the deliberately narrow view exposed to paired
+// phones. Track and artwork IDs remain private until the phone chooses a
+// playlist and receives its authenticated, device-targeted queue event.
+type savedPlaylistSummary struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	TrackCount int       `json:"track_count"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 func (s *mediaStore) savedPlaylistRoutes(
 	mux *http.ServeMux,
 	wrap func(http.Handler) http.Handler,
@@ -45,6 +55,48 @@ func (s *mediaStore) savedPlaylistRoutes(
 	mux.Handle("GET /v1/playlists/{playlistID}", wrap(http.HandlerFunc(s.getSavedPlaylistHandler)))
 	mux.Handle("DELETE /v1/playlists/{playlistID}", wrap(http.HandlerFunc(s.deleteSavedPlaylistHandler)))
 	mux.Handle("POST /v1/playlists/{playlistID}/queue", wrap(s.queueSavedPlaylistHandler(agentName)))
+}
+
+func (s *mediaStore) savedPlaylistDeviceRoutes(
+	mux *http.ServeMux,
+	wrap func(http.Handler) http.Handler,
+) {
+	mux.Handle("GET /v1/playlists", wrap(http.HandlerFunc(s.listSavedPlaylistsForDeviceHandler)))
+	mux.Handle("POST /v1/playlists/{playlistID}/queue", wrap(http.HandlerFunc(s.queueSavedPlaylistForDeviceHandler)))
+}
+
+func (s *mediaStore) listSavedPlaylistsForDeviceHandler(w http.ResponseWriter, _ *http.Request) {
+	playlists, err := s.listSavedPlaylists()
+	if err != nil {
+		slog.Error("failed to list saved playlists for device", "error", err)
+		http.Error(w, "failed to list saved playlists", http.StatusInternalServerError)
+		return
+	}
+	summaries := make([]savedPlaylistSummary, 0, len(playlists))
+	for _, playlist := range playlists {
+		summaries = append(summaries, savedPlaylistSummary{
+			ID: playlist.ID, Name: playlist.Name,
+			TrackCount: len(playlist.MediaIDs), UpdatedAt: playlist.UpdatedAt,
+		})
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, summaries)
+}
+
+func (s *mediaStore) queueSavedPlaylistForDeviceHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1))
+	if err != nil || len(body) != 0 {
+		http.Error(w, "device playlist queue body must be empty", http.StatusBadRequest)
+		return
+	}
+	device, ok := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+	if !ok {
+		http.Error(w, "device authentication required", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	s.queueSavedPlaylistForTarget(w, r, device.ID, "device:"+device.ID)
 }
 
 func (s *mediaStore) listSavedPlaylistsHandler(w http.ResponseWriter, _ *http.Request) {
@@ -120,8 +172,8 @@ func (s *mediaStore) createSavedPlaylistHandler(agentName func(*http.Request) st
 			return
 		}
 		request.Name = strings.TrimSpace(request.Name)
-		if !validMediaText(request.Name, 128) || len(request.MediaIDs) == 0 || len(request.MediaIDs) > maxPlaybackQueueItems {
-			http.Error(w, fmt.Sprintf("name and 1-%d media IDs are required", maxPlaybackQueueItems), http.StatusBadRequest)
+		if !validMediaText(request.Name, 128) || len(request.MediaIDs) == 0 {
+			http.Error(w, "name and at least one media ID are required", http.StatusBadRequest)
 			return
 		}
 		if err := s.validateSavedPlaylistReferences(request.ArtworkMediaID, request.MediaIDs); err != nil {
@@ -189,41 +241,51 @@ func (s *mediaStore) queueSavedPlaylistHandler(agentName func(*http.Request) str
 			http.Error(w, "saved playlist queue body must contain one object", http.StatusBadRequest)
 			return
 		}
-		playlist, err := s.getSavedPlaylist(r.PathValue("playlistID"))
-		if errors.Is(err, os.ErrNotExist) {
-			http.Error(w, "saved playlist does not exist", http.StatusNotFound)
-			return
-		}
-		if err != nil {
-			http.Error(w, "failed to read saved playlist", http.StatusInternalServerError)
-			return
-		}
-		manifest, err := s.savedPlaylistManifest(r.Context(), playlist, request.DeviceID)
-		if errors.Is(err, os.ErrNotExist) {
-			http.Error(w, "saved playlist media is unavailable", http.StatusConflict)
-			return
-		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		body, err := json.Marshal(manifest)
-		if err != nil || len(body) > maxPlaybackManifest {
-			http.Error(w, "saved playlist metadata exceeds the event limit", http.StatusRequestEntityTooLarge)
-			return
-		}
-		agent := normalizeMediaAgent(agentName(r))
-		event, err := s.broker.Publish(r.Context(), events.Input{
-			Kind: playbackQueueEventKind, Agent: agent,
-			Title: "Playlist ready: " + playlist.Name, Body: string(body),
-		})
-		if err != nil {
-			slog.Error("failed to publish saved playlist", "error", err, "playlist_id", playlist.ID)
-			http.Error(w, "failed to publish saved playlist", http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusCreated, event)
+		s.queueSavedPlaylistForTarget(
+			w, r, request.DeviceID, normalizeMediaAgent(agentName(r)),
+		)
 	})
+}
+
+func (s *mediaStore) queueSavedPlaylistForTarget(
+	w http.ResponseWriter,
+	r *http.Request,
+	deviceID string,
+	agent string,
+) {
+	playlist, err := s.getSavedPlaylist(r.PathValue("playlistID"))
+	if errors.Is(err, os.ErrNotExist) {
+		http.Error(w, "saved playlist does not exist", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "failed to read saved playlist", http.StatusInternalServerError)
+		return
+	}
+	manifest, err := s.savedPlaylistManifest(r.Context(), playlist, deviceID)
+	if errors.Is(err, os.ErrNotExist) {
+		http.Error(w, "saved playlist media is unavailable", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body, err := json.Marshal(manifest)
+	if err != nil || len(body) > maxPlaybackManifest {
+		http.Error(w, "saved playlist metadata exceeds the event limit", http.StatusRequestEntityTooLarge)
+		return
+	}
+	event, err := s.broker.Publish(r.Context(), events.Input{
+		Kind: playbackQueueEventKind, Agent: agent,
+		Title: "Playlist ready: " + playlist.Name, Body: string(body),
+	})
+	if err != nil {
+		slog.Error("failed to publish saved playlist", "error", err, "playlist_id", playlist.ID)
+		http.Error(w, "failed to publish saved playlist", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, event)
 }
 
 func (s *mediaStore) validateSavedPlaylistReferences(artworkID string, mediaIDs []string) error {
@@ -379,7 +441,7 @@ func (s *mediaStore) readSavedPlaylistLocked(id string) (savedPlaylist, error) {
 	if playlist.ID != id || !validMediaText(playlist.Name, 128) ||
 		!validMediaText(playlist.Source, 128) || playlist.CreatedAt.IsZero() ||
 		playlist.UpdatedAt.Before(playlist.CreatedAt) ||
-		len(playlist.MediaIDs) == 0 || len(playlist.MediaIDs) > maxPlaybackQueueItems {
+		len(playlist.MediaIDs) == 0 {
 		return savedPlaylist{}, fmt.Errorf("invalid saved playlist %s", id)
 	}
 	if playlist.ArtworkMediaID != "" && !mediaIDPattern.MatchString(playlist.ArtworkMediaID) {

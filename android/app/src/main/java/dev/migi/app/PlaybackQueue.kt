@@ -54,7 +54,7 @@ internal object PlaybackQueueCodec {
 		require(queue.eventID > 0) { "Playback queue event ID is invalid" }
 		require(validText(queue.name, MAX_QUEUE_NAME_LENGTH)) { "Playback queue name is invalid" }
 		require(queue.deviceID.isEmpty() || DEVICE_ID.matches(queue.deviceID)) { "Playback target is invalid" }
-		require(queue.items.size in 1..MAX_ITEMS) { "Playback queue item count is invalid" }
+		require(queue.items.isNotEmpty()) { "Playback queue item count is invalid" }
 		var totalBytes = 0L
 		for (track in queue.items) {
 			require(MEDIA_ID.matches(track.id)) { "Media ID is invalid" }
@@ -97,7 +97,6 @@ internal object PlaybackQueueCodec {
 
 	const val EVENT_KIND = "media.queue.set"
 	const val SCHEMA_VERSION = 1
-	const val MAX_ITEMS = 32
 	const val MAX_TRACK_BYTES = 256L * 1024 * 1024
 	const val MAX_QUEUE_BYTES = 1024L * 1024 * 1024
 	const val MAX_ARTWORK_BYTES = 8L * 1024 * 1024

@@ -32,7 +32,6 @@ const (
 	maxMediaCount          = 2048
 	maxMediaNameBytes      = 255
 	maxMediaTextRunes      = 256
-	maxPlaybackQueueItems  = 32
 	maxPlaybackQueueBytes  = int64(1 << 30)
 	maxPlaybackArtwork     = int64(8 << 20)
 	maxPlaybackManifest    = 8 << 10
@@ -174,6 +173,7 @@ func (s *mediaStore) deviceRoutes(
 ) {
 	mux.Handle("GET /v1/media/{mediaID}", wrap(http.HandlerFunc(s.metadataHandler)))
 	mux.Handle("GET /v1/media/{mediaID}/content", wrap(http.HandlerFunc(s.contentHandler)))
+	s.savedPlaylistDeviceRoutes(mux, wrap)
 }
 
 func (s *mediaStore) listHandler(w http.ResponseWriter, r *http.Request) {
@@ -351,8 +351,8 @@ func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Han
 		if request.Name == "" {
 			request.Name = "Migi playlist"
 		}
-		if !validMediaText(request.Name, 128) || len(request.MediaIDs) == 0 || len(request.MediaIDs) > maxPlaybackQueueItems {
-			http.Error(w, fmt.Sprintf("queue name and 1-%d media IDs are required", maxPlaybackQueueItems), http.StatusBadRequest)
+		if !validMediaText(request.Name, 128) || len(request.MediaIDs) == 0 {
+			http.Error(w, "queue name and at least one media ID are required", http.StatusBadRequest)
 			return
 		}
 		if request.DeviceID != "" {

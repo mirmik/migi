@@ -11,6 +11,23 @@
     <string name="updates_subtitle">Apps delivered safely to this phone</string>
     <string name="settings_subtitle">Connection, sound and delivery</string>
     <string name="queue_title">Up next</string>
+    <string name="saved_playlists_title">SAVED PLAYLISTS</string>
+    <string name="saved_playlists_loading">Loading saved playlists…</string>
+    <string name="saved_playlists_empty">No saved playlists yet</string>
+    <string name="saved_playlists_failed">Cannot load playlists: %1$s</string>
+    <string name="saved_playlists_refresh">Refresh playlists</string>
+    <string name="saved_playlist_switch">Switch</string>
+    <string name="saved_playlist_switching">Selecting %1$s…</string>
+    <string name="saved_playlist_queued">%1$s queued as event %2$d</string>
+    <string name="saved_playlist_switch_failed">Cannot select playlist: %1$s</string>
+    <plurals name="saved_playlists_available">
+        <item quantity="one">%1$d playlist available</item>
+        <item quantity="other">%1$d playlists available</item>
+    </plurals>
+    <plurals name="saved_playlist_tracks">
+        <item quantity="one">%1$d track</item>
+        <item quantity="other">%1$d tracks</item>
+    </plurals>
     <plurals name="queue_tracks">
         <item quantity="one">%1$d track · from %2$s</item>
         <item quantity="other">%1$d tracks · from %2$s</item>

@@ -172,6 +172,10 @@ func TestRegisterOriginMediaKeepsPathPrivateAndSavesRegistry(t *testing.T) {
 func TestSavedPlaylistClientCanSaveListStartAndForget(t *testing.T) {
 	const trackID = "0123456789abcdef0123456789abcdef"
 	const playlistID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	mediaIDs := make([]string, 40)
+	for index := range mediaIDs {
+		mediaIDs[index] = trackID
+	}
 	seen := make(map[string]int)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Method + " " + r.URL.RequestURI()
@@ -189,7 +193,7 @@ func TestSavedPlaylistClientCanSaveListStartAndForget(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if body.Name != "Reusable" || len(body.MediaIDs) != 1 || body.MediaIDs[0] != trackID {
+			if body.Name != "Reusable" || len(body.MediaIDs) != 40 || body.MediaIDs[0] != trackID {
 				t.Errorf("save body = %#v", body)
 			}
 			w.WriteHeader(http.StatusCreated)
@@ -224,7 +228,7 @@ func TestSavedPlaylistClientCanSaveListStartAndForget(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 	client := &playClient{http: server.Client(), token: "agent-token"}
-	if err := savePlaylist(client, base, "Reusable", "codex", "", []string{trackID}); err != nil {
+	if err := savePlaylist(client, base, "Reusable", "codex", "", mediaIDs); err != nil {
 		t.Fatal(err)
 	}
 	if err := listPlaylists(client, base); err != nil {

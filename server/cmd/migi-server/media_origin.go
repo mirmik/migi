@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	maxOriginMediaItems    = maxPlaybackQueueItems + 1
+	maxOriginMediaItems    = maxMediaCount
 	maxOriginManifestBytes = 256 << 10
 	originLongPoll         = 20 * time.Second
 	originClaimLease       = 30 * time.Second

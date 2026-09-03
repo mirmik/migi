@@ -101,9 +101,10 @@ upload succeeds. `queue` rearranges known IDs without resending bytes. Add
 storage origin and its `migi-origin` process will remain available; it registers
 origin metadata instead of transferring bytes immediately.
 
-Migi accepts 1–32 tracks, at most 256 MiB per track, 1 GiB of declared track
-bytes per queue, and optional JPEG, PNG, or WebP artwork up to 8 MiB. Music and
-covers always use this media protocol, never `migi-file-exchange`.
+Migi accepts one or more tracks subject to the queue metadata bound, at most
+256 MiB per track, 1 GiB of declared track bytes per queue, and optional JPEG,
+PNG, or WebP artwork up to 8 MiB. Music and covers always use this media
+protocol, never `migi-file-exchange`.
 
 ## Delivery semantics and diagnosis
 

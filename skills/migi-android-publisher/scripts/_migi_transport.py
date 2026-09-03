@@ -159,7 +159,11 @@ def default_publisher_config_path() -> Path:
 
 def _private_json(path: Path, *, label: str, allowed: set[str]) -> dict[str, Any]:
     path = path.expanduser()
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -170,10 +174,13 @@ def _private_json(path: Path, *, label: str, allowed: set[str]) -> dict[str, Any
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise MigiClientError(f"{label} config is not a regular file")
-        if info.st_uid != os.getuid():
-            raise MigiClientError(f"{label} config is owned by another user")
-        if info.st_mode & 0o077:
-            raise MigiClientError(f"{label} config permissions must be 0600 or stricter")
+        if os.name == "posix":
+            if info.st_uid != os.getuid():
+                raise MigiClientError(f"{label} config is owned by another user")
+            if info.st_mode & 0o077:
+                raise MigiClientError(
+                    f"{label} config permissions must be 0600 or stricter"
+                )
         with os.fdopen(fd, "rb") as stream:
             fd = -1
             raw_bytes = stream.read(MAX_CONFIG_BYTES + 1)

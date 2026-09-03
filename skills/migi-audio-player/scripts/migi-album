@@ -88,9 +88,6 @@ def run(argv: list[str] | None = None) -> int:
     )
     if not tracks:
         raise ValueError("no supported audio files found")
-    if len(tracks) > 32:
-        raise ValueError("album has more than 32 tracks")
-
     cover: Path | None = None
     if args.cover:
         cover = Path(args.cover).resolve()

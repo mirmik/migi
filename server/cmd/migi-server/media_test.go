@@ -395,6 +395,148 @@ func TestSavedPlaylistPersistsPinsMediaAndCanBeRequeued(t *testing.T) {
 	}
 }
 
+func TestPairedDeviceCanListAndQueueSavedPlaylistsOnlyForItself(t *testing.T) {
+	broker := newTestBroker(t)
+	phoneToken := pairTestDevice(t, broker, "phone-1")
+	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	track, err := store.store(
+		t.Context(), "private-track.opus", "Private Track", "Migi", "audio/opus", "agent:curator",
+		strings.NewReader("opus bytes"), 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingest := newIngestMuxWithStores(broker, nil, store)
+	create := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/playlists",
+		strings.NewReader(`{"name":"Phone library","media_ids":["`+track.ID+`"]}`),
+	)
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("X-Migi-Source", "curator")
+	createResponse := httptest.NewRecorder()
+	ingest.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("save playlist returned %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var playlist savedPlaylist
+	if err := json.NewDecoder(createResponse.Body).Decode(&playlist); err != nil {
+		t.Fatal(err)
+	}
+
+	public := newPublicMuxWithAllStores(broker, nil, nil, store, newPublicSecurity())
+	unauthorized := httptest.NewRecorder()
+	public.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/playlists", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated playlist list returned %d", unauthorized.Code)
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/v1/playlists", nil)
+	list.Header.Set("Authorization", "Bearer "+phoneToken)
+	listResponse := httptest.NewRecorder()
+	public.ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("device playlist list returned %d: %s", listResponse.Code, listResponse.Body.String())
+	}
+	listBody := listResponse.Body.String()
+	var summaries []savedPlaylistSummary
+	if err := json.Unmarshal([]byte(listBody), &summaries); err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].ID != playlist.ID ||
+		summaries[0].Name != playlist.Name || summaries[0].TrackCount != 1 {
+		t.Fatalf("device playlist summaries = %#v", summaries)
+	}
+	if strings.Contains(listBody, track.ID) || strings.Contains(listBody, "curator") {
+		t.Fatalf("device playlist list leaked curator media details: %s", listBody)
+	}
+
+	foreignTarget := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/playlists/"+playlist.ID+"/queue",
+		strings.NewReader(`{"device_id":"phone-2"}`),
+	)
+	foreignTarget.Header.Set("Authorization", "Bearer "+phoneToken)
+	foreignTargetResponse := httptest.NewRecorder()
+	public.ServeHTTP(foreignTargetResponse, foreignTarget)
+	if foreignTargetResponse.Code != http.StatusBadRequest {
+		t.Fatalf("device-supplied playlist target returned %d: %s", foreignTargetResponse.Code, foreignTargetResponse.Body.String())
+	}
+
+	start := httptest.NewRequest(http.MethodPost, "/v1/playlists/"+playlist.ID+"/queue", nil)
+	start.Header.Set("Authorization", "Bearer "+phoneToken)
+	startResponse := httptest.NewRecorder()
+	public.ServeHTTP(startResponse, start)
+	if startResponse.Code != http.StatusCreated {
+		t.Fatalf("device playlist start returned %d: %s", startResponse.Code, startResponse.Body.String())
+	}
+	replay, _, err := broker.Subscribe(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 1 || replay[0].Agent != "device:phone-1" {
+		t.Fatalf("device playlist event = %#v", replay)
+	}
+	var manifest playbackQueueManifest
+	if err := json.Unmarshal([]byte(replay[0].Body), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DeviceID != "phone-1" || len(manifest.Items) != 1 || manifest.Items[0].ID != track.ID {
+		t.Fatalf("device playlist manifest = %#v", manifest)
+	}
+}
+
+func TestSavedPlaylistAcceptsMoreThanThirtyTwoTracks(t *testing.T) {
+	broker := newTestBroker(t)
+	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	track, err := store.store(
+		t.Context(), "track.opus", "Track", "", "audio/opus", "agent:test",
+		strings.NewReader("opus bytes"), 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 40)
+	for index := range ids {
+		ids[index] = track.ID
+	}
+	body, err := json.Marshal(map[string]any{"name": "Long album", "media_ids": ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newIngestMuxWithStores(broker, nil, store)
+	create := httptest.NewRequest(http.MethodPost, "/v1/playlists", bytes.NewReader(body))
+	create.Header.Set("Content-Type", "application/json")
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("save 40-track playlist returned %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var playlist savedPlaylist
+	if err := json.NewDecoder(createResponse.Body).Decode(&playlist); err != nil {
+		t.Fatal(err)
+	}
+	if len(playlist.MediaIDs) != 40 {
+		t.Fatalf("saved playlist has %d tracks", len(playlist.MediaIDs))
+	}
+
+	start := httptest.NewRequest(
+		http.MethodPost, "/v1/playlists/"+playlist.ID+"/queue", strings.NewReader(`{}`),
+	)
+	start.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	handler.ServeHTTP(startResponse, start)
+	if startResponse.Code != http.StatusCreated {
+		t.Fatalf("queue 40-track playlist returned %d: %s", startResponse.Code, startResponse.Body.String())
+	}
+}
+
 func TestMediaCatalogSearchMatchesTitleArtistNameAndSource(t *testing.T) {
 	broker := newTestBroker(t)
 	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)

@@ -215,6 +215,75 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_listSharedFiles(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_listSavedPlaylists(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        small_request(
+            &endpoint,
+            &expected_pin,
+            "GET",
+            "/v1/playlists",
+            None,
+            Some(&credential),
+            "200",
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_startSavedPlaylist(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    playlist_id: JString,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let playlist_id: String = env.get_string(&playlist_id)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_media_id(&playlist_id)?;
+        small_request(
+            &endpoint,
+            &expected_pin,
+            "POST",
+            &format!("/v1/playlists/{playlist_id}/queue"),
+            None,
+            Some(&credential),
+            "201",
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadSharedFile(
     mut env: JNIEnv,
     _class: JClass,

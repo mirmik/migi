@@ -150,7 +150,10 @@ separately from queue events. A saved playlist pins directly uploaded media
 past its normal TTL; origin records already persist independently. Saving is
 silent; explicitly starting the playlist resolves current authoritative
 metadata and publishes the same version-1 queue manifest as a one-off queue.
-Deleting the playlist releases any direct-upload retention pins.
+Deleting the playlist releases any direct-upload retention pins. A paired
+phone may list narrow playlist summaries and select one for itself; the server
+derives the queue target from the authenticated device token and does not
+expose catalog IDs through that listing.
 
 An agent commits a complete ordered queue through `/v1/playback/queue`. The
 server resolves every track and optional artwork ID, copies authoritative size,
@@ -177,7 +180,9 @@ cannot replace a newer queue.
 
 The UI uses platform Views with Material components rather than Compose. A
 dark card-based shell, bottom navigation and a persistent mini-player keep the
-small application direct while giving playback a clear visual hierarchy.
+small application direct while giving playback a clear visual hierarchy. The
+Music tab lists saved server playlists and lets the paired phone queue one for
+itself without an agent round trip; playlist curation remains agent-owned.
 Media3 remains responsible for ExoPlayer, media-session integration and system
 playback controls.
 

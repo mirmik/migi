@@ -772,8 +772,8 @@ func savePlaylist(
 	if strings.TrimSpace(name) == "" {
 		return errors.New("playlist name must not be empty")
 	}
-	if len(mediaIDs) == 0 || len(mediaIDs) > 32 {
-		return errors.New("save requires 1-32 media IDs")
+	if len(mediaIDs) == 0 {
+		return errors.New("save requires at least one media ID")
 	}
 	for _, id := range mediaIDs {
 		if !validMediaID(id) {
@@ -923,8 +923,8 @@ func queue(
 	if strings.TrimSpace(name) == "" {
 		return errors.New("playlist name must not be empty")
 	}
-	if len(mediaIDs) == 0 || len(mediaIDs) > 32 {
-		return errors.New("queue requires 1-32 media IDs")
+	if len(mediaIDs) == 0 {
+		return errors.New("queue requires at least one media ID")
 	}
 	for _, id := range mediaIDs {
 		if !validMediaID(id) {

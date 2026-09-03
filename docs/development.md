@@ -303,8 +303,10 @@ object to that phone with backpressure, verifies it while it passes, and keeps
 no origin-backed content. A device cache miss therefore requires the origin
 process and source file to remain available.
 
-The phone receives one playlist notification. An idle player never autoplays
-the event: open the **Music** tab and tap **Start playlist**. With
+The phone receives one playlist notification. The **Music** tab also lists
+saved playlists from the server; tapping **Switch** queues that selection only
+for the authenticated phone. An idle player never autoplays the event: tap
+**Start playlist**. With
 **Hot-swap playlists** enabled, an already-active session instead keeps playing
 while Migi verifies the first track and opportunistically prefetches optional
 artwork, then atomically adopts the newer queue while preserving Play/Pause.

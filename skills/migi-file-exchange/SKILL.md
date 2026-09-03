@@ -18,6 +18,9 @@ scripts/migi-file [-config PATH|-endpoint URL] list
 scripts/migi-file [-config PATH|-endpoint URL] [-output PATH] get FILE_ID
 ```
 
+On native Windows PowerShell, use `scripts/migi-file.ps1` in place of
+`scripts/migi-file`.
+
 The `migi-file` client automatically uses `${MIGI_AGENT_CONFIG}` or
 `~/.config/migi/agent.json` when present. That configuration connects to the
 authenticated HTTPS agent listener, sends the bearer token, and pins the exact
@@ -69,7 +72,8 @@ success unless the command returns successfully.
   `migi.service` user unit when access is authorized. Never print its token.
 - Without an agent config, check `http://127.0.0.1:8787/healthz`.
 - If config validation rejects ownership or permissions, make the file owned
-  by the current user and mode `0600`; do not weaken that check.
+  by the current user and mode `0600`; do not weaken that check. On Windows,
+  restrict the file ACL to the current user, SYSTEM, and Administrators.
 - If storage is full or a file exceeds the configured limit, report the server
   response. Do not delete other exchange objects without an explicit user
   request.

@@ -612,6 +612,21 @@ class SkillClientTests(unittest.TestCase):
         self.assertEqual(forgotten.returncode, 0, forgotten.stderr)
         self.assertEqual(self.state["playlist_deletes"], [PLAYLIST_ID])
 
+    def test_audio_skill_allows_more_than_thirty_two_saved_tracks(self) -> None:
+        skill = self.copied_skill(AUDIO_SKILL)
+        media_ids = [FILE_ID] * 40
+        saved = self.run_client(
+            skill / "scripts/migi-play",
+            "-endpoint",
+            self.endpoint,
+            "-name",
+            "Long album",
+            "save",
+            *media_ids,
+        )
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        self.assertEqual(self.state["playlist_saves"][0]["media_ids"], media_ids)
+
     def test_album_helper_uses_bundled_player_and_natural_order(self) -> None:
         skill = self.copied_skill(AUDIO_SKILL)
         album = self.root / "Album"

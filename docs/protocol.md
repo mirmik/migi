@@ -363,10 +363,10 @@ Content-Type: application/json
 
 `device_id` and `artwork_media_id` are optional. When `device_id` is absent,
 every paired phone may accept the queue. A named target must be an active paired
-device. Artwork must reference a supported image object. A queue contains 1–32
-audio entries, its declared track bytes total at most 1 GiB, and its resolved
-manifest must fit the ordinary 8 KiB event-body bound. Duplicate track IDs are
-allowed.
+device. Artwork must reference a supported image object. A queue contains one
+or more audio entries, its declared track bytes total at most 1 GiB, and its
+resolved manifest must fit the ordinary 8 KiB event-body bound. Duplicate track
+IDs are allowed; there is no separate fixed track-count limit.
 
 ### Saved playlists
 
@@ -415,6 +415,27 @@ Content-Type: application/json
 `device_id` is optional. Migi resolves the saved references and emits the same
 server-generated version-1 `media.queue.set` manifest used by
 `/v1/playback/queue`; the saved playlist ID itself is not sent to Android.
+
+Paired phones can browse and select saved playlists on the public pinned HTTP/3
+listener using their device token:
+
+```http
+GET /v1/playlists
+Authorization: Bearer <device-token>
+```
+
+The device response deliberately contains only `id`, `name`, `track_count`,
+and `updated_at`; it does not expose catalog, track, artwork, or curator IDs.
+A phone selects a playlist with an empty authenticated request:
+
+```http
+POST /v1/playlists/{playlistID}/queue
+Authorization: Bearer <device-token>
+```
+
+The phone request body must be empty. The server derives `device_id` from the
+authenticated token, so a phone can queue music only for itself. Creating,
+editing, and deleting saved playlists remain agent-only operations.
 
 The server resolves every object and publishes one `media.queue.set` event.
 Its body is a server-generated manifest; callers cannot submit this reserved

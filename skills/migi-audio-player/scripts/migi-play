@@ -487,8 +487,8 @@ def save_playlist(
 ) -> dict:
     if not name.strip():
         raise MigiClientError("playlist name must not be empty")
-    if not 1 <= len(media_ids) <= 32:
-        raise MigiClientError("save requires 1-32 media IDs")
+    if not media_ids:
+        raise MigiClientError("save requires at least one media ID")
     invalid = next((item for item in media_ids if not MEDIA_ID_RE.fullmatch(item)), None)
     if invalid is not None:
         raise MigiClientError(f"invalid media ID {invalid!r}")
@@ -576,8 +576,8 @@ def queue(
 ) -> None:
     if not name.strip():
         raise MigiClientError("playlist name must not be empty")
-    if not 1 <= len(media_ids) <= 32:
-        raise MigiClientError("queue requires 1-32 media IDs")
+    if not media_ids:
+        raise MigiClientError("queue requires at least one media ID")
     invalid = next((item for item in media_ids if not MEDIA_ID_RE.fullmatch(item)), None)
     if invalid is not None:
         raise MigiClientError(f"invalid media ID {invalid!r}")

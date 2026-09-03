@@ -61,7 +61,9 @@ while relaying it directly to the phone with backpressure. Origin content is
 never retained on the server; the phone verifies the complete object before
 committing its own private cache. The server, curator agent, storage, and phone
 may all be different machines. Agents can also persist named playlists of
-catalog IDs and requeue them later without rebuilding the manifest. Only a
+catalog IDs and requeue them later without rebuilding the manifest. Paired
+phones can browse narrow saved-playlist summaries and queue a selection only
+for themselves; creating and editing playlists remains agent-owned. Only a
 completed one-off queue or an explicit start of a saved playlist publishes a
 `media.queue.set` event. Android persists the newest targeted queue, verifies
 artwork before displaying it, downloads each track over the pinned HTTP/3
