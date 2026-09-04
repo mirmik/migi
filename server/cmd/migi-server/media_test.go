@@ -489,24 +489,35 @@ func TestPairedDeviceCanListAndQueueSavedPlaylistsOnlyForItself(t *testing.T) {
 	}
 }
 
-func TestSavedPlaylistAcceptsMoreThanThirtyTwoTracks(t *testing.T) {
+func TestSavedPlaylistAcceptsRealisticFortyOneTrackAlbum(t *testing.T) {
 	broker := newTestBroker(t)
 	store, err := newMediaStore(broker, t.TempDir(), 1024, 4096, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	track, err := store.store(
-		t.Context(), "track.opus", "Track", "", "audio/opus", "agent:test",
-		strings.NewReader("opus bytes"), 10,
+	artwork, err := store.store(
+		t.Context(), "cover.jpg", "Album cover", "", "image/jpeg", "agent:test",
+		strings.NewReader("jpeg bytes"), 10,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids := make([]string, 40)
+	ids := make([]string, 41)
 	for index := range ids {
+		contents := fmt.Sprintf("opus %04d", index)
+		track, err := store.store(
+			t.Context(), fmt.Sprintf("%02d-track.opus", index+1),
+			fmt.Sprintf("%02d. A Fight Through the Forest (Original Soundtrack Version)", index+1),
+			"", "audio/opus", "agent:test", strings.NewReader(contents), int64(len(contents)),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		ids[index] = track.ID
 	}
-	body, err := json.Marshal(map[string]any{"name": "Long album", "media_ids": ids})
+	body, err := json.Marshal(map[string]any{
+		"name": "Iron Meat OST", "artwork_media_id": artwork.ID, "media_ids": ids,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,14 +527,25 @@ func TestSavedPlaylistAcceptsMoreThanThirtyTwoTracks(t *testing.T) {
 	createResponse := httptest.NewRecorder()
 	handler.ServeHTTP(createResponse, create)
 	if createResponse.Code != http.StatusCreated {
-		t.Fatalf("save 40-track playlist returned %d: %s", createResponse.Code, createResponse.Body.String())
+		t.Fatalf("save 41-track playlist returned %d: %s", createResponse.Code, createResponse.Body.String())
 	}
 	var playlist savedPlaylist
 	if err := json.NewDecoder(createResponse.Body).Decode(&playlist); err != nil {
 		t.Fatal(err)
 	}
-	if len(playlist.MediaIDs) != 40 {
+	if len(playlist.MediaIDs) != 41 {
 		t.Fatalf("saved playlist has %d tracks", len(playlist.MediaIDs))
+	}
+	manifest, err := store.savedPlaylistManifest(t.Context(), playlist, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifestBody) <= 8<<10 {
+		t.Fatalf("realistic album manifest only uses %d bytes; test does not cover the old limit", len(manifestBody))
 	}
 
 	start := httptest.NewRequest(
@@ -533,7 +555,66 @@ func TestSavedPlaylistAcceptsMoreThanThirtyTwoTracks(t *testing.T) {
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, start)
 	if startResponse.Code != http.StatusCreated {
-		t.Fatalf("queue 40-track playlist returned %d: %s", startResponse.Code, startResponse.Body.String())
+		t.Fatalf("queue 41-track playlist returned %d: %s", startResponse.Code, startResponse.Body.String())
+	}
+}
+
+func TestSavedPlaylistAcceptsFourHundredTrackCatalog(t *testing.T) {
+	broker := newTestBroker(t)
+	store, err := newMediaStore(broker, t.TempDir(), 1024, 8192, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 400)
+	for index := range ids {
+		contents := fmt.Sprintf("opus %04d", index)
+		track, err := store.store(
+			t.Context(), fmt.Sprintf("%03d-track.opus", index+1),
+			fmt.Sprintf("%03d. A Realistically Named Track from a Large Music Collection", index+1),
+			"Various Soundtrack Artists", "audio/opus", "agent:test",
+			strings.NewReader(contents), int64(len(contents)),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[index] = track.ID
+	}
+	body, err := json.Marshal(map[string]any{"name": "Large collection", "media_ids": ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newIngestMuxWithStores(broker, nil, store)
+	create := httptest.NewRequest(http.MethodPost, "/v1/playlists", bytes.NewReader(body))
+	create.Header.Set("Content-Type", "application/json")
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("save 400-track playlist returned %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var playlist savedPlaylist
+	if err := json.NewDecoder(createResponse.Body).Decode(&playlist); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.savedPlaylistManifest(t.Context(), playlist, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifestBody) <= 64<<10 {
+		t.Fatalf("400-track manifest only uses %d bytes; test does not cover the old limit", len(manifestBody))
+	}
+
+	start := httptest.NewRequest(
+		http.MethodPost, "/v1/playlists/"+playlist.ID+"/queue", strings.NewReader(`{}`),
+	)
+	start.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	handler.ServeHTTP(startResponse, start)
+	if startResponse.Code != http.StatusCreated {
+		t.Fatalf("queue 400-track playlist returned %d: %s", startResponse.Code, startResponse.Body.String())
 	}
 }
 

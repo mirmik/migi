@@ -34,7 +34,10 @@ const (
 	maxMediaTextRunes      = 256
 	maxPlaybackQueueBytes  = int64(1 << 30)
 	maxPlaybackArtwork     = int64(8 << 20)
-	maxPlaybackManifest    = 8 << 10
+	// Playback manifests carry verified metadata for every track. Keep their
+	// server-generated event bodies bounded separately from ordinary agent
+	// messages so full albums with realistic titles still fit.
+	maxPlaybackManifest    = 256 << 10
 	playbackQueueEventKind = "media.queue.set"
 )
 

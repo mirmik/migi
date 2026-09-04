@@ -365,7 +365,8 @@ Content-Type: application/json
 every paired phone may accept the queue. A named target must be an active paired
 device. Artwork must reference a supported image object. A queue contains one
 or more audio entries, its declared track bytes total at most 1 GiB, and its
-resolved manifest must fit the ordinary 8 KiB event-body bound. Duplicate track
+resolved server-generated manifest must fit the 256 KiB playback-event bound.
+Ordinary agent-authored event bodies remain limited to 8 KiB. Duplicate track
 IDs are allowed; there is no separate fixed track-count limit.
 
 ### Saved playlists
