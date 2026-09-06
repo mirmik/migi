@@ -182,6 +182,28 @@ public class BleProtocol {
         return wrapEvenHub(0, magic, 3, inner);
     }
 
+    public static final ImageTileOptions PROBE_ICON = new ImageTileOptions("probe-icon", 4, 488, 54, 64, 64);
+
+    /** Hardware probe: two labels, one event-capturing list, unchanged CFW carrier. */
+    public static byte[] buildWidgetProbePage(int magic, ImageTileOptions carrier) {
+        List<byte[]> inner = new ArrayList<>();
+        inner.add(encodeVarintField(1, 5));
+        inner.add(encodeMessageField(3, concat(Arrays.asList(
+            encodeTextObject("heading", 2, 8, 4, 560, 44, "Migi / Native widgets", false),
+            encodeVarintField(5, 2), encodeVarintField(6, 15),
+            encodeVarintField(7, 6), encodeVarintField(8, 6)))));
+        inner.add(encodeMessageField(3, concat(Arrays.asList(
+            encodeTextObject("dashboard", 1, 8, 54, 472, 64, "Ready", false),
+            encodeVarintField(8, 4)))));
+        inner.add(encodeMessageField(2, encodeListObject("probe-list", 3,
+            8, 126, 560, 154, new String[] {"Files / Файлы", "Music / Музыка",
+                "Pager / Пейджер", "Settings / Настройки", "Back / Назад"}, true)));
+        inner.add(encodeMessageField(4, encodeImageObject(carrier)));
+        inner.add(encodeMessageField(4, encodeImageObject(PROBE_ICON)));
+        inner.add(encodeVarintField(5, 10000));
+        return wrapEvenHub(0, magic, 3, concat(inner));
+    }
+
     public static byte[] buildDashboardTextUpgrade(int magic) {
         List<byte[]> inner = new ArrayList<>();
         inner.add(encodeVarintField(1, 1));

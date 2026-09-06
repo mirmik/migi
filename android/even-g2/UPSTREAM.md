@@ -55,3 +55,11 @@ It is not BMP RLE4 and not the custom mode-6 nibble RLE path.
   offset/length), latest desired page retained across session resets, one text
   update in flight, ACK-based readiness. The existing image carrier is kept for CFW
   control commands; pager content no longer goes through Canvas/BMP/compositor.
+
+- Optional widget hardware probe builds a page with two text containers (native
+  border/padding), an event-capturing list and the unchanged CFW image carrier.
+  Uses existing protobuf fields; logs selected list name/index for hardware
+  verification. Disabled unless MIGI_G2_WIDGET_PROBE=true at build time.
+- Mixed widget probe additionally uploads a deterministic64×64 raw BMP into a
+  separate image container after layout creation; readiness includes its ACK.
+  Text/list interactions do not retransmit the bitmap.

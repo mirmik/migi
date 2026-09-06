@@ -135,7 +135,7 @@ class G2Experiment(
                                     refreshPager() // A gesture for an older page must not act on its replacement.
                                 } else if (eventType == BleProtocol.EVENT_DOUBLE_CLICK && !sleeping) sleepDisplay()
                                 else if (pagerSource == null || pagerSource.invoke()?.body?.isNotBlank() == true) {
-                                    if (pagerSource != null && !sleeping) {
+                                    if (pagerSource != null && !sleeping && !BuildConfig.WIDGET_PROBE) {
                                         page = when (eventType) {
                                             BleProtocol.EVENT_SCROLL_TOP -> (page - 1).coerceAtLeast(0)
                                             BleProtocol.EVENT_CLICK, BleProtocol.EVENT_SCROLL_BOTTOM -> (page + 1) % pageCount
@@ -166,7 +166,7 @@ class G2Experiment(
                 refreshPager()
             }
         })
-        connection.configureNativeTextOutput()
+        connection.configureNativeTextOutput(BuildConfig.WIDGET_PROBE)
         connection.start()
     }
 
@@ -222,7 +222,9 @@ class G2Experiment(
         check(connection.resumeEvenHubSession()) { "Не удалось восстановить сессию" }
         sleeping = false
         val frameId = FrameTimings.getInstance().startFrame("migi-test")
-        val text = if (content != null) {
+        val text = if (BuildConfig.WIDGET_PROBE) {
+            "Кириллица: Ёжик. Тест списка.\n$gestureCount: $lastGesture"
+        } else if (content != null) {
             val pages = NativePager.pages(content.body)
             pageCount = pages.size
             page = page.coerceIn(0, pageCount - 1)

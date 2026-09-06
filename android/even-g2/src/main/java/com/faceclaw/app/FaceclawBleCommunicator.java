@@ -452,7 +452,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     frameReady = !desiredFingerprint.isEmpty()
                         && desiredFingerprint.equals(displayedFingerprint);
                 }
-                if (!shutdownRequested && fixedLayoutCreated && frameReady) {
+                if (!shutdownRequested && fixedLayoutCreated && frameReady && (!widgetProbe || probeIconReady)) {
                     if (faceclawWakePendingNonce >= 0) {
                         readyGeneration = enqueueFaceclawWakeControlLocked(
                             BleProtocol.FACECLAW_WAKE_OP_READY,
@@ -825,12 +825,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private boolean lvglImageOutput;
     private boolean nativeTextOutput;
+    private boolean widgetProbe;
+    private boolean probeIconReady;
     private String desiredNativeText = " ";
 
-    public void configureNativeTextOutput() {
+    public void configureNativeTextOutput(boolean probe) {
         synchronized (lock) {
             if (running) throw new IllegalStateException("Configure text before start");
             nativeTextOutput = true;
+            widgetProbe = probe;
         }
     }
 
@@ -1594,6 +1597,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         && event.eventType == BleProtocol.EVENT_IMU_DATA_REPORT;
                     if (!pureImuSample) {
                         lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    }
+                    if (widgetProbe && "list-click".equals(event.kind)) {
+                        BleProtocol.ListSelection selected = BleProtocol.parseListSelection(frame);
+                        if (selected != null) logLine("widget probe selection index=" + selected.itemIndex
+                            + " name=" + selected.itemName + " event=" + selected.eventType);
                     }
                     if ("list-click".equals(event.kind) || "text-click".equals(event.kind)) {
                         // Container-routed touchpad input reached us, so the
@@ -2485,14 +2493,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " label=" + message.label);
     }
 
+    private void enqueueProbeIconLocked() {
+        OutboundMessage icon = messageBuilder.imagePayload("probe-icon", BleProtocol.PROBE_ICON,
+            nextMapSessionId(), WidgetProbeImage.bmp(), "widget probe icon 64x64",
+            connectionOptions.sendImagesToLeft);
+        icon.onAck = () -> { probeIconReady = true; lock.notifyAll(); };
+        icon.onTimeout = () -> handleTransportFailure("probe icon ack timeout");
+        pendingMessages.addLast(icon);
+        logLine("queue widget probe icon 64x64 raw BMP bytes=" + WidgetProbeImage.bmp().length);
+    }
+
     private void enqueueCreateLayoutLocked() {
         // New session/container: re-assert the firmware-debug-flags overlay once
         // the layout is ready (the mode-7 send is gated on this having reset).
         firmwareDebugFlagsLastSent = -1;
-        OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILE);
+        probeIconReady = false;
+        OutboundMessage message = messageBuilder.createLayout(widgetProbe, DASHBOARD_TILE);
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("startup-text-probe");
+            if (widgetProbe) enqueueProbeIconLocked();
             fixedLayoutCreated = true;
             displayedFingerprint = "";
         };

@@ -6,7 +6,11 @@ plugins {
 android {
     namespace = "dev.migi.g2"
     compileSdk = 36
-    defaultConfig { minSdk = 34 }
+    buildFeatures { buildConfig = true }
+    defaultConfig {
+        minSdk = 34
+        buildConfigField("boolean", "WIDGET_PROBE", (System.getenv("MIGI_G2_WIDGET_PROBE") == "true").toString())
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

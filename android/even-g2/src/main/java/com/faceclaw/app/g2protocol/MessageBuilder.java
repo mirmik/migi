@@ -180,6 +180,10 @@ public class MessageBuilder {
     }
 
     public OutboundMessage createLayout(BleProtocol.ImageTileOptions... tiles) {
+        return createLayout(false, tiles);
+    }
+
+    public OutboundMessage createLayout(boolean widgetProbe, BleProtocol.ImageTileOptions... tiles) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
             "create-layout",
@@ -187,7 +191,8 @@ public class MessageBuilder {
             BleProtocol.SID_EVENHUB,
             BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.buildCreateMixedImagePage(magic, tiles),
+            widgetProbe ? BleProtocol.buildWidgetProbePage(magic, tiles[0])
+                : BleProtocol.buildCreateMixedImagePage(magic, tiles),
             ACK_TIMEOUT_MS,
             -1,
             false
