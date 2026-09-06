@@ -2,6 +2,18 @@ package com.faceclaw.app;
 import java.util.Arrays;
 
 public class BmpUtil {
+    /** Stock CompressMode=1: count/value byte pairs over the entire BMP, not BMP RLE4. */
+    public static byte[] stockRle(byte[] input) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        for (int i = 0; i < input.length;) {
+            int count = 1;
+            while (count < 255 && i + count < input.length && input[i + count] == input[i]) count++;
+            out.write(count);
+            out.write(input[i] & 255);
+            i += count;
+        }
+        return out.toByteArray();
+    }
     public static byte[] copyTileBmp(byte[] bmp) {
         if (bmp == null || bmp.length == 0) {
             return new byte[0];

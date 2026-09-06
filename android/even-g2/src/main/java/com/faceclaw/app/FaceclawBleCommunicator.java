@@ -130,6 +130,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int faceclawFramebufferControlGeneration;
     private int faceclawFramebufferControlSentCount;
     private int faceclawWakePendingNonce = -1;
+    private long lastWakeClaimRenewedAtMs;
+
+    /** Keep the firmware's stock-dashboard fallback deferred during a live upload. */
+    public void renewPendingWakeClaim() {
+        synchronized (lock) {
+            long now = SystemClock.elapsedRealtime();
+            if (!running || !sessionReady || shutdownRequested || faceclawWakePendingNonce < 0
+                    || now - lastWakeClaimRenewedAtMs < 1500
+                    || hasPendingOrInflightKindLocked("wake-lease-control")) return;
+            enqueueFaceclawWakeControlLocked(BleProtocol.FACECLAW_WAKE_OP_CLAIM, faceclawWakePendingNonce, true);
+            lastWakeClaimRenewedAtMs = now;
+        }
+        interruptibleSleep.interrupt();
+    }
     private boolean cfwCleanupSupported;
     private boolean cfwCleanupDelivered;
     private int lastCfwCleanupAckMagic;
@@ -810,6 +824,29 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean lvglImageOutput;
+    private boolean nativeTextOutput;
+    private String desiredNativeText = " ";
+
+    public void configureNativeTextOutput() {
+        synchronized (lock) {
+            if (running) throw new IllegalStateException("Configure text before start");
+            nativeTextOutput = true;
+        }
+    }
+
+    /** Latest desired page survives sleep/reconnect; only ACK advances displayed state. */
+    public void submitNativeText(String text, int frameId) {
+        synchronized (lock) {
+            synchronized (desiredTilesLock) {
+                finishFrame(desiredFrameId, "superseded native text");
+                desiredNativeText = text;
+                desiredFingerprint = "text:" + text;
+                desiredFrameId = frameId;
+            }
+        }
+        interruptibleSleep.interrupt();
+    }
+
 
     /** Before start: use the legacy BMP/LVGL image object, sized to its carrier. */
     public void configureLvglImageOutput() {
@@ -1307,6 +1344,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             };
             pendingMessages.addFirst(message);
             logLine("queue shutdown");
+            // Explicit sleep cancels a deferred wake, including its fallback timer.
+            // Otherwise an interrupted upload can wake the stock dashboard later.
+            if (faceclawWakePendingNonce >= 0) {
+                enqueueFaceclawWakeControlLocked(BleProtocol.FACECLAW_WAKE_OP_READY, faceclawWakePendingNonce, true);
+                faceclawWakePendingNonce = -1;
+            }
             // The stock compass keeps the magnetometer sampling independently of
             // the plugin task, so ending the page does not stop it. Force a
             // disable ahead of the shutdown command whenever it may be running:
@@ -2088,6 +2131,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
                     } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                             && windowHasRoom && !hasPendingImageLocked()
+                            && !hasPendingOrInflightKindLocked("native-text")
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
                         // Enqueue the next frame's delta against lastEnqueuedPacked
@@ -2547,6 +2591,35 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueDesiredImageLocked() {
+        if (nativeTextOutput) {
+            if (hasPendingOrInflightKindLocked("native-text")) return;
+            final String fingerprint;
+            final String text;
+            final int frameId;
+            synchronized (desiredTilesLock) {
+                fingerprint = desiredFingerprint;
+                text = desiredNativeText;
+                frameId = desiredFrameId;
+                desiredFrameId = 0;
+            }
+            if (fingerprint.isEmpty()) return;
+            OutboundMessage message = messageBuilder.nativeText(text);
+            message.onAck = () -> {
+                displayedFingerprint = fingerprint;
+                finishFrame(frameId, "native text ACK");
+                lock.notifyAll();
+            };
+            message.onTimeout = () -> {
+                lastEnqueuedFingerprint = "";
+                finishFrame(frameId, "native text timeout");
+                handleTransportFailure("native text ack timeout");
+            };
+            pendingMessages.addLast(message);
+            lastEnqueuedFingerprint = fingerprint;
+            logLine("queue native text bytes=" + text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            return;
+        }
+
         String fingerprint = getDesiredFingerprint();
         byte[] packed;
         int width;
@@ -2662,15 +2735,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
             }
         }
+        int stockCompression = 0;
         if (lvglImageOutput) {
             if (width != 576 || height != 288) throw new IllegalArgumentException("LVGL carrier requires 576x288");
             incrementalPayload = BmpUtil.build4bppBmpFromPacked(packed, width, height);
-            incrementalLog = "LVGL BMP frame 576x288 bytes=" + incrementalPayload.length;
+            int rawSize = incrementalPayload.length;
+            // Stock CompressMode=1 ACKs but renders blank on tested CFW17.
+            // Keep the proven legacy BMP path until decoder compatibility is established.
+            incrementalLog = "LVGL BMP frame 576x288 raw=" + rawSize + " bytes=" + incrementalPayload.length + " stockCompression=" + stockCompression;
             logLine(incrementalLog);
         }
         BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
             ? new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), incrementalPayload)
             : new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId());
+        plan.compressionMode = stockCompression;
         plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
         if (incrementalLog != null) {

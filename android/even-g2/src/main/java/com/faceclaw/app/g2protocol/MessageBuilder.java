@@ -96,7 +96,7 @@ public class MessageBuilder {
             BleProtocol.SID_EVENHUB,
             BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.payload.length, fragment, magic),
+            BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.payload.length, fragment, magic, plan.compressionMode),
             ACK_TIMEOUT_MS,
             plan.tileIndex,
             leftArm
@@ -207,6 +207,13 @@ public class MessageBuilder {
             -1,
             false
         );
+    }
+
+    public OutboundMessage nativeText(String text) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage("native-text", "native text", BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST, magic, BleProtocol.buildNativeTextUpgrade(magic, text),
+            ACK_TIMEOUT_MS, -1, false);
     }
 
     public OutboundMessage heartbeat() {

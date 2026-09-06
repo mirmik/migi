@@ -81,6 +81,7 @@ public final class BleImageOptimizer {
         public final int height;
         final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp))
         final int sessionId;
+        int compressionMode;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
         TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] packed, int width, int height, int sessionId) {

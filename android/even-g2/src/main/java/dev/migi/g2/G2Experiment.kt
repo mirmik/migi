@@ -2,21 +2,12 @@ package dev.migi.g2
 
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
 import android.os.Handler
 import android.os.Looper
 import com.faceclaw.app.FaceclawBleCommunicator
 import com.faceclaw.app.FaceclawBleCommunicatorListener
 import com.faceclaw.app.BleProtocol
 import com.faceclaw.app.FrameTimings
-import com.faceclaw.app.SurfaceCompositor
-import android.text.StaticLayout
-import android.text.Layout
-import android.text.TextPaint
-import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
 data class PagerContent(val id: Long, val title: String, val body: String)
@@ -175,9 +166,7 @@ class G2Experiment(
                 refreshPager()
             }
         })
-        connection.configureLvglImageOutput()
-        connection.configureCompositorScreen(576, 288)
-        connection.configureSurface("migi-test", 0, 0, 576, 288, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        connection.configureNativeTextOutput()
         connection.start()
     }
 
@@ -231,33 +220,15 @@ class G2Experiment(
         check(connection.isSessionReady) { "Сессия обеих дужек ещё не готова" }
         connection.setG2ScreenOn(true)
         check(connection.resumeEvenHubSession()) { "Не удалось восстановить сессию" }
-        connection.setScreenBlanked(false)
         sleeping = false
         val frameId = FrameTimings.getInstance().startFrame("migi-test")
-        val bitmap = Bitmap.createBitmap(576, 288, Bitmap.Config.ARGB_8888)
-        val gray = ByteBuffer.allocate(576 * 288)
-        try {
-            val canvas = Canvas(bitmap)
-            canvas.drawColor(Color.BLACK)
-            if (content != null) drawPager(canvas, content)
-            else {
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 34f }
-            canvas.drawText("Hello from Migi", 48f, 95f, paint)
-            paint.textSize = 28f
-            canvas.drawText("Even G2 / test $frameId", 48f, 140f, paint)
-            canvas.drawText("Gestures: $gestureCount / $lastGesture", 48f, 185f, paint)
-            paint.textSize = 22f
-            canvas.drawText("Double tap: sleep / wake", 48f, 228f, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 2f
-            canvas.drawRect(24f, 24f, 552f, 264f, paint)
-            }
-            val pixels = IntArray(576 * 288)
-            bitmap.getPixels(pixels, 0, 576, 0, 0, 576, 288)
-            for (pixel in pixels) gray.put(Color.red(pixel).toByte())
-            gray.flip()
-        } finally { bitmap.recycle() }
-        connection.submitSurfaceFrame(gray, "migi-test", 0, 0, 576, 288, "migi-test-$frameId", 0, frameId)
+        val text = if (content != null) {
+            val pages = NativePager.pages(content.body)
+            pageCount = pages.size
+            page = page.coerceIn(0, pageCount - 1)
+            "Migi / Пейджер\n${pages[page]}\n${page + 1}/$pageCount"
+        } else "Hello from Migi\nEven G2 / test $frameId\nПривет! Кириллица: Ёжик\nGestures: $gestureCount / $lastGesture\nDouble tap: sleep / wake"
+        connection.submitNativeText(text, frameId)
         awaitFrameAsync(connection)
     }
 
@@ -275,6 +246,7 @@ class G2Experiment(
         val poll = object : Runnable {
             override fun run() = execute {
                 if (generation != frameWaitGeneration || transport !== connection || sleeping) return@execute
+                connection.renewPendingWakeClaim()
                 if (connection.awaitEvenHubSessionReady(0)) {
                     frameWait = null
                     emit("Передача завершена за ${android.os.SystemClock.elapsedRealtime() - startedAt}ms; очередь жестов свободна.")
@@ -287,34 +259,6 @@ class G2Experiment(
         }
         frameWait = poll
         main.post(poll)
-    }
-
-    private fun drawPager(canvas: Canvas, content: PagerContent) {
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 20f }
-        canvas.drawText("Migi • Пейджер", 32f, 32f, titlePaint)
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 24f }
-        val text = content.body
-        val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, 512)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).build()
-        // Page boundaries use actual layout line heights, preserving all text including Cyrillic.
-        val starts = mutableListOf(0)
-        var start = 0
-        for (line in 1 until layout.lineCount) {
-            if (layout.getLineBottom(line) - layout.getLineTop(start) > 184) {
-                starts.add(line)
-                start = line
-            }
-        }
-        pageCount = starts.size
-        page = page.coerceIn(0, pageCount - 1)
-        canvas.save()
-        val top = layout.getLineTop(starts[page])
-        val bottom = if (page + 1 < pageCount) layout.getLineTop(starts[page + 1]) else layout.height
-        canvas.clipRect(32f, 48f, 544f, 48f + (bottom - top).coerceAtMost(184))
-        canvas.translate(32f, 48f - top)
-        layout.draw(canvas)
-        canvas.restore()
-        canvas.drawText("${page + 1}/$pageCount  •  касание: далее", 32f, 270f, titlePaint)
     }
 
     fun disconnect() = execute { release(); emit("Отключено") }

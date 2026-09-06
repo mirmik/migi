@@ -380,3 +380,63 @@ The BMP transfer itself is still slow and remains a separate optimization.
 Release, existing app tests and lint passed, signed build 32 installed. Manual
 acceptance: wake, double-tap again during image loading, verify prompt sleep
 without later unsolicited wake; then allow a complete wake and check text/fade.
+
+Build 33 (installed) renews pending CLAIM every 1.5s during the bounded frame
+wait. CFW's default claimed fallback is 5s; prior BMP uploads could cross it
+and launch the stock dashboard, independently of the disabled Even App. An
+explicit sleep during pending wake sends READY to cancel that fallback before
+shutdown. This prevents unintended fallback, not the underlying upload cost.
+
+## Stock LVGL compression — build 34
+
+The LVGL planner encodes the entire BMP as `(count:u8, value:u8)` pairs, splitting
+runs at255, and sets CompressMode1 in every image fragment. Raw mode0 remains
+the fallback when RLE expands the image. This follows the reconstructed stock
+byte RLE decoder, not the BMP RLE4 format. Two unit tests verify byte goldens,
+empty input,255-run splitting and full576x288 BMP round-trip. All23 app unit
+tests, release and lint passed; APK signature verified and build34 installed.
+
+First device transmission PID25718: raw83062B→14728B,22→4 messages;
+18:02:29.078 first write→18:02:30.063 final ACK (~985ms). This confirms reduced
+airtime, not rendering. Correct decoding on installed CFW17, both-lens text,
+repeated wake and retained fade are pending wearer feedback. Newer inspected
+g2flash code explicitly handles stock compressed buffers separately from the
+custom snapshot FIFO; that compatibility cannot be inferred from ACK alone.
+
+Build34 FAILED visual acceptance: wearer reports no image. Stock RLE wire
+selection is disabled in build35, restoring raw BMP/LVGL while keeping async
+gesture handling and wake-claim renewal. Unit round-trip success and transport
+ACKs did not verify the installed firmware decoder path. Exact cause (firmware
+hook/version versus stock input format/metadata requirements) remains unproven;
+do not enable another compressed codec by assumption. Build35 release/tests/lint
+passed. Optimization2245 remains open; raw transfer latency is unresolved.
+
+### Native text architecture (build 36)
+
+After the user confirmed build 35 restored visibility, replaced phone-rendered
+pager BMPs with the stock EvenHub `f1=5/f9` text-container update. Offset and
+length are omitted for full replacement (G2CC DisplayProto and SDK capture notes
+identify those optional fields as partial splice, not scrolling). The `dashboard`
+text object occupies 576×288; an otherwise empty, original-sized `img00` carrier remains for
+CFW controls. NativePager uses a conservative 30-code-point × 6-line body plus
+heading/footer. Native font metrics and Cyrillic coverage require hardware checks.
+No bitmap is generated/submitted for ordinary pager or local test output.
+
+Transport retains only the latest desired page and allows one native-text update
+in flight. ACK advances displayed state; timeout reconnects/retries. Resume
+recreates the layout and restores desired text. Gesture processing keeps the
+asynchronous readiness poll and wake-CLAIM renewal. RLE remains disabled.
+
+Build 36 device smoke found worker Thread.interrupt aborting active BLE writes;
+changed to the existing InterruptibleSleep notification. Build 37 additionally
+failed layout creation with the experimental 1×1 image carrier (timeouts and
+reconnects before any native text was transmitted). Build 38 restores the known
+576×288 carrier; precise cause of the 1×1 rejection is not established. All 25
+app unit tests, release assembly and lint pass for build 38; APK signature checked.
+
+Build 38 installed successfully. PID28709: native text body160B, ACK34–50ms;
+first delivery306ms after submit, wake event18:20:45.966 → ready18:20:46.418
+(452ms including prelude/layout/READY); double-tap sleep319–421ms. Two recorded
+wake cycles restore the native page. User initial response: «Да, это похоже на
+правду». Explicit both-display Cyrillic/fade/latency acceptance requested; do not
+infer it solely from ACK timing. Board2245 moved to On Test.

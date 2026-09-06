@@ -38,3 +38,20 @@ The communicator also exposes an opt-in `configureLvglImageOutput()` before
 start. It sends raw 4bpp BMP at the existing 576x288 carrier size, bypassing
 custom mode-6 and texture/delta planners. CFW's legacy BMP decoder returns
 presentation to LVGL. Migi currently selects this experimental path.
+
+The communicator renews pending wake CLAIM during the bounded asynchronous
+frame wait, and cancels a pending firmware wake fallback with READY when the
+user explicitly shuts down mid-upload. This avoids the stock dashboard taking
+over when legacy BMP transfer crosses the CFW's five-second claimed deadline.
+
+LVGL output now optionally compresses the entire BMP with stock byte-pair RLE
+(CompressMode=1), choosing raw when smaller. This changes `BmpUtil.java`,
+`BleImageOptimizer.java`, `BleProtocol.java` and `MessageBuilder.java` as well:
+the image plan carries the compression mode into every fragment's protobuf.
+These four files are additional expected mismatches in the original manifest.
+It is not BMP RLE4 and not the custom mode-6 nibble RLE path.
+
+- Migi native text output: dedicated EvenHub text replacement command (no partial
+  offset/length), latest desired page retained across session resets, one text
+  update in flight, ACK-based readiness. The existing image carrier is kept for CFW
+  control commands; pager content no longer goes through Canvas/BMP/compositor.

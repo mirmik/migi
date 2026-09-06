@@ -192,7 +192,20 @@ public class BleProtocol {
         return wrapEvenHub(5, magic, 9, concat(inner));
     }
 
+    /** Full replacement: omit offset/length, which mean partial splice in the SDK. */
+    public static byte[] buildNativeTextUpgrade(int magic, String text) {
+        List<byte[]> inner = new ArrayList<>();
+        inner.add(encodeVarintField(1, 1));
+        inner.add(encodeStringField(2, "dashboard"));
+        inner.add(encodeStringField(5, text));
+        return wrapEvenHub(5, magic, 9, concat(inner));
+    }
+
     public static byte[] buildImageRawData(ImageTileOptions tile, int sessionId, int totalSize, ImageFragment fragment, int magic) {
+        return buildImageRawData(tile, sessionId, totalSize, fragment, magic, 0);
+    }
+
+    public static byte[] buildImageRawData(ImageTileOptions tile, int sessionId, int totalSize, ImageFragment fragment, int magic, int compressionMode) {
         List<byte[]> inner = new ArrayList<>();
         inner.add(encodeVarintField(1, tile.containerId));
         inner.add(encodeStringField(2, tile.name));
@@ -202,7 +215,7 @@ public class BleProtocol {
         // CompressMode stays 0: the CFW's zlib path is detected from the buffer's
         // zlib header at BMP-load time, and frag_write must copy our deflated bytes
         // VERBATIM (CompressMode!=0 would route them through the 1bpp expander).
-        inner.add(encodeVarintField(5, 0)); //compression
+        inner.add(encodeVarintField(5, compressionMode));
         inner.add(encodeVarintField(6, fragment.index));
         inner.add(encodeVarintField(7, fragment.size));
         inner.add(encodeBytesField(8, fragment.data));
