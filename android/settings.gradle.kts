@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "migi"
 include(":app")
 include(":pilot")
+include(":even-g2")

@@ -660,6 +660,11 @@ class MainActivity : Activity() {
             }, matchWidth())
             addGap(26)
             addView(sectionLabel(R.string.settings_about), matchWidth())
+            addView(secondaryActionButton(R.string.g2_experiment).apply {
+                setOnClickListener {
+                    startActivity(Intent(this@MainActivity, G2ExperimentActivity::class.java))
+                }
+            }, matchWidth())
             addGap(10)
             addView(MaterialCardView(this@MainActivity).apply {
                 applyMigiCard(radiusDp = 22)

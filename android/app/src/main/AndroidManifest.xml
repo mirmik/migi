@@ -43,6 +43,10 @@
         </activity>
 
         <activity
+            android:name=".G2ExperimentActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".HtmlViewerActivity"
             android:exported="false" />
 
