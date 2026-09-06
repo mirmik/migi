@@ -61,6 +61,9 @@ class G2ExperimentActivity : Activity() {
             }
         }
         button("Показать тест") { experiment?.showTest() }
+        button("Усыпить дисплей") { experiment?.sleep() }
+        button("Разбудить дисплей") { experiment?.showTest() }
+        button("Усыпить на 10 секунд") { experiment?.sleepAndWakeLater() }
         button("Отключиться") { experiment?.disconnect() }
         log = TextView(this).apply { textSize = 12f; setTextIsSelectable(true) }
         content.addView(log)

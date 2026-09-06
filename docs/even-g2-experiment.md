@@ -115,3 +115,42 @@ reliability, one-arm loss and background/wake remain unverified.
 At the end of the run, Migi's cleanup ACK was verified and Even App was
 re-enabled for user 0. The installed Migi remains version 24; the experiment
 is disconnected. Faceclaw was not relaunched.
+
+## Gesture and sleep experiment — build 25
+
+The test frame now includes a gesture counter and the last recognised gesture.
+Single tap/swipes/long press redraw that line. Double tap while awake suspends
+EvenHub; `display-wake` restores it. Input is accepted only from the current
+communicator, system lifecycle notifications are logged without redrawing, and
+same-type gestures within 300 ms are coalesced. No microphone capture is enabled.
+
+New phone buttons: sleep, wake and sleep for 10 seconds. Sleep acquires the
+CFW wake lease, submits a blank frame, waits for transmission, then suspends
+EvenHub and releases the phone screen wake lock while retaining GATTs. Wake
+resumes the session, unblanks and submits a full frame before the ready barrier.
+The upstream transport renews the wake lease and handles CLAIM/READY for a
+CFW deferred wake. Timer callbacks are cancelled on release; Activity onStop
+still ends the experiment. Do not use phone lock as a test of background support.
+
+Hardware checks: confirm a single tap updates the counter; confirm timer sleep
+visually blanks both lenses and restores them; confirm double-tap sleep and
+subsequent double-tap wake restore the Migi frame. Verify no new GATT connection
+is needed for a successful suspend/resume cycle. Physical acceptance pending.
+
+Build 25 initial hardware results: the user confirmed short taps update the
+image; logs show `sys-event type=0 src=1` and resulting full-frame transmission.
+The user also confirmed automatic image restoration after the 10-second sleep.
+Logs show shutdown mode=0 ACK at 16:41:00 and recreated layout/full frame at
+16:41:11, using the existing GATT session. Double-tap sleep/wake is being checked
+separately. This demonstrates display blanking/EvenHub suspension, not a measured
+power-consumption claim.
+
+Final build 25 acceptance: the user confirmed double-tap sleep/wake works.
+Eight display-wake callback completion samples in the captured log were
+569, 567, 659, 553, 557, 668, 584 and 672 ms. This measures receipt of the decoded
+wake event to completion of Migi's handler (including resume/frame/READY), not
+physical touch-to-photon latency. For the 16:44:07 cycle, the wake event arrived
+at .675, prelude ACK at .731, layout ACK at .866, frame ACK at 16:44:08.245 and
+handler completion at .348. No stock-firmware latency comparison was performed.
+Physical results plus logs confirm the scoped foreground experiment; phone-lock
+and background service behaviour remain outside acceptance.

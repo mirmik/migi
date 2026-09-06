@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import com.faceclaw.app.FaceclawBleCommunicator
 import com.faceclaw.app.FaceclawBleCommunicatorListener
+import com.faceclaw.app.BleProtocol
 import com.faceclaw.app.FrameTimings
 import com.faceclaw.app.SurfaceCompositor
 import java.nio.ByteBuffer
@@ -25,6 +26,12 @@ class G2Experiment(context: Context, private val report: (String) -> Unit) : Aut
     private val main = Handler(Looper.getMainLooper())
     private var transport: FaceclawBleCommunicator? = null // executor-owned
     @Volatile private var closed = false
+    private var sleeping = false
+    private var gestureCount = 0
+    private var lastGesture = "Ready"
+    private var lastGestureType = -1
+    private var lastGestureAt = 0L
+    private var timer: Runnable? = null
 
     private fun emit(message: String) {
         main.post { if (!closed) report(message) }
@@ -52,8 +59,42 @@ class G2Experiment(context: Context, private val report: (String) -> Unit) : Aut
                 // Upstream also emits connected after just one arm connects.
                 emit("$phase: $status; сессия пары: ${connection.isSessionReady}")
             }
-            override fun onRingEvent(kind: String, containerName: String, eventType: Int, eventSource: Int, systemExitReasonCode: Int, frameId: Int) =
-                emit("Жест: $kind, тип=$eventType, источник=$eventSource")
+            override fun onRingEvent(kind: String, containerName: String, eventType: Int, eventSource: Int, systemExitReasonCode: Int, frameId: Int) {
+                emit("Событие: $kind, тип=$eventType, источник=$eventSource")
+                // Callbacks from a released connection must never affect its replacement.
+                execute {
+                    try {
+                        if (transport !== connection) return@execute
+                        if (kind == "display-wake") {
+                            cancelTimer()
+                            lastGesture = "Double tap: wake"
+                            showFrame()
+                        } else if (kind in listOf("sys-event", "list-click", "text-click")) {
+                            val name = when (eventType) {
+                                BleProtocol.EVENT_CLICK -> "Tap"
+                                BleProtocol.EVENT_SCROLL_TOP -> "Swipe up"
+                                BleProtocol.EVENT_SCROLL_BOTTOM -> "Swipe down"
+                                BleProtocol.EVENT_DOUBLE_CLICK -> "Double tap"
+                                BleProtocol.EVENT_RING_LONG_PRESS -> "Long press"
+                                BleProtocol.EVENT_SHORT_THEN_LONG_PRESS -> "Tap + hold"
+                                else -> null
+                            }
+                            if (name != null) {
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                if (eventType == lastGestureType && now - lastGestureAt < 300) return@execute
+                                lastGestureType = eventType
+                                lastGestureAt = now
+                                gestureCount++
+                                lastGesture = name
+                                if (eventType == BleProtocol.EVENT_DOUBLE_CLICK && !sleeping) sleepDisplay()
+                                else showFrame()
+                            }
+                        }
+                    } finally {
+                        FrameTimings.getInstance().finishFrame(frameId, "handled by Migi experiment")
+                    }
+                }
+            }
             override fun onBatteryState(headsetBattery: Int, headsetCharging: Int) = emit("Батарея: $headsetBattery%; зарядка=$headsetCharging")
             override fun onSilentMode(silent: Boolean) = emit("Тихий режим: $silent")
             override fun onWearState(wearing: Boolean) = emit("Очки надеты: $wearing")
@@ -69,12 +110,53 @@ class G2Experiment(context: Context, private val report: (String) -> Unit) : Aut
         connection.start()
     }
 
-    fun showTest() = execute {
+    fun showTest() = execute { cancelTimer(); showFrame() }
+
+    fun sleep() = execute { cancelTimer(); sleepDisplay() }
+
+    fun sleepAndWakeLater() = execute {
+        cancelTimer()
+        sleepDisplay()
+        val expected = transport
+        val callback = Runnable {
+            execute {
+                if (transport === expected && sleeping) {
+                    lastGesture = "Timer wake"
+                    showFrame()
+                }
+            }
+        }
+        timer = callback
+        main.postDelayed(callback, 10_000)
+        emit("Пробуждение через 10 секунд; оставьте экран Migi открытым")
+    }
+
+    private fun cancelTimer() {
+        timer?.let { main.removeCallbacks(it) }
+        timer = null
+    }
+
+    private fun sleepDisplay() {
+        val connection = checkNotNull(transport) { "Сначала подключите очки" }
+        check(connection.isSessionReady) { "Сессия пары ещё не готова" }
+        if (sleeping) return
+        check(connection.firmwareCapabilities.split(' ').contains("wakelease")) { "CFW не сообщает wakelease" }
+        check(connection.setFaceclawWakeLeaseEnabled(true)) { "Не доставлено управление пробуждением" }
+        connection.setScreenBlanked(true)
+        check(connection.awaitEvenHubSessionReady(5_000)) { "Гашение кадра не подтверждено; можно повторить пробуждение" }
+        sleeping = connection.suspendEvenHubSession()
+        check(sleeping) { "Не удалось приостановить EvenHub" }
+        connection.setG2ScreenOn(false)
+        emit("EvenHub приостановлен, BLE сохранён. Двойное касание для пробуждения.")
+    }
+
+    private fun showFrame() {
         val connection = checkNotNull(transport) { "Сначала подключите очки" }
         check(connection.isSessionReady) { "Сессия обеих дужек ещё не готова" }
         connection.setG2ScreenOn(true)
         check(connection.resumeEvenHubSession()) { "Не удалось восстановить сессию" }
         connection.setScreenBlanked(false)
+        sleeping = false
         val frameId = FrameTimings.getInstance().startFrame("migi-test")
         val bitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
         val gray = ByteBuffer.allocate(640 * 480)
@@ -85,6 +167,9 @@ class G2Experiment(context: Context, private val report: (String) -> Unit) : Aut
             canvas.drawText("Hello from Migi", 70f, 190f, paint)
             paint.textSize = 28f
             canvas.drawText("Even G2 / test $frameId", 70f, 250f, paint)
+            canvas.drawText("Gestures: $gestureCount / $lastGesture", 70f, 305f, paint)
+            paint.textSize = 22f
+            canvas.drawText("Double tap: sleep / wake", 70f, 350f, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 2f
             canvas.drawRect(40f, 80f, 600f, 380f, paint)
@@ -102,10 +187,15 @@ class G2Experiment(context: Context, private val report: (String) -> Unit) : Aut
     fun disconnect() = execute { release(); emit("Отключено") }
 
     private fun release() {
+        cancelTimer()
+        sleeping = false
         val previous = transport
         transport = null
         previous?.setListener(null)
-        previous?.close() // upstream sends CFW cleanup, releases leases and closes both GATTs
+        if (previous != null) {
+            try { previous.setFaceclawWakeLeaseEnabled(false) }
+            finally { previous.close() }
+        }
     }
 
     override fun close() {
