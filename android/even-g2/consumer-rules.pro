@@ -1,0 +1,1 @@
+-keep class com.faceclaw.app.FaceclawLc3Decoder { *; }

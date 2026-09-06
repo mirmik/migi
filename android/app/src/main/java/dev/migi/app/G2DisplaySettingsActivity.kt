@@ -23,6 +23,10 @@ class G2DisplaySettingsActivity : Activity() {
             text = value; textSize = size; setPadding(8, 20, 8, 12); root.addView(this)
         }
         label("Настройки очков", 26f)
+        root.addView(Button(this).apply {
+            text = "Голосовые записи"
+            setOnClickListener { startActivity(Intent(this@G2DisplaySettingsActivity, G2VoiceRecordingsActivity::class.java)) }
+        })
         label("Прокрутка", 22f)
         root.addView(Switch(this).apply {
             text = "Инвертировать прокрутку"

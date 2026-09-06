@@ -15,6 +15,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
     private val pagerPrefs = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
     private val repository = PagerRepository(context)
     private val documents = DocumentRepository(context)
+    private val voiceUploader = G2VoiceUploader(context.applicationContext)
     private val handler = Handler(Looper.getMainLooper())
     private var driver: G2Experiment? = null
     private var addresses: Pair<String, String>? = null
@@ -53,7 +54,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
             release()
             setDeviceType(true)
             driver = G2Experiment(context, { Log.i("MigiG2Pager", it) },
-                { documents.active() ?: repository.current() }, documents::savePage)
+                { documents.active() ?: repository.current() }, documents::savePage, voiceUploader::enqueue)
             addresses = pair
             driver?.connect(pair.first, pair.second)
         } catch (e: Exception) {
@@ -70,6 +71,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
     }
 
     override fun close() {
+        voiceUploader.close()
         config.unregisterOnSharedPreferenceChangeListener(configListener)
         pagerPrefs.unregisterOnSharedPreferenceChangeListener(pagerListener)
         handler.removeCallbacks(retry)

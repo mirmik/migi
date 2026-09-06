@@ -68,6 +68,7 @@ func run() error {
 	mediaMaxBytes := flag.Int64("media-max-bytes", defaultMediaMaxBytes, "maximum bytes per media object")
 	mediaTotalBytes := flag.Int64("media-total-bytes", defaultMediaTotalBytes, "maximum total media bytes")
 	mediaTTL := flag.Duration("media-ttl", defaultMediaTTL, "unreferenced directly uploaded media retention period")
+	voiceConfigPath := flag.String("voice-config", os.Getenv("MIGI_VOICE_CONFIG"), "optional private config for the voice STT/model demo")
 	apksignerPath := flag.String("apksigner", os.Getenv("MIGI_APKSIGNER"), "path to pinned Android build-tools apksigner; empty disables release delivery")
 	aapt2Path := flag.String("aapt2", os.Getenv("MIGI_AAPT2"), "path to pinned Android build-tools aapt2; empty disables release delivery")
 	cert := flag.String("cert", "", "TLS certificate chain in PEM format")
@@ -96,6 +97,13 @@ func run() error {
 		"max_total_bytes", transfers.totalBytes,
 		"ttl", transfers.ttl,
 	)
+	var voice *voiceProcessor
+	if *voiceConfigPath != "" {
+		voice, err = newVoiceProcessor(*voiceConfigPath, transfers)
+		if err != nil {
+			return fmt.Errorf("configure voice demo: %w", err)
+		}
+	}
 	media, err := newMediaStore(
 		broker, *mediaDirectory, *mediaMaxBytes, *mediaTotalBytes, *mediaTTL,
 	)
@@ -263,6 +271,12 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if voice != nil {
+		voiceCtx, cancelVoice := context.WithCancel(ctx)
+		voiceDone := make(chan struct{})
+		go func() { defer close(voiceDone); voice.run(voiceCtx) }()
+		defer func() { cancelVoice(); <-voiceDone }()
+	}
 
 	var serveErr error
 	select {

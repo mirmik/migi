@@ -84,6 +84,17 @@ internal class FileExchangeClient(private val context: Context) {
         }
     }
 
+    fun uploadVoice(file: File): SharedFile {
+        require(file.isFile && file.length() in 44..1_920_044) { "Invalid voice recording" }
+        val config = config()
+        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            return parseFile(JSONObject(checkResponse(NativeQuicClient.uploadSharedFile(
+                config.endpoint, config.pin, config.credential, file.name,
+                "audio/vnd.migi.voice-wav", descriptor.fd, file.length(),
+            ))))
+        }
+    }
+
     fun download(file: SharedFile, destination: Uri) {
         val temporary = downloadVerified(
             file = file,

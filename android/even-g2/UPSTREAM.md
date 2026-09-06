@@ -14,8 +14,14 @@ Even App notification detection helpers to avoid rewriting the transport
 before hardware verification. No notification-listener service is registered
 in Migi, so automatic Even App conflict detection is unavailable; the test
 screen explicitly asks the operator to disconnect other clients.
-No NativeScript, WebView, firmware flasher, audio codec, native library or
-Faceclaw app assets are included.
+No NativeScript, WebView, firmware flasher or Faceclaw app assets are included.
+The voice-recording extension includes `FaceclawLc3Decoder.java` and
+`faceclaw_lc3_decoder.c` from the same Faceclaw commit, plus Google liblc3 v1.1.3
+(`src/main/cpp/liblc3`, Apache-2.0, license retained). The upstream archive is
+https://github.com/google/liblc3/archive/refs/tags/v1.1.3.tar.gz;
+SHA256: 276752ff54ce6a77d54ec133397b9d7e71f90caf3d9afa32d8b0e891b8ecb8af.
+It is built from vendored source with NDK27.2.12479018/CMake3.22.1, with no
+download during Gradle builds. JNI names are retained by consumer ProGuard rules.
 
 Migi-owned code is under `src/main/java/dev/migi/g2/`. Its initial scope is
 an Activity-owned experiment using two explicit BLE addresses, Canvas gray8

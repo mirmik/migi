@@ -6,9 +6,14 @@ plugins {
 android {
     namespace = "dev.migi.g2"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     buildFeatures { buildConfig = true }
     defaultConfig {
         minSdk = 34
+        // Match Migi's QUIC JNI ABI; do not advertise incomplete extra ABIs.
+        ndk { abiFilters += "arm64-v8a" }
+        consumerProguardFiles("consumer-rules.pro")
         buildConfigField("boolean", "DOCUMENT_PROBE", (System.getenv("MIGI_G2_DOCUMENT_PROBE") == "true").toString())
         buildConfigField("boolean", "WIDGET_PROBE", (System.getenv("MIGI_G2_WIDGET_PROBE") == "true").toString())
     }

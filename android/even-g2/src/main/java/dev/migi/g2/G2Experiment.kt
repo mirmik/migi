@@ -21,12 +21,14 @@ class G2Experiment(
     private val report: (String) -> Unit,
     private val pagerSource: (() -> PagerContent?)? = null,
     private val onDocumentPage: ((Long, Int) -> Unit)? = null,
+    private val onVoiceRecorded: ((java.io.File) -> Unit)? = null,
 ) : AutoCloseable {
     private val context = context.applicationContext
     companion object {
         // Serialize teardown and reconnect even across Activity recreation.
         private val executor = Executors.newSingleThreadExecutor()
         private val renderExecutor = Executors.newSingleThreadExecutor()
+        private val audioExecutor = Executors.newSingleThreadExecutor()
     }
     private val main = Handler(Looper.getMainLooper())
     private var transport: FaceclawBleCommunicator? = null // executor-owned
@@ -48,6 +50,10 @@ class G2Experiment(
     private var pageCount = 1
     private var lastPairReady = false
     private val reconcileQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var voice: G2VoiceRecording? = null
+    private var voiceBusy = false
+    private var voiceTimer: Runnable? = null
+    private var voiceGeneration = 0
 
     fun refreshDisplaySettings() = execute {
         transport?.takeIf { it.isSessionReady }?.let { G2DisplaySettings.applyBrightness(context, it) }
@@ -58,6 +64,7 @@ class G2Experiment(
         if (pagerSource == null || closed || !reconcileQueued.compareAndSet(false, true)) return
         execute {
             reconcileQueued.set(false)
+            if (voiceBusy) return@execute
             if (force) deliveredId = null
             val connection = transport ?: return@execute
             if (!connection.isSessionReady) return@execute
@@ -102,6 +109,7 @@ class G2Experiment(
                 if (pagerSource != null) execute {
                     if (transport !== connection) return@execute
                     val ready = connection.isSessionReady
+                    if (!ready && voice != null) cancelVoice("Запись отменена: соединение потеряно")
                     if (ready && !lastPairReady) {
                         G2DisplaySettings.applyBrightness(context, connection)
                         deliveredId = null
@@ -122,6 +130,17 @@ class G2Experiment(
                         if (queueMs > 2_000) {
                             emit("Пропущен устаревший жест: $kind/$eventType, очередь ${queueMs}ms")
                             return@execute
+                        }
+                        if (kind in listOf("sys-event", "list-click", "text-click")) {
+                            if (voiceBusy) {
+                                if (eventType == BleProtocol.EVENT_CLICK && voice != null) finishVoice()
+                                else if (eventType == BleProtocol.EVENT_DOUBLE_CLICK) cancelVoice("Запись отменена")
+                                return@execute
+                            }
+                            if (eventType == BleProtocol.EVENT_RING_LONG_PRESS) {
+                                startVoice(connection)
+                                return@execute
+                            }
                         }
                         if (kind == "display-wake") {
                             cancelTimer()
@@ -216,6 +235,100 @@ class G2Experiment(
         timer = null
     }
 
+    private fun voiceStatus(text: String) {
+        emit(text)
+        val connection = transport ?: return
+        if (!connection.isSessionReady) return
+        sleeping = false
+        connection.setG2ScreenOn(true)
+        connection.submitNativeText(text, FrameTimings.getInstance().startFrame("voice"))
+    }
+
+    private fun startVoice(connection: FaceclawBleCommunicator) {
+        if (!connection.isSessionReady) return
+        cancelFrameWait()
+        voiceBusy = true
+        val recording = G2VoiceRecording()
+        voice = recording
+        val generation = ++voiceGeneration
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        try { voiceStatus("Подготовка микрофона…") }
+        catch (e: Exception) { cancelVoice("Микрофон: ${e.message}"); return }
+        val poll = object : Runnable {
+            override fun run() = execute {
+                if (voiceGeneration != generation || voice !== recording) return@execute
+                if (transport !== connection || !connection.isSessionReady) {
+                    cancelVoice("Запись отменена: соединение потеряно"); return@execute
+                }
+                if (connection.awaitEvenHubSessionReady(0)) {
+                    try {
+                        check(connection.startG2AudioCapture { data, arm, _ -> recording.accept(data, arm) }) { "Очки не включили микрофон" }
+                        voiceStatus("Слушаю…\n\nКасание — закончить\nДвойное — отменить\nМаксимум 60 секунд")
+                        watchVoice(connection, recording, generation)
+                    } catch (e: Exception) { cancelVoice("Микрофон: ${e.message}") }
+                } else if (android.os.SystemClock.elapsedRealtime() - startedAt > 8_000) {
+                    cancelVoice("Микрофон: экран не готов")
+                } else main.postDelayed(this, 100)
+            }
+        }
+        voiceTimer = poll
+        main.post(poll)
+    }
+
+    private fun watchVoice(connection: FaceclawBleCommunicator, recording: G2VoiceRecording, generation: Int) {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        val watch = object : Runnable {
+            override fun run() = execute {
+                if (generation != voiceGeneration || voice !== recording) return@execute
+                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                if (!connection.isAudioCaptureActive) cancelVoice("Запись прервана: микрофон отключился")
+                else if (elapsed > 5_000 && recording.packetCount() == 0) cancelVoice("Аудио от очков не поступает")
+                else if (elapsed >= 60_000) finishVoice()
+                else main.postDelayed(this, 1000)
+            }
+        }
+        voiceTimer = watch
+        main.postDelayed(watch, 1000)
+    }
+
+    private fun cancelVoice(message: String, showStatus: Boolean = true) {
+        voiceGeneration++
+        voiceTimer?.let(main::removeCallbacks); voiceTimer = null
+        voice?.stop(); voice = null
+        try { transport?.stopG2AudioCapture() } finally {
+            voiceBusy = false
+            deliveredId = null
+        }
+        if (showStatus) {
+            try { voiceStatus(message) } catch (e: Exception) { emit(message) }
+        } else emit(message)
+    }
+
+    private fun finishVoice() {
+        val recording = voice ?: return
+        recording.stop(); voice = null
+        voiceTimer?.let(main::removeCallbacks); voiceTimer = null
+        val generation = ++voiceGeneration
+        try { transport?.stopG2AudioCapture(); voiceStatus("Сохраняю запись…") }
+        catch (e: Exception) { emit("Остановка микрофона: ${e.message}") }
+        audioExecutor.execute {
+            val result = runCatching {
+                val file = recording.save(java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "voice"))
+                onVoiceRecorded?.invoke(file)
+                file
+            }
+            // Keep the recording even if the display connection changes during decoding.
+            execute {
+                if (generation != voiceGeneration) return@execute
+                voiceBusy = false
+                result.onSuccess {
+                    voiceStatus(if (onVoiceRecorded != null) "Запись в очереди отправки\nЖду ответ модели…" else "Запись сохранена локально")
+                    emit("G2 voice WAV=${it.name}, bytes=${it.length()}, lost=${recording.missingPackets}")
+                }.onFailure { voiceStatus("Не удалось отправить запись\n${it.message?.take(100)}") }
+            }
+        }
+    }
+
     private fun sleepDisplay() {
         val connection = checkNotNull(transport) { "Сначала подключите очки" }
         check(connection.isSessionReady) { "Сессия пары ещё не готова" }
@@ -231,6 +344,7 @@ class G2Experiment(
     }
 
     private fun showFrame() {
+        if (voiceBusy) return
         val content = pagerSource?.invoke()
         if (pagerSource != null && (content == null || content.body.isBlank())) {
             sleepDisplay()
@@ -323,6 +437,7 @@ class G2Experiment(
     fun disconnect() = execute { release(); emit("Отключено") }
 
     private fun release() {
+        if (voiceBusy || voice != null) cancelVoice("Запись отменена: отключение", false)
         cancelTimer()
         cancelFrameWait()
         sleeping = false

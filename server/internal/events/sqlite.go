@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS documents (
     event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
     PRIMARY KEY(agent, document_id)
 );
+CREATE TABLE IF NOT EXISTS voice_replies (
+    request_id TEXT PRIMARY KEY,
+    event_id INTEGER NOT NULL UNIQUE REFERENCES events(id)
+);
 CREATE TABLE IF NOT EXISTS device_acks (
     device_id TEXT PRIMARY KEY,
     through_id INTEGER NOT NULL CHECK (through_id >= 0),
