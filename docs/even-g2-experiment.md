@@ -154,3 +154,229 @@ at .675, prelude ACK at .731, layout ACK at .866, frame ACK at 16:44:08.245 and
 handler completion at .348. No stock-firmware latency comparison was performed.
 Physical results plus logs confirm the scoped foreground experiment; phone-lock
 and background service behaviour remain outside acceptance.
+
+## Automatic pager — build 26
+
+The opt-in switch on the G2 screen transfers ownership to `ConnectionService`.
+The service adds the `connectedDevice` foreground type while G2 is enabled and
+uses its existing CPU keep-alive lock. Leaving the Activity closes only a local
+experiment, not the pager. Disable the switch to release G2; Faceclaw/Even App
+must remain disconnected for the whole time the automatic pager is enabled.
+
+`PagerRepository` commits one JSON record (ID/title/body) plus the existing phone
+pager text before the event cursor advances. Duplicate/older IDs cannot replace
+a newer record. G2 receives a change notification and reads the newest record on
+its serial executor, not a queue of historical texts. A 5-second retry handles
+unavailable transport; new messages normally trigger immediately. Reconnect
+resends current state. An empty record blanks/suspends the display. No read ACK
+is sent to the server and no history is introduced.
+
+Rendering uses full 640×480 frames and Android StaticLayout for Unicode text.
+Text pages follow actual line heights. Tap/swipe down advances; swipe up goes
+back; double tap sleeps/wakes. Actions for a replaced message trigger refresh
+instead of modifying its replacement's page. Manual sleep is kept until new
+content, manual wake or reconnect. The experiment has no TTL (the server pager
+has none), auto-dismiss or verified wear-state privacy policy. It is intended
+for the explicitly enabled personal experiment; off-head filtering remains a
+separate implementation item.
+
+References: Android foreground service types,
+https://developer.android.com/develop/background-work/services/fgs/service-types#connected-device
+
+Validation scope: server-origin message with locked phone; replacement while
+asleep; empty-body clear; multiple-page Cyrillic message; current-state delivery
+after service restart. `ConnectionService` startup/boot recovery recreates G2
+when the switch remains enabled and Bluetooth permission is available.
+
+Build 26 hardware results: automatic pager enabled, Activity left and phone
+locked (`mWakefulness=Dozing`, service foreground types `0x210`). Server event
+10360 woke the suspended glasses and the user confirmed the message. Empty event
+10363 produced blank-frame transmission and EvenHub suspension. Multi-page
+Cyrillic event 10367 appeared and the user confirmed paging works. The payload
+was text only; no separate photo/illustration was sent. Logs show text-click
+scroll events and new full-frame ACKs while the phone remains locked.
+
+Build 27 additionally preserves the legacy body-only phone pager until a new
+identified event arrives, and clips pages at full line boundaries instead of
+showing a fragment of the next line. All 21 existing unit tests, release build
+and lint are run for the integration; real-device checks above cover the new
+message-to-display path. Long-term Doze, off-head privacy and exhaustive
+reconnect reliability are not claimed by this short run.
+
+Build 27 was installed over build 26 without opening Migi. Package-replacement
+recovery restarted the service and restored the persisted pager; the user
+confirmed session restoration. Cold BLE recovery needed retries after layout
+ACK timeouts and a right-side notification-enable failure. This remains a
+separate reliability follow-up, not a claim of immediate reconnect. After
+double-tap sleep, new server event 10375 triggered automatic resume and full
+frame ACK at 17:03:03.166. The automatic switch remains enabled on the test
+phone, and Even App remains disabled to avoid competing for the glasses.
+
+## Gesture backlog — build 28
+
+The longer build 27 run exposed a real regression: callbacks arrived while
+each repeated identical pager frame held the serial executor in a 15-second
+readiness timeout. At 17:10:15 the transport discarded identical pixels, but
+only advanced `lastEnqueuedFingerprint`; `displayedFingerprint` still named
+the preceding frame. The barrier could never match the new desired ID.
+Heartbeat writes continued during the wait and the phone's service CPU lock
+was held. This evidence identifies an application/transport bookkeeping bug;
+it does not establish that every possible screen-off delay has the same cause.
+
+Build 28 aliases the displayed fingerprint on the identical-pixel path only
+when the previous frame is ACKed. Otherwise it sends normally. Gestures use
+their callback arrival time for debounce and expire after 2 seconds in Migi's
+queue, preventing stale toggles after a stall. Double-tap completion latency
+is logged from callback receipt. Faceclaw's foreground service and G2 partial
+wake lock were compared with Migi's existing foreground service and service
+CPU lock; no extra keep-alive lock was added.
+
+Release build, 21 existing app unit tests and lint passed; APK signature and
+version 28 were verified and installed. Initial display-wake completion was
+693 ms. Repeated identical-frame and locked-phone manual acceptance is pending.
+
+Build 28 follow-up log (17:23–17:24): repeated sleep callbacks completed in
+428–540 ms and wake callbacks in 684–798 ms, with identical-image discards
+between cycles and no associated 15-second stall. Visual/locked-phone
+confirmation remains separate from these callback measurements.
+
+## Fade experiment — build 29
+
+Wake/sleep now animate compositor intensity with a 480 ms smoothstep curve,
+sampled about every 80 ms. Actual visible steps depend on BLE frame throughput;
+the transport coalesces unsent intermediate images. This preserves the lens
+brightness/auto-brightness setting (the protocol's manual brightness zero is
+still visible). Initial wake submits a dark frame before increasing intensity;
+sleep fades before blanking and suspending EvenHub. Normal page changes retain
+full intensity. A new action cancels the previous animation, with one scheduled
+tick at a time and generation checks for already-enqueued ticks. Teardown
+cancels the animation and releases the retained raster.
+
+Release build, existing app unit tests and lint passed. Signed build 29 is
+installed for visual acceptance on both displays; smoothness is not yet
+confirmed by the wearer.
+
+Build 29 visual acceptance FAILED: the wearer reports discrete, slow updates,
+not smooth fading. Frame ACKs did not establish perceptual smoothness. Build 30
+removes the raster animation and restores immediate display transitions while
+retaining the build 28 identical-frame fix. Release, app tests and lint passed.
+Faceclaw exposes a brightness-setting command, but no duration/ramp parameter
+was found in that implementation. A native stock transition remains a
+hypothesis; it has not been reproduced or identified as a callable BLE command.
+Further work must distinguish panel brightness transitions from stock display
+power/UI animations before selecting a replacement implementation.
+
+### Public research follow-up, 2026-09-06
+
+The earlier unknown-native-mechanism assessment was too broad. Direct inspection
+of public repository checkouts found concrete firmware-level fade research:
+
+- evenRealities-openCFW commit `fc1040f1d73fec0ceaab79ee0db580bdfed521ad`,
+  `g2/docs/research/g2-fade-anim-dependency-boundary.md`, describes eleven
+  functions in stock `app/gui/anim/fade_anim.c`, recursive color interpolation
+  over the widget tree, LVGL animation calls, and callers in teleprompt,
+  translate and conversate UI. Its analyzer targets stock **2.2.6.10**, not our
+  installed **2.2.9.22 / EVENCFW17**. The document explicitly leaves source
+  recreation and display validation outstanding. Source:
+  https://github.com/kalanihelekunihi/evenRealities-openCFW/blob/fc1040f1d73fec0ceaab79ee0db580bdfed521ad/g2/docs/research/g2-fade-anim-dependency-boundary.md
+- ffs-os commit `140a16822028e3b4bbe0e059325459baa51727aa`,
+  `legacy/sdk/program.ts` documents `page_anim_run`, animation mode and the
+  fade-duration field, as part of a custom on-glasses interpreter integration
+  targeting **2.2.7.14**. It is not evidence of a stock BLE fade opcode or a
+  drop-in feature for our CFW. Source:
+  https://github.com/yonif8/ffs-os/blob/140a16822028e3b4bbe0e059325459baa51727aa/legacy/sdk/program.ts
+
+Also checked i-soxi/even-g2-protocol, expectbugs/G2CC protocol captures,
+Commute773/g2-kit-unofficial and nickustinov/even-g2-notes. No documented stock
+BLE fade-duration command was located in these inspected sources. This is a
+bounded search result, not proof that the community has never discovered one.
+Native firmware fade is known; its exact relationship to the user's observed
+whole-display wake transition and accessibility from our image path remain
+unverified. Next investigation should trace native page show/hide into fade
+and determine whether an existing BLE command reaches it before proposing CFW
+changes. No firmware or app changes were made during this research follow-up.
+
+### Rendering-path investigation
+
+Concrete findings from the next source inspection:
+
+1. Migi's `BleImageOptimizer.maybeCompress` always emits custom mode 6 for
+   full frames. Its comment explicitly excludes a raw BMP fallback because
+   the logical image can exceed its EvenHub carrier dimensions.
+2. The inspected g2flash `patches/zlib_glue.c` documents mode-6 shadow output
+   as bypassing LVGL. `display_copy_hook` copies the shadow into the physical
+   buffer and returns without stock copying while the direct-framebuffer
+   lease remains active. Therefore a widget-tree color animation cannot be
+   assumed to modify this retained raster. This is source-level reasoning
+   against the inspected checkout, not a binary audit of installed CFW17.
+3. The stock fade analysis describes widget-tree color interpolation; the
+   page-manager analysis describes a separate transition driver. Their
+   existence does not prove that whole-panel brightness ramps or EvenHub's
+   show operation use either one. The recovered EvenHub UI handler calls a
+   show function after creating its root, but that external call has not
+   been traced through to fade in this investigation.
+4. Current Migi sleep explicitly blanks and waits before EvenHub shutdown.
+   Resume replays the launch prelude and recreates the layout before sending
+   the raster. Thus even an automatic stock page transition could run with
+   no visible content. Removing the explicit blank alone is insufficient
+   evidence of a fix because the direct-framebuffer lease also intervenes.
+
+Useful next device experiment: compare stock wake on a populated page with
+EvenHub page show/hide on a retained **stock image/text container**, capturing
+BLE and visual timing. This separates a native page effect from panel power
+effects. It requires a separate stock-size rendering probe; changing only the
+mode byte of our 640x480 payload is not valid. If stock content fades but mode-6
+content does not, choose between a stock-container pager and a CFW fade at the
+physical-buffer/panel layer. A CFW implementation would need local timing,
+cancel-on-new-frame, non-destructive source pixels, per-lens synchronization,
+and cleanup on lease loss. Neither implementation is justified yet by the
+available evidence. The user's exact stock trigger (whole-display double-tap
+wake versus in-app transition) has been requested to narrow this probe.
+
+Additional source references (all openCFW analyses target 2.2.6.10):
+- https://github.com/kalanihelekunihi/evenRealities-openCFW/blob/fc1040f1d73fec0ceaab79ee0db580bdfed521ad/g2/docs/research/g2-page-manager-dependency-boundary.md
+- https://github.com/kalanihelekunihi/evenRealities-openCFW/blob/fc1040f1d73fec0ceaab79ee0db580bdfed521ad/g2/components/apollo_main/core_overlay/evenhub_ui_event.c
+- https://github.com/jimrandomh/g2flash/blob/main/patches/zlib_glue.c
+
+## LVGL image probe — build 31
+
+Migi now opts into `configureLvglImageOutput()` before transport start. The
+frame is rendered at 576x288, matching the existing CFW-expanded EvenHub image
+carrier. The wire payload is a raw 4bpp BMP rather than custom mode 6; texture
+and delta planners are bypassed. CFW's legacy BMP decoder explicitly clears
+direct-framebuffer ownership and sets the LVGL image source. This is an LVGL
+**image** object, not native LVGL labels: Android Canvas/StaticLayout still
+renders Unicode and pagination. It still relies on CFW's enlarged container,
+so this is not a claim of compatibility with unmodified stock firmware.
+
+Before sleep the explicit black-frame write has been removed: the populated
+page goes directly through EvenHub shutdown. Wake still recreates the page
+and resends its image; retained native page hide/show and explicit native
+fade are not yet implemented. Native animation is therefore a manual probe,
+not an asserted result of the migration.
+
+Signed build 31 installed via ADB; release build, 21 existing app tests and lint
+passed. Device log PID21915: 83,062-byte BMP, 22 image messages, first write
+17:47:12.041 and final ACK17:47:15.572 (~3.53s). This is a material transfer
+latency regression versus compressed directfb output, accepted only for this
+probe. Both-lens visibility and page lifecycle effect await wearer feedback.
+
+Build 31 wearer feedback: gradual fading DOES work. Gesture latency regressed
+even with the phone screen on. The log shows a double tap arriving at
+17:51:03.305 while wake waits for the BMP, then being discarded at
+17:51:05.662 after 2,355 ms in Migi's serial queue. Ordinary sleep without an
+upload in progress completed in about 350–420 ms. This is a distinct backlog
+cause from build 27's identical-frame fingerprint bug.
+
+Build 32 removes synchronous image-completion waiting from the gesture queue.
+One cancellable poll checks readiness every 100 ms with zero frame-wait timeout;
+the existing transport still sends the wake READY after the frame lands.
+New frame, sleep and teardown invalidate the old poll generation. A 15-second
+failure clears the queued pager version so the service retries current content.
+Shutdown can now run during upload and clears pending image traffic via the
+existing transport shutdown path. Prelude/control ACK operations still have
+their bounded waits; this is not a claim that all BLE control is nonblocking.
+The BMP transfer itself is still slow and remains a separate optimization.
+Release, existing app tests and lint passed, signed build 32 installed. Manual
+acceptance: wake, double-tap again during image loading, verify prompt sleep
+without later unsolicited wake; then allow a complete wake and check text/fade.

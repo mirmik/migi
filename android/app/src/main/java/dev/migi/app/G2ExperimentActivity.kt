@@ -5,6 +5,9 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.widget.Switch
+import android.bluetooth.BluetoothAdapter
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
@@ -21,6 +24,7 @@ class G2ExperimentActivity : Activity() {
     private lateinit var log: TextView
     private var experiment: G2Experiment? = null
     private val lines = ArrayDeque<String>()
+    private lateinit var pagerSwitch: Switch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,21 +44,50 @@ class G2ExperimentActivity : Activity() {
             setOnClickListener { action() }
         })
         label("Even G2 — эксперимент")
-        label("Нужна установленная CFW. Отключите Faceclaw и Even App от очков. При уходе с этого экрана соединение закрывается.")
+        label("Отключите Faceclaw и Even App от очков. Пейджер работает при закрытом экране Migi; локальный тест — только на этом экране.")
         left = EditText(this).apply { hint = "BLE-адрес левой дужки"; setSingleLine(); setText(prefs.getString("left", "")) }
         right = EditText(this).apply { hint = "BLE-адрес правой дужки"; setSingleLine(); setText(prefs.getString("right", "")) }
         content.addView(left)
         button("Выбрать левую из сопряжённых") { pickDevice(left) }
         content.addView(right)
         button("Выбрать правую из сопряжённых") { pickDevice(right) }
+        pagerSwitch = Switch(this).apply {
+            text = "Пейджер на очках — автоматически"
+            isChecked = G2PagerBridge.enabled(this@G2ExperimentActivity)
+            setOnCheckedChangeListener { _, enabled ->
+                if (enabled) {
+                    val l = this@G2ExperimentActivity.left.text.toString().trim().uppercase(Locale.ROOT)
+                    val r = this@G2ExperimentActivity.right.text.toString().trim().uppercase(Locale.ROOT)
+                    if (!bluetoothAllowed() || !BluetoothAdapter.checkBluetoothAddress(l) ||
+                        !BluetoothAdapter.checkBluetoothAddress(r) || l == r) {
+                        isChecked = false
+                        appendLog("Разрешите Bluetooth и выберите две разные дужки")
+                    } else {
+                        experiment?.close()
+                        experiment = null
+                        prefs.edit().putString("left", l).putString("right", r)
+                            .putBoolean(G2PagerBridge.ENABLED, true).apply()
+                        startForegroundService(Intent(this@G2ExperimentActivity, ConnectionService::class.java))
+                        appendLog("Пейджер включён. Новые сообщения сами разбудят очки, даже при блокировке телефона.")
+                    }
+                } else {
+                    prefs.edit().putBoolean(G2PagerBridge.ENABLED, false).apply()
+                    if (experiment == null) experiment = G2Experiment(this@G2ExperimentActivity, ::appendLog)
+                    appendLog("Пейджер на очках выключен")
+                }
+            }
+        }
+        content.addView(pagerSwitch)
         button("Подключиться") {
-            if (bluetoothAllowed()) {
+            if (G2PagerBridge.enabled(this)) {
+                appendLog("Для локального теста сначала выключите автоматический пейджер")
+            } else if (bluetoothAllowed()) {
                 val manager = getSystemService(BluetoothManager::class.java)
                 if (manager?.adapter?.isEnabled != true) {
                     appendLog("Включите Bluetooth в настройках телефона")
                 } else {
-                    val l = left.text.toString().trim().uppercase(Locale.ROOT)
-                    val r = right.text.toString().trim().uppercase(Locale.ROOT)
+                    val l = this@G2ExperimentActivity.left.text.toString().trim().uppercase(Locale.ROOT)
+                    val r = this@G2ExperimentActivity.right.text.toString().trim().uppercase(Locale.ROOT)
                     prefs.edit().putString("left", l).putString("right", r).apply()
                     experiment?.connect(l, r)
                 }
@@ -72,13 +105,13 @@ class G2ExperimentActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        experiment = G2Experiment(this, ::appendLog)
+        if (!G2PagerBridge.enabled(this)) experiment = G2Experiment(this, ::appendLog)
     }
 
     override fun onStop() {
         experiment?.close()
         experiment = null
-        appendLog("Экран закрыт: соединение завершается. Для нового теста нажмите «Подключиться».")
+        if (!G2PagerBridge.enabled(this)) appendLog("Локальный тест завершён")
         super.onStop()
     }
 

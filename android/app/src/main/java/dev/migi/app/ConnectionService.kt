@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ConnectionService : Service() {
     private var client: EventStreamClient? = null
+    private var g2Pager: G2PagerBridge? = null
     private lateinit var eventAudioPlayer: EventAudioPlayer
     private lateinit var connectivityManager: ConnectivityManager
     private var cpuWakeLock: PowerManager.WakeLock? = null
@@ -52,6 +53,14 @@ class ConnectionService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
         )
         acquireKeepAliveLocks()
+        g2Pager = G2PagerBridge(this) { enabled ->
+            startForeground(
+                CONNECTION_NOTIFICATION_ID,
+                connectionNotification(if (enabled) "Migi connection • G2 pager enabled" else "Migi connection"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING or
+                    (if (enabled) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0),
+            )
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -90,6 +99,8 @@ class ConnectionService : Service() {
     }
 
     override fun onDestroy() {
+        g2Pager?.close()
+        g2Pager = null
         client?.close()
         client = null
         connectivityManager.unregisterNetworkCallback(networkCallback)
@@ -176,11 +187,7 @@ class ConnectionService : Service() {
 			return
 		}
 		if (event.kind == PAGER_EVENT_KIND) {
-			check(
-				getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE).edit()
-					.putString(MainActivity.KEY_PAGER_MESSAGE, event.body)
-					.commit(),
-			) { "Failed to persist pager message" }
+            PagerRepository(this).accept(event)
 			if (event.body.isBlank()) return
         }
         val cue = eventAudioPlayer.cueFor(event)

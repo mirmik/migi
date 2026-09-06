@@ -26,4 +26,15 @@ Local upstream patches: `g2protocol/ConnectionOptions.java` disables incremental
 frames for the experiment. A fresh communicator restarts delta IDs at 1, while
 CFW can retain its recent-ID ring across cleanup. Full frames avoid depending
 on that state. `UPSTREAM.sha256` continues to record the original upstream bytes;
-this file is the one expected mismatch.
+this file is an expected mismatch.
+
+`FaceclawBleCommunicator.java` also fixes the identical-pixel fast path: a new
+fingerprint aliases both enqueued and displayed state only when its predecessor
+is acknowledged. Previously only enqueued state advanced, so the readiness
+barrier timed out on an image already displayed. Unacknowledged predecessors
+must take the normal send path. This is the second expected SHA256 mismatch.
+
+The communicator also exposes an opt-in `configureLvglImageOutput()` before
+start. It sends raw 4bpp BMP at the existing 576x288 carrier size, bypassing
+custom mode-6 and texture/delta planners. CFW's legacy BMP decoder returns
+presentation to LVGL. Migi currently selects this experimental path.

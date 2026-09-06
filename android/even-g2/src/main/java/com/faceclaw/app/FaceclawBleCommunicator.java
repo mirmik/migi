@@ -809,6 +809,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         compositor.configureScreen(width, height);
     }
 
+    private boolean lvglImageOutput;
+
+    /** Before start: use the legacy BMP/LVGL image object, sized to its carrier. */
+    public void configureLvglImageOutput() {
+        synchronized (lock) {
+            if (running) throw new IllegalStateException("Configure LVGL before start");
+            lvglImageOutput = true;
+        }
+    }
+
     /**
      * The current composited screen as a phone-UI preview bitmap, or null
      * before any surface has been configured. Built from the compositor so
@@ -2556,9 +2566,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (packed == null) {
             packed = new byte[0];
         }
-        if (lastEnqueuedWidth == width && lastEnqueuedHeight == height
+        // Pixel equality with an enqueued frame is not proof of delivery.
+        // Only alias an ACKed frame; otherwise enqueue normally so a pending
+        // or failed predecessor cannot make the readiness barrier succeed.
+        if (!displayedFingerprint.isEmpty()
+                && displayedFingerprint.equals(lastEnqueuedFingerprint)
+                && lastEnqueuedWidth == width && lastEnqueuedHeight == height
                 && Arrays.equals(packed, lastEnqueuedPacked)) {
             lastEnqueuedFingerprint = fingerprint;
+            displayedFingerprint = fingerprint;
+            lock.notifyAll();
             finishFrame(frameId, "discarded: image content identical to displayed");
             return;
         }
@@ -2567,7 +2584,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // ink out of the baked deltas. Uploads (mode 12) ride ahead of the
         // image message on the ordered transport. Falls through to the plain
         // paths whenever the planner has nothing to draw.
-        if (textureCacheSupported && connectionOptions.TEXTURE_CACHE_FRAMES
+        if (!lvglImageOutput && textureCacheSupported && connectionOptions.TEXTURE_CACHE_FRAMES
                 && draws != null && draws.length > 0 && packed.length > 0) {
             byte[] deltaBase = (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
                     && lastEnqueuedWidth == width && lastEnqueuedHeight == height)
@@ -2612,7 +2629,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // a non-empty value means the display base is trusted.
         byte[] incrementalPayload = null;
         String incrementalLog = null;
-        if (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
+        if (!lvglImageOutput && connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
                 && lastEnqueuedWidth == width && lastEnqueuedHeight == height) {
             int baseFid = nextImageFrameId;
             BleImageOptimizer.IncrementalPlan single =
@@ -2644,6 +2661,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
                 }
             }
+        }
+        if (lvglImageOutput) {
+            if (width != 576 || height != 288) throw new IllegalArgumentException("LVGL carrier requires 576x288");
+            incrementalPayload = BmpUtil.build4bppBmpFromPacked(packed, width, height);
+            incrementalLog = "LVGL BMP frame 576x288 bytes=" + incrementalPayload.length;
+            logLine(incrementalLog);
         }
         BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
             ? new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), incrementalPayload)
