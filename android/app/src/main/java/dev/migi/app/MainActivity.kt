@@ -666,7 +666,7 @@ class MainActivity : Activity() {
             addView(sectionLabel(R.string.settings_about), matchWidth())
             addView(secondaryActionButton(R.string.g2_experiment).apply {
                 setOnClickListener {
-                    startActivity(Intent(this@MainActivity, G2ExperimentActivity::class.java))
+                    startActivity(Intent(this@MainActivity, G2DisplaySettingsActivity::class.java))
                 }
             }, matchWidth())
             addGap(10)

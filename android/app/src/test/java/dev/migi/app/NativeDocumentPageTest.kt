@@ -1,4 +1,4 @@
-package dev.migi.app
+package com.faceclaw.app
 
 import com.faceclaw.app.BleProtocol as P
 import com.faceclaw.app.NativePage

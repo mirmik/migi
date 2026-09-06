@@ -95,6 +95,29 @@ image ACK. Text-only pager updates keep their fast in-place path. This trades a
 short page-transition pause for the lifecycle already verified on the glasses;
 REBUILD is not used for production document pagination.
 
+The user confirmed bilateral pagination in build46. Its visible transition
+flash is tracked separately as Kanboard2257 and deferred at the user's request.
+
+## Glasses settings
+
+Android Settings → Очки Even G2 opens display settings. Manual brightness
+levels1–100 and automatic ambient-light adjustment use the existing device
+brightness command. Apply saves the selection; the service restores it on
+pair reconnection. Before the first application Migi leaves the existing
+device brightness unchanged. A saved setting is not a visibility receipt.
+Build48 verifies both brightness modes with device ACKs, disables the manual
+slider in auto mode, and commits preferences before reporting a successful save.
+
+“Инвертировать прокрутку” swaps forward/backward swipe navigation in documents
+and the pager. The switch saves immediately and takes effect on the next gesture,
+without reconnecting or rebuilding a page. Tap-to-advance and double-tap sleep/wake
+are unchanged. The default is the original direction; the user's choice persists.
+
+Native text currently uses the firmware's fixed font. There is no supported
+size selector in this rendering path; changing wrapping alone would not make
+glyphs smaller. A smaller rasterized font would require a separate rendering
+mode, with larger BLE transfers, and is not enabled by these brightness controls.
+
 ## Validation
 
 ```sh

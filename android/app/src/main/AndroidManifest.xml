@@ -44,6 +44,7 @@
         </activity>
 
         <activity android:name=".DocumentsActivity" android:exported="false" />
+        <activity android:name=".G2DisplaySettingsActivity" android:exported="false" />
 
         <activity
             android:name=".G2ExperimentActivity"

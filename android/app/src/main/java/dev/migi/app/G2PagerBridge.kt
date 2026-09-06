@@ -20,6 +20,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
     private var addresses: Pair<String, String>? = null
     private val configListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in setOf(ENABLED, "left", "right")) configure()
+        if (key in setOf(dev.migi.g2.G2DisplaySettings.BRIGHTNESS_MODE, dev.migi.g2.G2DisplaySettings.BRIGHTNESS_LEVEL)) driver?.refreshDisplaySettings()
     }
     private val pagerListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == PagerRepository.KEY_STATE) driver?.refreshPager()

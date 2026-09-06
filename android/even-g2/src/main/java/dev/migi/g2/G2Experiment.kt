@@ -49,6 +49,10 @@ class G2Experiment(
     private var lastPairReady = false
     private val reconcileQueued = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    fun refreshDisplaySettings() = execute {
+        transport?.takeIf { it.isSessionReady }?.let { G2DisplaySettings.applyBrightness(context, it) }
+    }
+
     /** Coalesce events; read current durable state on execution, not an event-time snapshot. */
     fun refreshPager(force: Boolean = false) {
         if (pagerSource == null || closed || !reconcileQueued.compareAndSet(false, true)) return
@@ -99,6 +103,7 @@ class G2Experiment(
                     if (transport !== connection) return@execute
                     val ready = connection.isSessionReady
                     if (ready && !lastPairReady) {
+                        G2DisplaySettings.applyBrightness(context, connection)
                         deliveredId = null
                         sleeping = false
                     }
@@ -146,7 +151,12 @@ class G2Experiment(
                                 } else if (eventType == BleProtocol.EVENT_DOUBLE_CLICK && !sleeping) sleepDisplay()
                                 else if (pagerSource == null || pagerSource.invoke()?.body?.isNotBlank() == true) {
                                     if (pagerSource != null && !sleeping && !BuildConfig.WIDGET_PROBE) {
-                                        page = when (eventType) {
+                                        val navigationEvent = if (G2DisplaySettings.invertScroll(context)) when (eventType) {
+                                            BleProtocol.EVENT_SCROLL_TOP -> BleProtocol.EVENT_SCROLL_BOTTOM
+                                            BleProtocol.EVENT_SCROLL_BOTTOM -> BleProtocol.EVENT_SCROLL_TOP
+                                            else -> eventType
+                                        } else eventType
+                                        page = when (navigationEvent) {
                                             BleProtocol.EVENT_SCROLL_TOP -> (page - 1).coerceAtLeast(0)
                                             BleProtocol.EVENT_CLICK, BleProtocol.EVENT_SCROLL_BOTTOM -> if (pagerSource.invoke()?.document != null) (page + 1).coerceAtMost(pageCount - 1) else (page + 1) % pageCount
                                             else -> page
