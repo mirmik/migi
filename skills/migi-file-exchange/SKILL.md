@@ -79,3 +79,25 @@ success unless the command returns successfully.
   request.
 - Do not restart, rebuild, or deploy the Migi server merely to transfer a file
   unless the user explicitly asks for operational changes.
+
+## Send a reading document to Migi and glasses
+
+For a structured note with formulas, use the bundled `scripts/migi-document`
+rather than uploading an HTML file to Files. It accepts schema-1 JSON or a small
+HTML subset: `article/html/body`, `h1/h2/h3`, `p`, `ul/ol/li`, `br`, and standalone
+`math` blocks containing LaTeX. No attributes, scripts, styles or external assets.
+
+```sh
+python3 scripts/migi-document note.html --title 'Explanation' --check
+python3 scripts/migi-document note.html --title 'Explanation'
+```
+
+The helper uses the same pinned agent config, posts to `/v1/documents`, and prints
+`document_id`, `event_id`, `created`. The same content has a stable default ID,
+so retries do not create duplicates. Use `--id NEW_ID` to intentionally send a
+new copy. A reused ID with different content returns409. The server stores the
+whole document and delivers it to paired phones; G2 output requires the user's
+existing glasses-output switch. Server acceptance does not prove visibility.
+Documents remain in the phone's Documents reader, with saved page position.
+Limits:32KiB JSON,100 blocks; math1000 characters per block. Start with readable
+short display formulas; split wide expressions. See `--help` for flags.

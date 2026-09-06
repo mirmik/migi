@@ -75,6 +75,8 @@ func newAgentMuxWithAllStores(
 		security.publishRequests,
 		authenticateAgent(broker, security, publishAgentEventHandler(broker)),
 	))
+	mux.Handle("POST /v1/documents", security.rateLimit("documents", security.publishRequests,
+		authenticateAgent(broker, security, publishDocumentHandler(broker))))
 	mux.Handle("POST /v1/agent-messages", security.rateLimit(
 		"publish-message",
 		security.publishRequests,
@@ -311,6 +313,10 @@ func publishAgentEventHandler(broker *events.Broker) http.HandlerFunc {
 		input.Title = strings.TrimSpace(input.Title)
 		if !agentEventKindPattern.MatchString(input.Kind) || input.Title == "" {
 			http.Error(w, "valid kind and non-empty title are required", http.StatusBadRequest)
+			return
+		}
+		if input.Kind == "document.published" {
+			http.Error(w, "document.published must use /v1/documents", http.StatusBadRequest)
 			return
 		}
 		if input.Kind == playbackQueueEventKind {

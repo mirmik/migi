@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL,
     artifact_json TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS documents (
+    agent TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
+    PRIMARY KEY(agent, document_id)
+);
 CREATE TABLE IF NOT EXISTS device_acks (
     device_id TEXT PRIMARY KEY,
     through_id INTEGER NOT NULL CHECK (through_id >= 0),

@@ -346,6 +346,10 @@ class MainActivity : Activity() {
                     addView(sectionLabel(R.string.home_pager_label), matchWidth())
                     addGap(14)
                     addView(pagerMessage, matchWidth())
+                    addView(android.widget.Button(this@MainActivity).apply {
+                        text = "Документы"
+                        setOnClickListener { startActivity(Intent(this@MainActivity, DocumentsActivity::class.java)) }
+                    }, matchWidth())
                 }, matchWidth())
             }, matchWidth())
         }

@@ -182,6 +182,23 @@ class ConnectionService : Service() {
     }
 
     private fun showEvent(event: AgentEvent) {
+        if (event.kind == DocumentRepository.EVENT_KIND) {
+            try {
+                if (!DocumentRepository(this).accept(event)) return
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Rejected invalid document ${event.id}", e); return
+            } catch (e: org.json.JSONException) {
+                Log.w(TAG, "Rejected malformed document ${event.id}", e); return
+            }
+            val intent = Intent(this, DocumentsActivity::class.java).putExtra(DocumentsActivity.EXTRA_EVENT_ID, event.id)
+            val pending = android.app.PendingIntent.getActivity(this, 3000, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+            val notification = Notification.Builder(this, EVENT_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_menu_agenda).setContentTitle(event.title)
+                .setContentText("Документ от ${event.agent}").setAutoCancel(true).setContentIntent(pending).build()
+            getSystemService(NotificationManager::class.java).notify(3000, notification)
+            return
+        }
 		if (event.kind == PlaybackQueueCodec.EVENT_KIND) {
 			showPlaybackQueue(event)
 			return

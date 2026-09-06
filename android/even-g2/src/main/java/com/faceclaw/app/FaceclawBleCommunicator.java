@@ -828,6 +828,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean widgetProbe;
     private boolean probeIconReady;
     private String desiredNativeText = " ";
+    private NativePage desiredNativePage;
+    private boolean documentLayoutActive;
 
     public void configureNativeTextOutput(boolean probe) {
         synchronized (lock) {
@@ -837,17 +839,43 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /** CFW17 corrupts bilateral output on REBUILD. Recreate through the proven lifecycle. */
+    public boolean replaceNativePage(NativePage page, int frameId) {
+        boolean changed;
+        boolean active;
+        synchronized (lock) {
+            changed = desiredNativePage == null || !desiredNativePage.fingerprint.equals(page.fingerprint);
+            active = !shutdownRequested;
+        }
+        if (changed && active && !suspendEvenHubSession()) return false;
+        synchronized (lock) {
+            synchronized (desiredTilesLock) {
+                finishFrame(desiredFrameId, "superseded native page");
+                desiredNativePage = page;
+                desiredFingerprint = page.fingerprint;
+                desiredFrameId = frameId;
+            }
+        }
+        interruptibleSleep.interrupt();
+        return resumeEvenHubSession();
+    }
+
     /** Latest desired page survives sleep/reconnect; only ACK advances displayed state. */
     public void submitNativeText(String text, int frameId) {
+        boolean leavingDocument;
+        synchronized (lock) { leavingDocument = desiredNativePage != null; }
+        if (leavingDocument && !suspendEvenHubSession()) throw new IllegalStateException("Cannot close document page");
         synchronized (lock) {
             synchronized (desiredTilesLock) {
                 finishFrame(desiredFrameId, "superseded native text");
+                desiredNativePage = null;
                 desiredNativeText = text;
                 desiredFingerprint = "text:" + text;
                 desiredFrameId = frameId;
             }
         }
         interruptibleSleep.interrupt();
+        if (leavingDocument && !resumeEvenHubSession()) throw new IllegalStateException("Cannot restore pager");
     }
 
 
@@ -1490,6 +1518,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
+        if (frame.sid == BleProtocol.SID_EVENHUB && frame.msgType != 13 && desiredNativePage != null) {
+            Log.d(TAG, "document rx flag=" + frame.flag + " type=" + frame.msgType + " seq=" + frame.msgSeq);
+        }
         int decodedWearState = BleProtocol.parseWearState(frame);
         BleProtocol.CompassEvent compassEvent = address.equalsIgnoreCase(rightAddress)
             ? BleProtocol.parseCompassEvent(frame)
@@ -2140,6 +2171,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                             && windowHasRoom && !hasPendingImageLocked()
                             && !hasPendingOrInflightKindLocked("native-text")
+                            && !hasPendingOrInflightKindLocked("document-layout")
+                            && !(nativeTextOutput && hasPendingOrInflightKindLocked("image"))
+                            && desiredNativePage == null
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
                         // Enqueue the next frame's delta against lastEnqueuedPacked
@@ -2520,13 +2554,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // the layout is ready (the mode-7 send is gated on this having reset).
         firmwareDebugFlagsLastSent = -1;
         probeIconReady = false;
-        OutboundMessage message = messageBuilder.createLayout(widgetProbe, DASHBOARD_TILE);
+        final NativePage page = desiredNativePage;
+        final int pageFrameId;
+        synchronized (desiredTilesLock) {
+            pageFrameId = page != null ? desiredFrameId : 0;
+            if (page != null) { desiredFrameId = 0; lastEnqueuedFingerprint = page.fingerprint; }
+        }
+        OutboundMessage message = page != null ? messageBuilder.nativePage(page, DASHBOARD_TILE, false)
+            : messageBuilder.createLayout(widgetProbe, DASHBOARD_TILE);
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("startup-text-probe");
-            if (widgetProbe) enqueueProbeIconLocked();
             fixedLayoutCreated = true;
+            documentLayoutActive = page != null;
             displayedFingerprint = "";
+            if (page != null) {
+                byte[] result = BleProtocol.readFieldBytes(BleProtocol.stripTrailingCrc(message.ackPayload), 4);
+                int status = result == null ? -1 : BleProtocol.readVarintFieldValue(result, 1, 0);
+                if (status != 0) { handleTransportFailure("document create rejected status=" + status); return; }
+                enqueueDocumentImagesLocked(page, pageFrameId);
+            } else if (widgetProbe) enqueueProbeIconLocked();
         };
         message.onTimeout = () -> {
             if (startupProbePending) {
@@ -2544,12 +2591,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void enqueueStartupProbeLocked() {
         enqueueCreateLayoutLocked();
+        if (desiredNativePage != null) return;
 
         OutboundMessage message = messageBuilder.startupTextProbe();
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("create-layout");
             fixedLayoutCreated = true;
+            documentLayoutActive = false;
             displayedFingerprint = "";
             logLine("existing dashboard layout accepted text probe");
         };
@@ -2622,9 +2671,42 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("queue " + message.label);
     }
 
+    private void enqueueDocumentImagesLocked(NativePage page, int frameId) {
+        int count = 0;
+        java.util.List<OutboundMessage> uploads = new java.util.ArrayList<>();
+        for (int i = 0; i < page.images.length; i++) {
+            NativePage.Image image = page.images[i];
+            BleProtocol.ImageTileOptions tile = new BleProtocol.ImageTileOptions("doc-image-" + i,
+                40 + i, image.x, image.y, image.width, image.height);
+            BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(0, tile,
+                new byte[0], image.width, image.height, nextMapSessionId(), image.bmp);
+            for (BleProtocol.ImageFragment fragment : BleImageOptimizer.planImageFragments(image.bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE)) {
+                uploads.add(messageBuilder.imageFragment(fragment, plan, true, connectionOptions.sendImagesToLeft));
+                count++;
+            }
+        }
+        final int[] remaining = {count};
+        Runnable complete = () -> {
+            displayedFingerprint = page.fingerprint;
+            finishFrame(frameId, "document page ACK");
+            logLine("document page delivered " + page.fingerprint);
+            lock.notifyAll();
+        };
+        if (count == 0) complete.run();
+        for (OutboundMessage image : uploads) {
+            image.onAck = () -> { if (--remaining[0] == 0) complete.run(); };
+            image.onTimeout = () -> handleTransportFailure("document image ack timeout");
+            pendingMessages.addLast(image);
+        }
+    }
+
+
     private void enqueueDesiredImageLocked() {
         if (nativeTextOutput) {
-            if (hasPendingOrInflightKindLocked("native-text")) return;
+            if (hasPendingOrInflightKindLocked("native-text")
+                    || hasPendingOrInflightKindLocked("document-layout")
+                    || hasPendingOrInflightKindLocked("image")) return;
+            if (desiredNativePage != null) return; // supplied to the next CREATE, never REBUILD
             final String fingerprint;
             final String text;
             final int frameId;

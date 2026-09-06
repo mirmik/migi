@@ -18,3 +18,7 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 }
+
+dependencies {
+    implementation("ru.noties:jlatexmath-android:0.2.0")
+}

@@ -24,7 +24,7 @@ class PagerRepository(context: Context) {
         if (previous != null && event.id <= previous.id) return@synchronized
         val record = JSONObject().put("id", event.id).put("title", event.title).put("body", event.body)
         check(preferences.edit().putString(KEY_STATE, record.toString())
-            .putString(MainActivity.KEY_PAGER_MESSAGE, event.body).commit()) { "Failed to persist pager message" }
+            .putString(MainActivity.KEY_PAGER_MESSAGE, event.body).remove(DocumentRepository.KEY_ACTIVE).commit()) { "Failed to persist pager message" }
     }
 
     companion object {

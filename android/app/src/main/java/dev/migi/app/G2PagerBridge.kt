@@ -14,6 +14,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
     private val config = context.getSharedPreferences(CONFIG, Context.MODE_PRIVATE)
     private val pagerPrefs = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
     private val repository = PagerRepository(context)
+    private val documents = DocumentRepository(context)
     private val handler = Handler(Looper.getMainLooper())
     private var driver: G2Experiment? = null
     private var addresses: Pair<String, String>? = null
@@ -22,6 +23,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
     }
     private val pagerListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == PagerRepository.KEY_STATE) driver?.refreshPager()
+        if (key == DocumentRepository.KEY_GENERATION) driver?.refreshPager(true)
     }
     private val retry = object : Runnable {
         override fun run() {
@@ -49,7 +51,8 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
             if (driver != null && pair == addresses) return
             release()
             setDeviceType(true)
-            driver = G2Experiment(context, { Log.i("MigiG2Pager", it) }, repository::current)
+            driver = G2Experiment(context, { Log.i("MigiG2Pager", it) },
+                { documents.active() ?: repository.current() }, documents::savePage)
             addresses = pair
             driver?.connect(pair.first, pair.second)
         } catch (e: Exception) {

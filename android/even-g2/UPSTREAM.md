@@ -66,3 +66,9 @@ It is not BMP RLE4 and not the custom mode-6 nibble RLE path.
 - Opt-in DOCUMENT_PROBE adds a fixed explanatory note with four native text
   blocks and a240×80 Canvas-rendered formula bitmap. Probe image upload uses
   standard fragmentation and waits for every fragment ACK before wake READY.
+
+- Production document pages: immutable native text/image snapshots, image ACK
+  barrier, retained desired page across sleep/reconnect. CFW17 REBUILD corrupted
+  bilateral output in device testing; pagination uses shutdown/resume/CREATE.
+  Text pager retains in-place updates. General formula rendering and pagination
+  live in dev.migi.documents; JLaTeXMath Android is pinned at0.2.0.

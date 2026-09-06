@@ -214,6 +214,13 @@ public class MessageBuilder {
         );
     }
 
+    public OutboundMessage nativePage(NativePage page, BleProtocol.ImageTileOptions carrier, boolean rebuild) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage(rebuild ? "document-layout" : "create-layout", "document layout", BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST, magic, BleProtocol.buildNativePage(magic, page, carrier, rebuild),
+            ACK_TIMEOUT_MS, -1, false);
+    }
+
     public OutboundMessage nativeText(String text) {
         int magic = magicPool.allocate();
         return new OutboundMessage("native-text", "native text", BleProtocol.SID_EVENHUB,

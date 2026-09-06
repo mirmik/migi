@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Publish a bounded schema-1 reading document through Migi's pinned agent API."""
+from __future__ import annotations
+import argparse
+import hashlib
+from html.parser import HTMLParser
+import json
+from pathlib import Path
+import re
+import sys
+from _migi_transport import resolve_agent_client, read_bounded, MigiClientError
+
+
+class NoteHTML(HTMLParser):
+    """Small, explicit subset. Reject unsupported markup instead of silently losing it."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks = []
+        self.stack = []
+        self.parts = []
+        self.items = []
+        self.title = ""
+
+    def handle_starttag(self, tag, attrs):
+        if attrs:
+            raise ValueError(f"Attributes are not supported: <{tag}>")
+        if tag == "br" and self.stack and self.stack[-1] in ("p", "li", "h1", "h2", "h3"):
+            self.parts.append("\n"); return
+        if tag in ("html", "body", "article"):
+            if any(x not in ("html", "body", "article") for x in self.stack):
+                raise ValueError("Invalid document nesting")
+        elif tag in ("ul", "ol"):
+            if any(x not in ("html", "body", "article") for x in self.stack): raise ValueError("Nested lists are not supported")
+            self.items = []
+        elif tag == "li":
+            if not self.stack or self.stack[-1] not in ("ul", "ol"): raise ValueError("li requires a list")
+            self.parts = []
+        elif tag in ("h1", "h2", "h3", "p", "math"):
+            if any(x not in ("html", "body", "article") for x in self.stack): raise ValueError("Use math as a separate block")
+            self.parts = []
+        else: raise ValueError(f"Unsupported tag: <{tag}>")
+        self.stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        if tag != "br": raise ValueError(f"Unsupported empty tag: <{tag}/>")
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if not self.stack or self.stack[-1] != tag: raise ValueError(f"Unbalanced tag: </{tag}>")
+        self.stack.pop()
+        value = "".join(self.parts).strip()
+        if tag == "math": self.blocks.append({"type": "math", "latex": value})
+        elif tag in ("h1", "h2", "h3", "p"):
+            if tag == "h1" and not self.title: self.title = value
+            self.blocks.append({"type": "paragraph" if tag == "p" else "heading", "text": value})
+        elif tag == "li": self.items.append(value)
+        elif tag in ("ul", "ol"):
+            items = self.items if tag == "ul" else [f"{i + 1}. {v}" for i, v in enumerate(self.items)]
+            self.blocks.append({"type": "list", "items": items})
+
+    def handle_data(self, data):
+        if self.stack and self.stack[-1] in ("h1", "h2", "h3", "p", "li", "math"):
+            self.parts.append(data)
+        elif data.strip(): raise ValueError("Text must be inside p, heading, li or math")
+
+    def document(self, title=None):
+        self.close()
+        if self.stack: raise ValueError("Unclosed HTML tags")
+        return {"schema": 1, "title": title or self.title, "blocks": self.blocks}
+
+
+def validate(document):
+    if set(document) != {"schema", "document_id", "title", "blocks"} or document["schema"] != 1:
+        raise ValueError("Expected a schema-1 document with document_id, title and blocks")
+    def text(value, maximum):
+        return isinstance(value, str) and value.strip() and len(value) <= maximum and all(ord(c) >= 32 or c in "\n\t" for c in value)
+    if not text(document["title"], 120): raise ValueError("Invalid document title")
+    blocks = document["blocks"]
+    if not isinstance(blocks, list) or not 1 <= len(blocks) <= 100: raise ValueError("Expected 1..100 blocks")
+    for block in blocks:
+        if not isinstance(block, dict): raise ValueError("Expected block objects")
+        kind = block.get("type")
+        if kind in ("heading", "paragraph"):
+            valid = set(block) == {"type", "text"} and text(block["text"], 120 if kind == "heading" else 4000)
+        elif kind == "math":
+            valid = set(block) == {"type", "latex"} and text(block["latex"], 1000)
+        elif kind == "list":
+            items = block.get("items")
+            valid = set(block) == {"type", "items"} and isinstance(items, list) and 1 <= len(items) <= 30 and all(text(i, 1000) for i in items)
+        else: valid = False
+        if not valid: raise ValueError(f"Invalid {kind!r} block")
+
+
+def prepare(path: Path, title=None, document_id=None):
+    if path.stat().st_size > 65536: raise ValueError("Input exceeds 64 KiB")
+    raw = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        document = json.loads(raw)
+        if title: document["title"] = title
+    else:
+        parser = NoteHTML(); parser.feed(raw); document = parser.document(title)
+    if not document.get("title") or not document.get("blocks"): raise ValueError("Document needs a title and blocks")
+    # Content-derived ID makes retrying the same file safe even after a lost HTTP response.
+    identity = json.dumps({k: v for k, v in document.items() if k != "document_id"}, ensure_ascii=False, sort_keys=True).encode()
+    document["document_id"] = document_id or document.get("document_id") or "note-" + hashlib.sha256(identity).hexdigest()[:32]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}", document["document_id"]): raise ValueError("Invalid document ID")
+    validate(document)
+    body = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(body) > 32768: raise ValueError("Document exceeds 32 KiB")
+    return body
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--title")
+    parser.add_argument("--id", dest="document_id")
+    parser.add_argument("--config")
+    parser.add_argument("--check", action="store_true", help="Print normalized JSON without sending")
+    args = parser.parse_args()
+    try:
+        body = prepare(args.path, args.title, args.document_id)
+        if args.check:
+            print(body.decode()); return 0
+        client = resolve_agent_client(config=args.config)
+        with client.open("POST", "/v1/documents", body=body, headers={"Content-Type": "application/json"}) as response:
+            result = read_bounded(response)
+            if response.status not in (200, 201): raise MigiClientError(f"HTTP {response.status}: {result.decode(errors='replace')}")
+            payload = json.loads(result)
+            print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    except (ValueError, OSError, MigiClientError) as e:
+        print(f"migi-document: {e}", file=sys.stderr); return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())

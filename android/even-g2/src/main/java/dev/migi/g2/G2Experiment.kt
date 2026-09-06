@@ -8,20 +8,25 @@ import com.faceclaw.app.FaceclawBleCommunicator
 import com.faceclaw.app.FaceclawBleCommunicatorListener
 import com.faceclaw.app.BleProtocol
 import com.faceclaw.app.FrameTimings
+import com.faceclaw.app.NativePage
+import dev.migi.documents.ReadingDocument
+import dev.migi.documents.DocumentRenderer
 import java.util.concurrent.Executors
 
-data class PagerContent(val id: Long, val title: String, val body: String)
+data class PagerContent(val id: Long, val title: String, val body: String, val document: ReadingDocument? = null, val savedPage: Int = 0)
 
 /** Shared G2 driver for the local experiment and service-owned pager, never both at once. */
 class G2Experiment(
     context: Context,
     private val report: (String) -> Unit,
     private val pagerSource: (() -> PagerContent?)? = null,
+    private val onDocumentPage: ((Long, Int) -> Unit)? = null,
 ) : AutoCloseable {
     private val context = context.applicationContext
     companion object {
         // Serialize teardown and reconnect even across Activity recreation.
         private val executor = Executors.newSingleThreadExecutor()
+        private val renderExecutor = Executors.newSingleThreadExecutor()
     }
     private val main = Handler(Looper.getMainLooper())
     private var transport: FaceclawBleCommunicator? = null // executor-owned
@@ -35,22 +40,27 @@ class G2Experiment(
     private var frameWait: Runnable? = null
     private var frameWaitGeneration = 0
     private var deliveredId: Long? = null
+    private var preparingDocument = false
+    private var preparedDocumentId: Long? = null
+    private var preparingDocumentId: Long? = null
+    private var documentPages: List<NativePage> = emptyList()
     private var page = 0
     private var pageCount = 1
     private var lastPairReady = false
     private val reconcileQueued = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Coalesce events; read current durable state on execution, not an event-time snapshot. */
-    fun refreshPager() {
+    fun refreshPager(force: Boolean = false) {
         if (pagerSource == null || closed || !reconcileQueued.compareAndSet(false, true)) return
         execute {
             reconcileQueued.set(false)
+            if (force) deliveredId = null
             val connection = transport ?: return@execute
             if (!connection.isSessionReady) return@execute
             val current = pagerSource.invoke()
             val id = current?.id ?: 0L
             if (deliveredId == id) return@execute
-            page = 0
+            page = current?.savedPage ?: 0
             if (current == null || current.body.isBlank()) sleepDisplay()
             else showFrame()
             // Track the queued version; the asynchronous watcher clears it on failure.
@@ -138,7 +148,7 @@ class G2Experiment(
                                     if (pagerSource != null && !sleeping && !BuildConfig.WIDGET_PROBE) {
                                         page = when (eventType) {
                                             BleProtocol.EVENT_SCROLL_TOP -> (page - 1).coerceAtLeast(0)
-                                            BleProtocol.EVENT_CLICK, BleProtocol.EVENT_SCROLL_BOTTOM -> (page + 1) % pageCount
+                                            BleProtocol.EVENT_CLICK, BleProtocol.EVENT_SCROLL_BOTTOM -> if (pagerSource.invoke()?.document != null) (page + 1).coerceAtMost(pageCount - 1) else (page + 1) % pageCount
                                             else -> page
                                         }
                                     }
@@ -219,8 +229,43 @@ class G2Experiment(
         val connection = checkNotNull(transport) { "Сначала подключите очки" }
         check(connection.isSessionReady) { "Сессия обеих дужек ещё не готова" }
         connection.setG2ScreenOn(true)
-        check(connection.resumeEvenHubSession()) { "Не удалось восстановить сессию" }
+        if (content?.document == null) check(connection.resumeEvenHubSession()) { "Не удалось восстановить сессию" }
         sleeping = false
+        if (content?.document != null) {
+            if (preparedDocumentId != content.id) {
+                if (preparingDocumentId == content.id) return
+                preparingDocumentId = content.id
+                preparingDocument = true
+                awaitFrameAsync(connection)
+                renderExecutor.execute {
+                    val result = runCatching { DocumentRenderer.render(context, content.document, content.id.toString()) }
+                    execute {
+                        if (preparingDocumentId != content.id) return@execute
+                        preparingDocumentId = null
+                        preparingDocument = false
+                        if (transport !== connection || pagerSource?.invoke()?.id != content.id) return@execute
+                        result.onSuccess {
+                            preparedDocumentId = content.id
+                            documentPages = it
+                            pageCount = it.size
+                            if (!sleeping) showFrame()
+                        }.onFailure {
+                            deliveredId = null
+                            emit("Не удалось подготовить документ: ${it.message}")
+                        }
+                    }
+                }
+                return
+            }
+            pageCount = documentPages.size
+            page = page.coerceIn(0, pageCount - 1)
+            check(connection.replaceNativePage(documentPages[page], FrameTimings.getInstance().startFrame("document"))) { "Не удалось переключить страницу документа" }
+            onDocumentPage?.invoke(content.id, page)
+            awaitFrameAsync(connection)
+            return
+        }
+        preparingDocumentId = null
+        preparingDocument = false
         val frameId = FrameTimings.getInstance().startFrame("migi-test")
         val text = if (BuildConfig.DOCUMENT_PROBE) {
             "Migi / Записка 1 из 1"
@@ -251,7 +296,7 @@ class G2Experiment(
             override fun run() = execute {
                 if (generation != frameWaitGeneration || transport !== connection || sleeping) return@execute
                 connection.renewPendingWakeClaim()
-                if (connection.awaitEvenHubSessionReady(0)) {
+                if (!preparingDocument && connection.awaitEvenHubSessionReady(0)) {
                     frameWait = null
                     emit("Передача завершена за ${android.os.SystemClock.elapsedRealtime() - startedAt}ms; очередь жестов свободна.")
                 } else if (android.os.SystemClock.elapsedRealtime() - startedAt >= 15_000) {
@@ -271,6 +316,8 @@ class G2Experiment(
         cancelTimer()
         cancelFrameWait()
         sleeping = false
+        preparingDocumentId = null
+        preparingDocument = false
         deliveredId = null
         lastPairReady = false
         val previous = transport

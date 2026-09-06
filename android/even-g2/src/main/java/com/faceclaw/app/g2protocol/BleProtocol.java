@@ -182,6 +182,25 @@ public class BleProtocol {
         return wrapEvenHub(0, magic, 3, inner);
     }
 
+    /** Rebuild geometry only when changing document pages; images follow its ACK. */
+    public static byte[] buildNativePage(int magic, NativePage page, ImageTileOptions carrier, boolean rebuild) {
+        List<byte[]> inner = new ArrayList<>();
+        inner.add(encodeVarintField(1, page.texts.length + page.images.length + 1));
+        for (int i = 0; i < page.texts.length; i++) {
+            NativePage.Text t = page.texts[i];
+            inner.add(encodeMessageField(3, encodeTextObject("doc-text-" + i, 20 + i,
+                t.x, t.y, t.width, t.height, t.text, i == page.texts.length - 1)));
+        }
+        inner.add(encodeMessageField(4, encodeImageObject(carrier)));
+        for (int i = 0; i < page.images.length; i++) {
+            NativePage.Image image = page.images[i];
+            inner.add(encodeMessageField(4, encodeImageObject(new ImageTileOptions(
+                "doc-image-" + i, 40 + i, image.x, image.y, image.width, image.height))));
+        }
+        if (!rebuild) inner.add(encodeVarintField(5, 10000));
+        return wrapEvenHub(rebuild ? 7 : 0, magic, rebuild ? 7 : 3, concat(inner));
+    }
+
     public static final ImageTileOptions PROBE_ICON = dev.migi.g2.BuildConfig.DOCUMENT_PROBE
         ? new ImageTileOptions("probe-icon", 4, 168, 112, 240, 80)
         : new ImageTileOptions("probe-icon", 4, 488, 54, 64, 64);

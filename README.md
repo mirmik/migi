@@ -85,3 +85,7 @@ server-bundled KaTeX while the ordinary event stream sends a bounded preview to
 paired phones.
 
 See [docs/development.md](docs/development.md) for build commands.
+
+Structured agent notes with LaTeX formulas can be sent to the phone and Even G2.
+See [Reading documents](docs/reading-documents.md) for the API, portable helper,
+offline reader and supported markup.
