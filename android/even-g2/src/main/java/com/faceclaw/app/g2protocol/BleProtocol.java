@@ -182,10 +182,13 @@ public class BleProtocol {
         return wrapEvenHub(0, magic, 3, inner);
     }
 
-    public static final ImageTileOptions PROBE_ICON = new ImageTileOptions("probe-icon", 4, 488, 54, 64, 64);
+    public static final ImageTileOptions PROBE_ICON = dev.migi.g2.BuildConfig.DOCUMENT_PROBE
+        ? new ImageTileOptions("probe-icon", 4, 168, 112, 240, 80)
+        : new ImageTileOptions("probe-icon", 4, 488, 54, 64, 64);
 
     /** Hardware probe: two labels, one event-capturing list, unchanged CFW carrier. */
     public static byte[] buildWidgetProbePage(int magic, ImageTileOptions carrier) {
+        if (dev.migi.g2.BuildConfig.DOCUMENT_PROBE) return buildDocumentProbePage(magic, carrier);
         List<byte[]> inner = new ArrayList<>();
         inner.add(encodeVarintField(1, 5));
         inner.add(encodeMessageField(3, concat(Arrays.asList(
@@ -198,6 +201,23 @@ public class BleProtocol {
         inner.add(encodeMessageField(2, encodeListObject("probe-list", 3,
             8, 126, 560, 154, new String[] {"Files / Файлы", "Music / Музыка",
                 "Pager / Пейджер", "Settings / Настройки", "Back / Назад"}, true)));
+        inner.add(encodeMessageField(4, encodeImageObject(carrier)));
+        inner.add(encodeMessageField(4, encodeImageObject(PROBE_ICON)));
+        inner.add(encodeVarintField(5, 10000));
+        return wrapEvenHub(0, magic, 3, concat(inner));
+    }
+
+    private static byte[] buildDocumentProbePage(int magic, ImageTileOptions carrier) {
+        List<byte[]> inner = new ArrayList<>();
+        inner.add(encodeVarintField(1, 6));
+        inner.add(encodeMessageField(3, encodeTextObject("heading", 2, 16, 6, 544, 32,
+            "Энергия движения", false)));
+        inner.add(encodeMessageField(3, encodeTextObject("intro", 3, 16, 43, 544, 64,
+            "Энергия зависит от массы тела\nи квадрата его скорости:", false)));
+        inner.add(encodeMessageField(3, encodeTextObject("conclusion", 5, 16, 198, 544, 60,
+            "Скорость выросла вдвое —\nэнергия увеличилась в 4 раза.", false)));
+        inner.add(encodeMessageField(3, encodeTextObject("dashboard", 1, 16, 258, 544, 30,
+            "Migi / Записка 1 из 1", true)));
         inner.add(encodeMessageField(4, encodeImageObject(carrier)));
         inner.add(encodeMessageField(4, encodeImageObject(PROBE_ICON)));
         inner.add(encodeVarintField(5, 10000));

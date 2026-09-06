@@ -107,3 +107,19 @@ ID4 probe-icon. Статус сужен до472px. Детерминирован�
 Build40: release/25tests/lint/signature pass, APK установлен. PID30844:
 BMP2166B, запись18:36:19.503→ACK19.651 (148ms); готовность после resume427ms.
 Визуальное подтверждение значка на обоих дисплеях ещё требуется.
+
+Build40 пользователь подтвердил: изображение видно.
+
+## Document layout probe build41
+
+Сборка с MIGI_G2_WIDGET_PROBE=true и MIGI_G2_DOCUMENT_PROBE=true показывает
+фиксированную записку «Энергия движения»: заголовок, двухстрочное введение,
+формулу E_k=mv²/2, двухстрочный вывод и footer. Четыре native text-контейнера,
+один formula image240×80 и прежний служебный carrier. Формула отрисована Android
+Canvas (serif italic, нижний индекс, степень и дробная черта), raw4bpp BMP.
+Это visual layout proof, не HTML/LaTeX parser. BMP разбит штатным planner на
+фрагменты, readiness ждёт ACK всех. Sleep/wake в прежнем контроллере.
+
+Build41 установлен; release/25tests/lint/signature pass. PID31295: formula BMP
+9718B/3fragments, все ACK получены; readiness1117ms. Внешний вид, читаемость
+индексов и отсутствие наложений требуют визуального подтверждения.

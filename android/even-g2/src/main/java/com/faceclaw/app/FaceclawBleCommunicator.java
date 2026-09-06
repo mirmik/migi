@@ -2494,13 +2494,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueProbeIconLocked() {
-        OutboundMessage icon = messageBuilder.imagePayload("probe-icon", BleProtocol.PROBE_ICON,
-            nextMapSessionId(), WidgetProbeImage.bmp(), "widget probe icon 64x64",
-            connectionOptions.sendImagesToLeft);
-        icon.onAck = () -> { probeIconReady = true; lock.notifyAll(); };
-        icon.onTimeout = () -> handleTransportFailure("probe icon ack timeout");
-        pendingMessages.addLast(icon);
-        logLine("queue widget probe icon 64x64 raw BMP bytes=" + WidgetProbeImage.bmp().length);
+        byte[] bmp = WidgetProbeImage.bmp();
+        BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(0,
+            BleProtocol.PROBE_ICON, new byte[0], BleProtocol.PROBE_ICON.width,
+            BleProtocol.PROBE_ICON.height, nextMapSessionId(), bmp);
+        plan.fragments = BleImageOptimizer.planImageFragments(bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
+        final int[] remaining = {plan.fragments.size()};
+        for (BleProtocol.ImageFragment fragment : plan.fragments) {
+            OutboundMessage icon = messageBuilder.imageFragment(fragment, plan, true, connectionOptions.sendImagesToLeft);
+            icon.onAck = () -> {
+                if (--remaining[0] == 0) {
+                    probeIconReady = true;
+                    logLine("probe bitmap ACK complete bytes=" + bmp.length);
+                    lock.notifyAll();
+                }
+            };
+            icon.onTimeout = () -> handleTransportFailure("probe bitmap ack timeout");
+            pendingMessages.addLast(icon);
+        }
+        logLine("queue probe bitmap bytes=" + bmp.length + " fragments=" + plan.fragments.size());
     }
 
     private void enqueueCreateLayoutLocked() {

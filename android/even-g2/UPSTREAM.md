@@ -63,3 +63,6 @@ It is not BMP RLE4 and not the custom mode-6 nibble RLE path.
 - Mixed widget probe additionally uploads a deterministic64×64 raw BMP into a
   separate image container after layout creation; readiness includes its ACK.
   Text/list interactions do not retransmit the bitmap.
+- Opt-in DOCUMENT_PROBE adds a fixed explanatory note with four native text
+  blocks and a240×80 Canvas-rendered formula bitmap. Probe image upload uses
+  standard fragmentation and waits for every fragment ACK before wake READY.

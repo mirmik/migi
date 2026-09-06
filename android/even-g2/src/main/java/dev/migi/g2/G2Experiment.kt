@@ -222,7 +222,9 @@ class G2Experiment(
         check(connection.resumeEvenHubSession()) { "Не удалось восстановить сессию" }
         sleeping = false
         val frameId = FrameTimings.getInstance().startFrame("migi-test")
-        val text = if (BuildConfig.WIDGET_PROBE) {
+        val text = if (BuildConfig.DOCUMENT_PROBE) {
+            "Migi / Записка 1 из 1"
+        } else if (BuildConfig.WIDGET_PROBE) {
             "Кириллица: Ёжик. Тест списка.\n$gestureCount: $lastGesture"
         } else if (content != null) {
             val pages = NativePager.pages(content.body)
