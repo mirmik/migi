@@ -1,0 +1,16 @@
+[Unit]
+Description=Migi standalone agent (nemor.agent, AG-UI)
+After=network-online.target migi.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/project/migi
+Environment=PYTHONPATH=%h/project/migi/agent
+ExecStart=%h/project/migi/agent/.venv/bin/python -m migi_agent.service --profile fast_text_only --model qwen3.8-27b-uncensored-q4-mtp --cwd %h/project/migi
+UMask=0077
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

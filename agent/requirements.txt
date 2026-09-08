@@ -1,0 +1,3 @@
+# Install the sibling checkouts first; nemor-tools is not published on PyPI.
+# python -m pip install -e ../nemor/nemor_tools -e ../nemor
+aiohttp>=3.9

@@ -31,14 +31,18 @@ type voiceConfig struct {
 	CAFile     string `json:"ca_file"`
 	Token      string `json:"token"`
 	Model      string `json:"model"`
+	AgentURL   string `json:"agent_url,omitempty"`
 }
 type voiceJob struct {
-	Transcript string    `json:"transcript,omitempty"`
-	Answer     string    `json:"answer,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Attempts   int       `json:"attempts"`
-	RetryAt    time.Time `json:"retry_at"`
-	EventID    uint64    `json:"event_id,omitempty"`
+	AgentSubmitted bool      `json:"agent_submitted,omitempty"`
+	AgentThread    string    `json:"agent_thread,omitempty"`
+	AgentRun       string    `json:"agent_run,omitempty"`
+	Transcript     string    `json:"transcript,omitempty"`
+	Answer         string    `json:"answer,omitempty"`
+	Error          string    `json:"error,omitempty"`
+	Attempts       int       `json:"attempts"`
+	RetryAt        time.Time `json:"retry_at"`
+	EventID        uint64    `json:"event_id,omitempty"`
 }
 type voiceProcessor struct {
 	config voiceConfig
@@ -62,6 +66,11 @@ func newVoiceProcessor(configPath string, files *transferStore) (*voiceProcessor
 	var config voiceConfig
 	if err = json.Unmarshal(raw, &config); err != nil {
 		return nil, err
+	}
+	if config.AgentURL != "" {
+		if err := validateVoiceAgentURL(config.AgentURL); err != nil {
+			return nil, err
+		}
 	}
 	u, err := url.Parse(config.URL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -155,14 +164,24 @@ func saveVoiceJob(path string, job *voiceJob) error {
 	return os.Rename(path+".new", path)
 }
 func (p *voiceProcessor) process(ctx context.Context, file transfer, id, path string, job *voiceJob) {
-	if job.Answer == "" && job.Attempts < 3 {
-		job.Attempts++
+	if job.Answer == "" && (job.Attempts < 3 || job.AgentSubmitted) {
+		if !job.AgentSubmitted {
+			job.Attempts++
+		}
 		job.RetryAt = time.Now().Add(15 * time.Second)
 		if err := saveVoiceJob(path, job); err != nil {
 			return
 		}
 		err := p.infer(ctx, file, job, path)
 		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errAgentPending) {
+			if !job.AgentSubmitted {
+				job.Attempts--
+			}
+			job.RetryAt = time.Now().Add(time.Second)
+			_ = saveVoiceJob(path, job)
 			return
 		}
 		if err != nil {
@@ -174,7 +193,14 @@ func (p *voiceProcessor) process(ctx context.Context, file transfer, id, path st
 			}
 		}
 	}
+	// The agent already delivered a reading document.
+	if job.EventID != 0 {
+		return
+	}
 	title := "Ответ · " + p.config.Model
+	if p.config.AgentURL != "" {
+		title = "Ответ · Агент Migi"
+	}
 	body := job.Answer
 	if body == "" {
 		title = "Голосовой запрос не выполнен"
@@ -231,6 +257,9 @@ func (p *voiceProcessor) infer(ctx context.Context, file transfer, job *voiceJob
 		if err = saveVoiceJob(path, job); err != nil {
 			return err
 		}
+	}
+	if p.config.AgentURL != "" {
+		return p.advanceAgent(ctx, file, job, path)
 	}
 	payload := map[string]any{"model": p.config.Model, "stream": false, "temperature": 0.3,
 		"chat_template_kwargs": map[string]bool{"enable_thinking": false},

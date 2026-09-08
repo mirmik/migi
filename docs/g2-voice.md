@@ -1,8 +1,9 @@
 # G2 voice input
 
 Build51 supports the test cycle: glasses → phone WAV → Migi server → local STT →
-`gemma4-26b-heretic` → durable pager event → phone/glasses. Each request is an
-independent conversation; no tools, session history or agent orchestration yet.
+`gemma4-26b-heretic` → durable pager event → phone/glasses. The original direct-model mode uses independent conversations. The optional
+`agent_url` mode adds persistent conversations, tools, AG-UI and explicit stop;
+see [agent service](../agent/README.md).
 No firmware flash or phone microphone is used. The existing G2 connected-device
 service owns capture. Microphone capture begins only on an explicit long-press.
 
@@ -50,8 +51,9 @@ State under the file store's `.voice-jobs` directory preserves transcription and
 answer across restarts. Request identity is a hash of source device, original
 filename/UUID and file digest. Retrying the same upload does not rerun a completed
 job. SQLite commits each request's pager reply atomically/idempotently; a crash
-after publication cannot create a second reply. An in-flight inference may repeat
-after a crash. Transient failures get up to3 attempts; final failure produces a
+after publication cannot create a second reply. In direct-model mode an in-flight inference may repeat
+after a crash. Agent mode instead looks up the stable run ID; interrupted runs
+fail without automatically re-executing tools. Transient failures get up to3 attempts; final failure produces a
 pager error. Processed recordings remain subject to normal file-exchange retention;
 job text and replies currently remain until explicitly removed.
 
