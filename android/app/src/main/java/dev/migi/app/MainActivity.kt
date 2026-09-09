@@ -307,6 +307,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, dp(24), padding, dp(36))
             addView(screenHeader(R.string.home_title, R.string.home_subtitle), matchWidth())
+            addView(MaterialButton(this@MainActivity).apply {
+                text = "Чат с агентом"; isAllCaps = false
+                setOnClickListener { startActivity(Intent(this@MainActivity, AgentChatActivity::class.java)) }
+            }, matchWidth().apply { topMargin = dp(16) })
             addGap(30)
             addView(MaterialCardView(this@MainActivity).apply {
                 applyMigiCard(color = MigiPalette.surfaceHigh, radiusDp = 22)

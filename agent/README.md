@@ -2,7 +2,7 @@
 
 Separate single-user Python service on `nemor.agent`, with AG-UI, persisted
 conversation history, real tools and explicit cancellation. Does not import
-`nemor.app`. The Android APK is unchanged.
+`nemor.app`. Android provides a shared phone/glasses chat screen.
 
 ## Install from sibling checkouts
 
@@ -25,7 +25,9 @@ trusted local service, not an endpoint to expose to a LAN or browser origin.
 
 History and durable run events live in `~/.local/state/migi-agent`, mode 0700,
 with a process lock. `threadId` is opaque and maps to a SHA-256 filename. A voice
-conversation uses the authenticated upload source (`device:<id>`). State persists
+conversation starts with the authenticated upload source (`device:<id>`); subsequent
+chats use the device’s persisted active thread. Phone and voice submissions resolve
+that same selection atomically. State persists
 across restarts; interrupted runs fail, without automatic execution of tools again.
 State files have no automatic retention policy yet.
 
@@ -34,6 +36,7 @@ State files have no automatic retention policy yet.
 Default local tools: read/list/glob/grep/write/edit files and run commands.
 They run with the service user's OS permissions; `--cwd` is a working directory,
 not a sandbox. Migi tools: `migi_list_files`, `migi_read_file` (UTF-8, up to 1 MiB),
+`migi_send_file` (stream an existing local file into Migi Files),
 `migi_show_document` (schema-1 paragraphs/headings/lists/LaTeX). Document IDs derive
 from content to avoid duplicate publication. Tools use the repository's maintained
 pinned TLS transport and `~/.config/migi/agent.json` (`--migi-config` overrides it).
@@ -80,20 +83,19 @@ Add `"agent_url": "http://127.0.0.1:9091"` to the existing private voice config,
 then restart the Go Migi server. STT retains its HTTPS configuration; the direct
 one-shot model path remains available when `agent_url` is absent.
 
-The upload worker persists recognized speech, submits a stable request ID and
-polls completion without waiting for generation inside each scan. It publishes a
-start notice and an idempotent final pager reply. Agent outages retain pending
-jobs; accepted actions are looked up by ID instead of rerun. A failed/interrupted
-agent run is reported, never silently resubmitted under a new ID.
+Build55 uploads to private `/v1/voice` storage and sends recognized speech directly
+to the agent while displaying the transcript on glasses. Swipes read the text;
+a long press while the request is active requests cancellation. No confirmation
+click is needed. Old pending reviews retain their explicit decision boundary.
+The worker uses stable request IDs, polls completion and publishes a final reply;
+agent outages do not rerun accepted actions under new IDs.
 
-While busy, ordinary new voice requests receive a busy message and are discarded
-from the execution queue. To cancel, record exactly **«стоп»**, **«остановись»** or
-**«останови выполнение»**. These commands are consumed by the voice bridge; they
-are not new agent turns. Wait for the final “Выполнение остановлено” notification.
-Cancellation requires working STT and an active glasses connection; the local
-control CLI can cancel without STT. Provider/tool cancellation is cooperative:
-a blocked network call can delay terminal state. A dedicated Android stop button
-and partial cancelled answer persistence are not implemented in this slice.
+The private `/migi/voice/cancel` endpoint uses the original device/request identity,
+including after lost submission acknowledgements and chat switches. A durable
+tombstone prevents submission after stop. Cancellation is cooperative; a blocked
+provider/tool call can delay terminal state. Android and web chat Stop buttons
+remain available. Partial cancelled answer persistence remains a runtime limitation.
+The voice commands “стоп”, “остановись”, “останови выполнение” also remain supported.
 
 ## Checks
 
@@ -129,3 +131,71 @@ Final smoke on the selected uncensored Qwen also passed: in a second turn it
 recalled “ирис” from history and called `migi_show_document` with paragraph/math
 blocks. Migi accepted “Агент Migi · Qwen” as event11198. This confirms server-side
 publication, not optical delivery.
+
+## Android chat and context
+
+Open **Чат с агентом** on the home screen. It shows the shared conversation,
+streamed answer, active tools, elapsed run time and approximate context tokens.
+**Стоп** requests cancellation; new submissions are rejected while busy.
+**Новый чат** creates an empty conversation; **Чаты** switches among retained chats.
+**Сжать** summarizes older context while preserving the last two exchanges and
+the full reading history. It supplies no hard output token limit. Interrupted or
+failed compaction preserves the original model context.
+
+Compaction delegates to `nemor.agent.Agent.compact_context`. The model receives
+the existing curated history and tool schemas with an appended summary request;
+tool execution is disabled, and session routing is retained. This preserves the
+request prefix for providers that support prompt caching; actual cache reuse
+depends on the provider. The phone and web status show a separate compaction
+timer and model phase. Full reading history remains archived by Migi.
+
+The token count estimates serialized messages and tools, not tokenizer-exact usage.
+The proxy does not advertise this model’s context window. No percentage is shown
+unless the service is configured with a verified `--context-window`.
+
+Device-authenticated QUIC `GET/POST /v1/chat` proxies the private service’s
+`/migi/chat` JSON API. The Go server supplies the owner from device credentials.
+Mutations use durable request IDs; phone retries preserve those IDs and the
+expected thread. Drafts and pending operations survive activity recreation.
+History requires a server connection; it is not cached for offline reading.
+
+Tests cover ownership, idempotency, restart, shared voice thread selection, busy
+rejection, responsive status/cancel during a locked turn, and archive preservation
+after compaction. Real phone UI and glasses interaction remain manual acceptance.
+
+The web panel exposes the same chat controls at `/admin/chat/`, plus a global
+system-prompt editor. Private `GET/POST /migi/prompt` uses an optimistic revision
+and persists `prompt.json` in the service state directory. Changes apply at the
+next accepted turn in both new and existing threads; retries of an existing run
+never rewrite its prompt. The panel can restore the built-in instruction.
+
+## Sending generated files
+
+The agent can create a file with `write_file` or local commands and publish it with
+`migi_send_file({"path": "report.md"})`. Relative paths resolve from the same agent
+`cwd` as local file tools; absolute paths and `~` are supported. Text and binary
+files are streamed through the maintained skill client with pinned TLS. The
+optional `mime_type` overrides extension-based detection. The file must be a
+non-empty regular file; the server applies its configured size/storage limits.
+
+The tool returns `uploaded`, file ID, name, size and expiry only after a valid
+server acknowledgement. The result appears in Files on paired phones and the web
+panel; it does not prove that a phone has downloaded or opened it. Each upload
+creates a new entry, so do not repeat a successful upload. If the connection fails
+after submission, check `migi_list_files` before retrying. `migi_show_document`
+remains the tool for displaying structured reading documents directly on glasses.
+
+## Reply delivery from every chat interface
+
+Migi independently polls the active chat of paired devices for a completed reply,
+so web/Android text requests reach the glasses even with both chat screens closed.
+The `reply` field in `/migi/chat` identifies the completed run, text and any document
+published by its tool calls. In-progress, failed and cancelled runs are not sent
+as completed answers. Tool-result events restore document metadata after restart.
+
+Text-chat replies use stable per-thread/run pager delivery IDs. Transient outages
+retry without duplicate events. Voice recording-ID runs remain owned by the voice
+worker to avoid racing its start/stop notices; their existing delivery is retained.
+A successful document publication suppresses the final text acknowledgement so
+it does not cover the document. Delivery uses the existing instance-wide Migi
+pager stream and its replay; visibility still depends on the phone/G2 connection.

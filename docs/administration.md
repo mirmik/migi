@@ -190,3 +190,42 @@ pairing invitation creation, successful pairing, revocation, rejected device
 authentication, and event-stream connection and disconnection. Stream records
 include the device ID, remote address, replay cursor, duration and delivery
 counts. Pairing secrets, device bearer tokens and QR contents are never logged.
+
+## Shared agent chat
+
+**Чат с агентом** (`/admin/chat/`) selects a paired, non-revoked phone and controls
+its active agent conversation. The browser, phone and glasses use the same chat
+selection. The screen includes history, streaming text, tool/run status, elapsed
+time, approximate context tokens, Stop, manual compaction, New chat and switching
+among retained conversations. Compaction preserves the full reading archive.
+
+The panel also edits the **global system prompt**. Saving affects the next accepted
+message in any conversation, including existing chats; an in-flight turn is left
+unchanged. A reset button restores the built-in prompt. Revisions reject stale
+writes from another tab; reload explicitly replaces the editor text. The setting
+is stored privately in `~/.local/state/migi-agent/prompt.json` and survives restart.
+It replaces the base system instruction; tool definitions remain managed by the
+agent service. Unsaved prompt edits stay in the editor until navigation/reload.
+
+The Go admin listener proxies `/migi/chat` and `/migi/prompt` to the configured
+loopback agent URL. JSON mutations require the existing admin CSRF token. Device
+selection is validated against paired devices; arbitrary owners are not accepted.
+The agent listener remains loopback-only and rejects browser Origin headers.
+Access inherits the existing administration-listener boundary.
+
+Chat drafts and pending request IDs are kept in browser session storage per tab;
+a retry after a lost response reuses the same ID. The page polls while visible.
+History is server-owned and unavailable offline. The current model proxy does not
+advertise a context window, so token occupancy is approximate and no percentage is
+invented. A verified `--context-window` on the agent service enables the indicator.
+
+Optional Chromium acceptance (requires Playwright and its Chromium browser):
+`python scripts/test-agent-chat-browser.py --url http://HOST:8788/admin/chat/`.
+It reads existing chat history/prompt, then intercepts mutations in a separate
+browser page to test controls, lost-response retry, text escaping and prompt
+revision conflicts without editing production conversations or settings.
+
+Completed replies to web and Android text messages are automatically sent through
+the same pager stream as voice replies. Keeping the chat page open is unnecessary.
+If the agent published a reading document during the turn, the final textual
+acknowledgement does not cover it on the glasses.

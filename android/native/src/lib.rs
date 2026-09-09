@@ -156,7 +156,9 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadRelease(
         validate_token(&credential)?;
         validate_artifact_id(&artifact_id)?;
         if file_descriptor < 0 || max_bytes <= 0 {
-            return Err(invalid("valid destination descriptor and size limit are required"));
+            return Err(invalid(
+                "valid destination descriptor and size limit are required",
+            ));
         }
         let duplicated = unsafe { dup(file_descriptor) };
         if duplicated < 0 {
@@ -285,6 +287,57 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_startSavedPlaylist(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadSharedFile(
+    env: JNIEnv,
+    class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    name: JString,
+    mime: JString,
+    file_descriptor: jint,
+    size: jlong,
+) -> jstring {
+    upload_file(
+        env,
+        class,
+        endpoint,
+        certificate_pin,
+        credential,
+        name,
+        mime,
+        file_descriptor,
+        size,
+        "/v1/files",
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadVoiceFile(
+    env: JNIEnv,
+    class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    name: JString,
+    mime: JString,
+    file_descriptor: jint,
+    size: jlong,
+) -> jstring {
+    upload_file(
+        env,
+        class,
+        endpoint,
+        certificate_pin,
+        credential,
+        name,
+        mime,
+        file_descriptor,
+        size,
+        "/v1/voice",
+    )
+}
+
+fn upload_file(
     mut env: JNIEnv,
     _class: JClass,
     endpoint: JString,
@@ -294,6 +347,7 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadSharedFile(
     mime: JString,
     file_descriptor: jint,
     size: jlong,
+    path: &str,
 ) -> jstring {
     let result = (|| -> Result<String, AnyError> {
         let endpoint: String = env.get_string(&endpoint)?.into();
@@ -306,7 +360,9 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadSharedFile(
         validate_shared_file_name(&name)?;
         validate_mime(&mime)?;
         if file_descriptor < 0 || size <= 0 {
-            return Err(invalid("valid source descriptor and file size are required"));
+            return Err(invalid(
+                "valid source descriptor and file size are required",
+            ));
         }
         let duplicated = unsafe { dup(file_descriptor) };
         if duplicated < 0 {
@@ -321,6 +377,7 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_uploadSharedFile(
             &mime,
             &mut source,
             size as u64,
+            path,
         )
     })();
     let response = match result {
@@ -352,7 +409,9 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadSharedFile(
         validate_token(&credential)?;
         validate_shared_file_id(&file_id)?;
         if file_descriptor < 0 || max_bytes <= 0 {
-            return Err(invalid("valid destination descriptor and size limit are required"));
+            return Err(invalid(
+                "valid destination descriptor and size limit are required",
+            ));
         }
         let duplicated = unsafe { dup(file_descriptor) };
         if duplicated < 0 {
@@ -472,8 +531,8 @@ fn run_client(
 
     loop {
         if callback_closed(env, callback)? {
-			let _ = connection.close(true, 0, b"client stopped");
-			flush_packets(&socket, &mut connection, &mut output)?;
+            let _ = connection.close(true, 0, b"client stopped");
+            flush_packets(&socket, &mut connection, &mut output)?;
             return Ok(());
         }
 
@@ -693,10 +752,11 @@ fn small_request(
             if certificate_checked && request_stream.is_none() {
                 let headers =
                     request_headers(method, &url, path, body.map(|value| value.len()), bearer);
-                let stream = http3
-                    .as_mut()
-                    .unwrap()
-                    .send_request(&mut connection, &headers, body.is_none())?;
+                let stream = http3.as_mut().unwrap().send_request(
+                    &mut connection,
+                    &headers,
+                    body.is_none(),
+                )?;
                 if let Some(body) = body {
                     http3
                         .as_mut()
@@ -721,7 +781,13 @@ fn small_request(
                             while let Ok(read) =
                                 http3.recv_body(&mut connection, stream, &mut input)
                             {
-                                if response_body.len() + read > 256 * 1024 {
+                                if response_body.len() + read
+                                    > if path.starts_with("/v1/chat") {
+                                        4 * 1024 * 1024
+                                    } else {
+                                        256 * 1024
+                                    }
+                                {
                                     return Err("response is too large".into());
                                 }
                                 response_body.extend_from_slice(&input[..read]);
@@ -748,7 +814,9 @@ fn small_request(
                         }
                         Ok((_, _)) => {}
                         Err(quiche::h3::Error::Done) => break,
-                        Err(error) => return Err(format!("HTTP/3 request failed: {error:?}").into()),
+                        Err(error) => {
+                            return Err(format!("HTTP/3 request failed: {error:?}").into());
+                        }
                     }
                 }
             }
@@ -767,12 +835,15 @@ fn upload_request(
     mime: &str,
     source: &mut File,
     size: u64,
+    path: &str,
 ) -> Result<String, AnyError> {
     let url = Url::parse(endpoint)?;
     if url.scheme() != "https" {
         return Err(invalid("endpoint must use https"));
     }
-    let host = url.host_str().ok_or_else(|| invalid("endpoint has no host"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| invalid("endpoint has no host"))?;
     let port = url.port_or_known_default().unwrap_or(443);
     let peer_addr = (host, port)
         .to_socket_addrs()?
@@ -811,14 +882,20 @@ fn upload_request(
             flush_packets(&socket, &mut connection, &mut output)?;
             match socket.recv_from(&mut input) {
                 Ok((length, from)) => {
-                    let info = quiche::RecvInfo { from, to: local_addr };
+                    let info = quiche::RecvInfo {
+                        from,
+                        to: local_addr,
+                    };
                     match connection.recv(&mut input[..length], info) {
                         Ok(_) | Err(quiche::Error::Done) => {}
                         Err(error) => return Err(format!("QUIC receive failed: {error:?}").into()),
                     }
                 }
                 Err(error)
-                    if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
                 {
                     if connection.timeout() == Some(Duration::ZERO) {
                         connection.on_timeout();
@@ -838,28 +915,21 @@ fn upload_request(
                 )?);
             }
             if certificate_checked && request_stream.is_none() {
-                let mut headers = request_headers(
-                    "POST",
-                    &url,
-                    "/v1/files",
-                    None,
-                    Some(credential),
-                );
+                let mut headers = request_headers("POST", &url, path, None, Some(credential));
                 headers.push(quiche::h3::Header::new(b"content-type", mime.as_bytes()));
                 headers.push(quiche::h3::Header::new(
                     b"content-length",
                     size.to_string().as_bytes(),
                 ));
-                headers.push(quiche::h3::Header::new(
-                    b"x-migi-filename",
-                    name.as_bytes(),
-                ));
-                request_stream = Some(
-                    http3
-                        .as_mut()
-                        .unwrap()
-                        .send_request(&mut connection, &headers, false)?,
-                );
+                headers.push(quiche::h3::Header::new(b"x-migi-filename", name.as_bytes()));
+                if path == "/v1/voice" {
+                    headers.push(quiche::h3::Header::new(b"x-migi-voice-auto-send", b"1"));
+                }
+                request_stream = Some(http3.as_mut().unwrap().send_request(
+                    &mut connection,
+                    &headers,
+                    false,
+                )?);
             }
             if let (Some(http3), Some(stream)) = (http3.as_mut(), request_stream) {
                 if sent < size {
@@ -892,14 +962,18 @@ fn upload_request(
                             response_status = header_value(&list, b":status");
                         }
                         Ok((event_stream, quiche::h3::Event::Data)) if event_stream == stream => {
-                            while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                            while let Ok(read) =
+                                http3.recv_body(&mut connection, stream, &mut input)
+                            {
                                 if response_body.len() + read > 256 * 1024 {
                                     return Err("response is too large".into());
                                 }
                                 response_body.extend_from_slice(&input[..read]);
                             }
                         }
-                        Ok((event_stream, quiche::h3::Event::Finished)) if event_stream == stream => {
+                        Ok((event_stream, quiche::h3::Event::Finished))
+                            if event_stream == stream =>
+                        {
                             if sent != size {
                                 return Err(invalid("server finished before upload completed"));
                             }
@@ -944,7 +1018,9 @@ fn download_request(
     if url.scheme() != "https" {
         return Err(invalid("endpoint must use https"));
     }
-    let host = url.host_str().ok_or_else(|| invalid("endpoint has no host"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| invalid("endpoint has no host"))?;
     let port = url.port_or_known_default().unwrap_or(443);
     let peer_addr = (host, port)
         .to_socket_addrs()?
@@ -1015,19 +1091,12 @@ fn download_request(
                 )?);
             }
             if certificate_checked && request_stream.is_none() {
-                let headers = request_headers(
-                    "GET",
-                    &url,
-                    request_path,
-                    None,
-                    Some(credential),
-                );
-                request_stream = Some(
-                    http3
-                        .as_mut()
-                        .unwrap()
-                        .send_request(&mut connection, &headers, true)?,
-                );
+                let headers = request_headers("GET", &url, request_path, None, Some(credential));
+                request_stream = Some(http3.as_mut().unwrap().send_request(
+                    &mut connection,
+                    &headers,
+                    true,
+                )?);
             }
             if let Some(http3) = http3.as_mut() {
                 loop {
@@ -1047,14 +1116,17 @@ fn download_request(
                                 )
                                 .into());
                             }
-                            let length = expected_length
-                                .ok_or_else(|| invalid("artifact response has no content length"))?;
+                            let length = expected_length.ok_or_else(|| {
+                                invalid("artifact response has no content length")
+                            })?;
                             if length == 0 || length > max_bytes {
                                 return Err(invalid("artifact response exceeds configured size"));
                             }
                         }
                         Ok((stream, quiche::h3::Event::Data)) if Some(stream) == request_stream => {
-                            while let Ok(read) = http3.recv_body(&mut connection, stream, &mut input) {
+                            while let Ok(read) =
+                                http3.recv_body(&mut connection, stream, &mut input)
+                            {
                                 received += read as u64;
                                 if received > max_bytes
                                     || expected_length.is_some_and(|value| received > value)
@@ -1065,9 +1137,12 @@ fn download_request(
                                 digest.update(&input[..read]);
                             }
                         }
-                        Ok((stream, quiche::h3::Event::Finished)) if Some(stream) == request_stream => {
-                            let length = expected_length
-                                .ok_or_else(|| invalid("artifact response has no content length"))?;
+                        Ok((stream, quiche::h3::Event::Finished))
+                            if Some(stream) == request_stream =>
+                        {
+                            let length = expected_length.ok_or_else(|| {
+                                invalid("artifact response has no content length")
+                            })?;
                             if received != length {
                                 return Err(invalid(
                                     "artifact byte count differs from content length",
@@ -1076,7 +1151,9 @@ fn download_request(
                             destination.sync_all()?;
                             let actual_digest = hex_lower(&digest.finalize());
                             if expected_digest.as_deref() != Some(actual_digest.as_str()) {
-                                return Err(invalid("artifact digest differs from response header"));
+                                return Err(invalid(
+                                    "artifact digest differs from response header",
+                                ));
                             }
                             return Ok(serde_json::json!({
                                 "bytes": received,
@@ -1164,10 +1241,7 @@ fn close_short_connection(
     if connection.is_closed() {
         return;
     }
-    if connection
-        .close(true, 0, b"short request complete")
-        .is_ok()
-    {
+    if connection.close(true, 0, b"short request complete").is_ok() {
         let _ = flush_packets(socket, connection, output);
     }
 }
@@ -1345,7 +1419,11 @@ fn validate_artifact_id(value: &str) -> Result<(), AnyError> {
 }
 
 fn validate_shared_file_id(value: &str) -> Result<(), AnyError> {
-    if value.len() != 32 || !value.chars().all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()) {
+    if value.len() != 32
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    {
         return Err(invalid("shared file ID is malformed"));
     }
     Ok(())
@@ -1365,7 +1443,9 @@ fn validate_media_id(value: &str) -> Result<(), AnyError> {
 fn validate_shared_file_name(value: &str) -> Result<(), AnyError> {
     if value.is_empty()
         || value.as_bytes().len() > 255
-        || value.chars().any(|character| character.is_control() || character == '/' || character == '\\')
+        || value
+            .chars()
+            .any(|character| character.is_control() || character == '/' || character == '\\')
     {
         return Err(invalid("shared file name is malformed"));
     }
@@ -1376,7 +1456,9 @@ fn validate_mime(value: &str) -> Result<(), AnyError> {
     if value.is_empty()
         || value.len() > 127
         || !value.is_ascii()
-        || value.chars().any(|character| character.is_control() || character.is_whitespace())
+        || value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
         || !value.contains('/')
     {
         return Err(invalid("shared file MIME type is malformed"));
@@ -1428,10 +1510,98 @@ mod tests {
         assert!(cleaned.get());
 
         cleaned.set(false);
-        let failure = finish_with_cleanup::<()>(Err(invalid("request failed")), || {
-            cleaned.set(true)
-        });
+        let failure =
+            finish_with_cleanup::<()>(Err(invalid("request failed")), || cleaned.set(true));
         assert_eq!(failure.unwrap_err().to_string(), "request failed");
         assert!(cleaned.get());
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_voiceRequest(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    voice_id: JString,
+    decision: JString,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let voice_id: String = env.get_string(&voice_id)?.into();
+        let decision: String = env.get_string(&decision)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_shared_file_id(&voice_id)?;
+        if !["", "confirmed", "cancelled", "stop"].contains(&decision.as_str()) {
+            return Err(invalid("invalid voice decision"));
+        }
+        let body = if decision.is_empty() {
+            None
+        } else {
+            Some(format!("{{\"decision\":\"{decision}\"}}"))
+        };
+        small_request(
+            &endpoint,
+            &expected_pin,
+            if body.is_some() { "POST" } else { "GET" },
+            &format!("/v1/voice/{voice_id}"),
+            body.as_deref().map(str::as_bytes),
+            Some(&credential),
+            "200",
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_chatRequest(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    body: JString,
+    limit: jint,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let body: String = env.get_string(&body)?.into();
+        let pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        if !(1..=10000).contains(&limit) || body.len() > 64 * 1024 {
+            return Err(invalid("invalid chat request size"));
+        }
+        small_request(
+            &endpoint,
+            &pin,
+            if body.is_empty() { "GET" } else { "POST" },
+            &format!("/v1/chat?limit={limit}"),
+            if body.is_empty() {
+                None
+            } else {
+                Some(body.as_bytes())
+            },
+            Some(&credential),
+            "200",
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response)
+        .map(JString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }

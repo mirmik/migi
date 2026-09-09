@@ -2,6 +2,8 @@
 import argparse
 import hashlib
 import importlib.util
+import importlib.machinery
+import sys
 import json
 from pathlib import Path
 from urllib.parse import quote
@@ -14,6 +16,8 @@ from nemor.agent.storage import SessionManager
 from nemor.agent.turns import TurnConflictError
 from nemor.core import Session, ToolRegistry
 from nemor_tools import register_tools
+from migi_agent.chat import ChatAgentService, Chats
+from migi_agent.settings import PromptSettings
 
 PROMPT = """Ты — персональный агент пользователя Migi. Отвечай по-русски кратко и по существу:
 ответ читают на маленьком экране очков. Не устанавливай искусственных ограничений
@@ -45,15 +49,24 @@ class Conversations(SessionManager):
         session.thread_id = metadata['thread_id']
 
 
+def migi_script(name, filename):
+    if name not in sys.modules:
+        path = Path(__file__).resolve().parents[2] / 'skills/migi-file-exchange/scripts' / filename
+        loader = importlib.machinery.SourceFileLoader(name, str(path))
+        spec = importlib.util.spec_from_loader(name, loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+    return sys.modules[name]
+
+
 def migi_client(config=None):
-    # Use the repository's maintained transport: pins the certificate BEFORE
-    # sending the bearer token. Do not introduce a second TLS implementation.
-    path = Path(__file__).resolve().parents[2] / 'skills/migi-file-exchange/scripts/_migi_transport.py'
-    import sys
-    spec = importlib.util.spec_from_file_location('_migi_agent_transport', path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    # Pin the certificate before sending credentials using the maintained skill client.
+    module = migi_script('_migi_transport', '_migi_transport.py')
     client = module.resolve_agent_client(config=config)
     client.timeout = 30
     return client
@@ -70,12 +83,12 @@ def register_migi_tools(registry, client):
                 raise ValueError('File/response exceeds 1 MiB; use local file tools for larger files')
             return data.decode('utf-8')
 
-    def add(name, description, properties, required, call):
+    def add(name, description, properties, required, call, *, with_config=False):
         def execute(args, config):
             try:
                 if not isinstance(args, dict) or set(args) - set(properties) or set(required) - set(args):
                     raise ValueError('Invalid tool arguments')
-                return call(args)
+                return call(args, config) if with_config else call(args)
             except (ValueError, RuntimeError, OSError) as exc:
                 return json.dumps({'error': str(exc), 'hint': 'Correct the tool arguments and retry if appropriate.'}, ensure_ascii=False)
         registry.register(name, execute, {'type': 'function', 'function': {
@@ -88,6 +101,31 @@ def register_migi_tools(registry, client):
     add('migi_read_file', 'Read a UTF-8 text file from Migi by its file ID (up to 1 MiB).',
         {'file_id': {'type': 'string'}}, ['file_id'],
         lambda args: request('GET', '/v1/files/' + quote(args['file_id'], safe='') + '/content'))
+
+    migi_script('_migi_transport', '_migi_transport.py')
+    file_client = migi_script('_migi_file_cli', 'migi-file')
+
+    def send_file(args, config):
+        if not isinstance(args['path'], str) or not args['path'].strip():
+            raise ValueError('path must be a non-empty local file path')
+        mime = args.get('mime_type', '')
+        if not isinstance(mime, str) or any(c in mime for c in ('\r', '\n')):
+            raise ValueError('mime_type must be a MIME type without newlines')
+        path = Path(args['path']).expanduser()
+        if not path.is_absolute():
+            path = Path(config.get('cwd', '.')) / path
+        shared = file_client.upload(client, str(path), source='migi-agent', mime_type=mime)
+        return json.dumps({'uploaded': True, **shared}, ensure_ascii=False)
+
+    add('migi_send_file', 'Upload an existing local file to Migi Files, visible on paired phones and the web panel. '
+        'First create the file with write_file or other local tools, then call this tool. '
+        'Supports text and binary files; relative paths use the agent working directory. '
+        'Returns server file ID, name, size and expiry. Server acceptance does not prove phone download. '
+        'Each successful upload creates a new entry: do not repeat after success. '
+        'For reading directly on glasses use migi_show_document instead.',
+        {'path': {'type': 'string', 'description': 'Path of an existing non-empty regular local file.'},
+         'mime_type': {'type': 'string', 'description': 'Optional MIME override; normally inferred from filename.'}},
+        ['path'], send_file, with_config=True)
 
     def document(args):
         blocks = []
@@ -125,10 +163,11 @@ SERVICE = web.AppKey('agent_service', AgentService)
 
 def create_app(directory, cwd, *, model=None, completion=None, client=None,
                tool_names=('read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'run_command'),
-               skill_catalog=None, skill_names=(), mcp_manager=None):
+               skill_catalog=None, skill_names=(), mcp_manager=None, model_name="", context_window=None):
     directory = Path(directory).expanduser()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     store = Conversations(str(directory / 'sessions'))
+    prompt = PromptSettings(directory, PROMPT)
     registry = ToolRegistry()
     register_tools(registry, tool_names)
     if client is not None:
@@ -138,14 +177,18 @@ def create_app(directory, cwd, *, model=None, completion=None, client=None,
         name = hashlib.sha256(thread_id.encode()).hexdigest()
         session = store.load(name, quiet=True)
         if session is None:
-            session = Conversation(name, system_prompt=PROMPT)
+            session = Conversation(name, system_prompt=prompt.text)
             session.thread_id = thread_id
+        for message in session.messages:
+            if message.annotations.get('migi.compaction'):
+                message.annotations['nemor.compaction'] = True
         return Agent(client=model, completion=completion, session=session, tools=registry,
             skill_catalog=skill_catalog, skill_names=skill_names, mcp_manager=mcp_manager,
             mcp_servers=mcp_manager.enabled_server_names if mcp_manager else (),
             config={'cwd': str(Path(cwd).resolve()), 'reasoning': {'enabled': True, 'budget': -1, 'send_budget': False}})
 
-    service = AgentService(factory, directory / 'runs', save_session=store.save, busy_policy='reject')
+    service = ChatAgentService(factory, directory / 'runs', save_session=store.save, busy_policy='reject')
+    service.prepare_session = prompt.apply
     @web.middleware
     async def local_requests(request, handler):
         if request.headers.get('Origin'):
@@ -156,7 +199,9 @@ def create_app(directory, cwd, *, model=None, completion=None, client=None,
 
     app = web.Application(client_max_size=1 << 20, middlewares=[local_requests])
     app[SERVICE] = service
+    prompt.mount(app)
     mount(app, service)
+    Chats(service, directory, model_name=model_name, context_window=context_window).mount(app)
 
     # JSON acknowledgement for durable upload workers. Same RunAgentInput and
     # journal as /agent/run; the SSE endpoint remains the standard AG-UI path.
@@ -220,6 +265,7 @@ def main():
     parser.add_argument('--model', help='Override model ID on the explicitly selected profile')
     parser.add_argument('--state-dir', default='~/.local/state/migi-agent')
     parser.add_argument('--cwd', default='.')
+    parser.add_argument('--context-window', type=int, help='Known provider context window, otherwise show only an estimate')
     parser.add_argument('--port', type=int, default=9091)
     parser.add_argument('--migi-config')
     parser.add_argument('--capabilities', help='Private JSON: skill_roots, skills, mcp_servers')
@@ -260,7 +306,8 @@ def main():
     else:
         model = inference_link.llm(args.profile)
     app = create_app(directory, args.cwd, model=model, client=migi_client(args.migi_config),
-        skill_catalog=catalog, skill_names=selected, mcp_manager=manager)
+        skill_catalog=catalog, skill_names=selected, mcp_manager=manager,
+        model_name=args.model or args.profile or "", context_window=args.context_window)
     async def close_model(_app):
         model.close()
         lock.close()

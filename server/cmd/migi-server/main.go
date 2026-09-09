@@ -160,7 +160,7 @@ func run() error {
 	}
 
 	publicSecurity := newPublicSecurity()
-	publicMux := newPublicMuxWithAllStores(broker, releases, transfers, media, publicSecurity)
+	publicMux := newPublicMuxWithAllStores(broker, releases, transfers, media, publicSecurity, voice)
 	quicConfig := newPublicQUICConfig()
 	if os.Getenv("QLOGDIR") != "" {
 		quicConfig.Tracer = qlog.DefaultConnectionTracer
@@ -223,7 +223,12 @@ func run() error {
 	}
 	var adminServer *http.Server
 	if *adminListen != "" {
+		var agentRequest func(context.Context, string, string, any, any) (int, error)
+		if voice != nil && voice.config.AgentURL != "" {
+			agentRequest = voice.agentRequest
+		}
 		adminHandler, err := admin.New(admin.Config{
+			AgentRequest:           agentRequest,
 			Broker:                 broker,
 			Files:                  transfers,
 			PublicEndpoint:         *publicEndpoint,
@@ -275,6 +280,9 @@ func run() error {
 		voiceCtx, cancelVoice := context.WithCancel(ctx)
 		voiceDone := make(chan struct{})
 		go func() { defer close(voiceDone); voice.run(voiceCtx) }()
+		chatDone := make(chan struct{})
+		go func() { defer close(chatDone); voice.runChatReplies(voiceCtx) }()
+		defer func() { cancelVoice(); <-chatDone }()
 		defer func() { cancelVoice(); <-voiceDone }()
 	}
 
@@ -362,8 +370,12 @@ func newPublicMuxWithAllStores(
 	transfers *transferStore,
 	media *mediaStore,
 	security *publicSecurity,
+	voices ...*voiceProcessor,
 ) http.Handler {
 	mux := http.NewServeMux()
+	if len(voices) > 0 && voices[0] != nil {
+		voices[0].routes(mux, func(next http.Handler) http.Handler { return authenticateDevice(broker, security, next) })
+	}
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/pair", security.rateLimit("pair", security.pairRequests, pairHandler(broker)))
 	mux.Handle("GET /v1/events", authenticateDevice(broker, security, security.limitDeviceStreams(streamHandler(broker))))

@@ -55,8 +55,49 @@ func (p *voiceProcessor) agentRequest(ctx context.Context, method, path string, 
 }
 
 func (p *voiceProcessor) advanceAgent(ctx context.Context, file transfer, job *voiceJob, path string) error {
-	job.AgentThread = file.Source
-	job.AgentRun = voiceRequestID(file)
+	if job.AgentRun == "" {
+		job.AgentRun = voiceRequestID(file)
+	}
+	if job.AgentThread == "" && p.requireApproval {
+		// Resolve the active chat and accept the run atomically in the agent host.
+		// A lost response repeats the same owner/request ID, even after New chat.
+		action := "voice"
+		spoken := strings.Trim(strings.ToLower(job.Transcript), " .!?,")
+		if spoken == "стоп" || spoken == "остановись" || spoken == "останови выполнение" {
+			action = "voice_stop"
+		}
+		var accepted struct {
+			Thread string `json:"thread_id"`
+		}
+		code, err := p.agentRequest(ctx, "POST", "/migi/chat", map[string]string{
+			"owner": file.Source, "action": action, "request_id": job.AgentRun, "text": job.Transcript}, &accepted)
+		if code == http.StatusConflict {
+			job.Answer = "Агент ещё занят. Этот запрос не поставлен в очередь. Дождитесь ответа или остановите выполнение."
+			return saveVoiceJob(path, job)
+		}
+		if err != nil && code != http.StatusNotFound {
+			return errAgentPending
+		}
+		if code != http.StatusNotFound {
+			if accepted.Thread == "" {
+				return errAgentPending
+			}
+			job.AgentThread = accepted.Thread
+			if action == "voice_stop" {
+				job.Answer = "Остановка запрошена. Дождитесь завершения текущего действия перед новым запросом."
+				return saveVoiceJob(path, job)
+			}
+			job.AgentSubmitted = true
+			if err := saveVoiceJob(path, job); err != nil {
+				return err
+			}
+			_, _, _ = p.files.broker.PublishVoiceReply(ctx, job.AgentRun+"-started", "Агент Migi", "Запрос принят. Выполняю.")
+			return errAgentPending
+		}
+	}
+	if job.AgentThread == "" {
+		job.AgentThread = file.Source
+	}
 	query := "?threadId=" + url.QueryEscape(job.AgentThread) + "&runId=" + url.QueryEscape(job.AgentRun)
 	var status struct {
 		Status          string `json:"status"`
@@ -72,7 +113,12 @@ func (p *voiceProcessor) advanceAgent(ctx context.Context, file transfer, job *v
 		}
 		text := strings.Trim(strings.ToLower(job.Transcript), " .!?,")
 		if text == "стоп" || text == "остановись" || text == "останови выполнение" {
-			if err := p.cancelVoiceAgent(ctx, job.AgentThread, job.AgentRun); err != nil {
+			if p.requireApproval {
+				_, err := p.agentRequest(ctx, "POST", "/migi/chat", map[string]string{"owner": file.Source, "action": "stop", "request_id": job.AgentRun + "-stop", "thread_id": job.AgentThread}, nil)
+				if err != nil {
+					return err
+				}
+			} else if err := p.cancelVoiceAgent(ctx, job.AgentThread, job.AgentRun); err != nil {
 				return err
 			}
 			job.Answer = "Остановка запрошена. Дождитесь завершения текущего действия перед новым запросом."

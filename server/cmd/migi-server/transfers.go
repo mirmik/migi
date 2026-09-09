@@ -197,6 +197,10 @@ func (s *transferStore) uploadHandler(source func(*http.Request) string) http.Ha
 			http.Error(w, "a valid Content-Type is required", http.StatusBadRequest)
 			return
 		}
+		if contentType == voiceMIME {
+			http.Error(w, "voice recordings must use /v1/voice", http.StatusConflict)
+			return
+		}
 		if r.ContentLength <= 0 {
 			http.Error(w, "a non-empty Content-Length is required", http.StatusLengthRequired)
 			return
@@ -235,6 +239,9 @@ func (s *transferStore) share(
 	body io.Reader,
 	declared int64,
 ) (transfer, error) {
+	if contentType == voiceMIME {
+		return transfer{}, errors.New("voice recordings must use /v1/voice")
+	}
 	file, err := s.store(ctx, name, contentType, source, body, declared)
 	if err != nil {
 		return transfer{}, err

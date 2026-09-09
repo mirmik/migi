@@ -21,6 +21,12 @@ data class AgentEvent(
 )
 
 internal object NativeQuicClient {
+    external fun chatRequest(endpoint: String, certificatePin: String, credential: String, body: String, limit: Int): String
+    external fun uploadVoiceFile(endpoint: String, certificatePin: String, credential: String,
+        name: String, mime: String, fileDescriptor: Int, size: Long): String
+    external fun voiceRequest(endpoint: String, certificatePin: String, credential: String,
+        voiceId: String, decision: String): String
+
     init {
         System.loadLibrary("migi_quiche")
     }

@@ -1,9 +1,15 @@
 # G2 voice input
 
-Build51 supports the test cycle: glasses → phone WAV → Migi server → local STT →
-`gemma4-26b-heretic` → durable pager event → phone/glasses. The original direct-model mode uses independent conversations. The optional
-`agent_url` mode adds persistent conversations, tools, AG-UI and explicit stop;
-see [agent service](../agent/README.md).
+Build55 sends new recordings automatically: glasses → private voice upload → STT →
+agent. At the same time, the recognized text appears on the glasses. There is no
+second confirmation click. While that request is active, swipes read its transcript
+and **long press requests stop**. Once it finishes, long press starts a new recording.
+A very fast answer leaves the transcript visible for at least three seconds before
+returning to the reply/document; this display interval never delays agent execution.
+
+The optional `agent_url` mode supplies persistent conversations, tools, AG-UI and
+run-specific stop; see [agent service](../agent/README.md). Existing legacy review
+jobs remain explicit-confirmation jobs and are never silently re-executed.
 No firmware flash or phone microphone is used. The existing G2 connected-device
 service owns capture. Microphone capture begins only on an explicit long-press.
 
@@ -25,11 +31,22 @@ Transport cleanup cancels pending recording; already completed recordings remain
 Settings → Очки Even G2 → Голосовые записи lists and plays saved WAVs. Files live
 in the application's external files `voice/` directory (internal files fallback),
 are retained until removed/app data is cleared. New service-owned captures receive
-a durable `.pending` marker and are uploaded using the existing paired-device QUIC
-connection, with MIME `audio/vnd.migi.voice-wav`. The uploader retries every15s and
-on service restart. `.sent` means server acceptance, not a completed model reply.
-Old local-only test recordings have no pending marker and are not auto-uploaded.
-The local connection-test screen still records locally without submission.
+a durable `.pending` marker. `VoiceClient` uploads through the paired-device QUIC
+connection to **POST /v1/voice**, independently of FileExchangeClient. The server
+returns a stable upload ID; retrying identical device/name/content returns that ID.
+The uploader persists `.pending.uploaded` and polls GET /v1/voice/{id}. New uploads
+carry `X-Migi-Voice-Auto-Send: 1`, persisted in the job so rolling upgrades retain
+old-client behavior. States are transcribing, dispatching, running, stopping and
+completed/cancelled/failed. The response includes the recognized transcript.
+A long press persists `.pending.decision` containing `stop` before POSTing
+`{decision: stop}`. Lost responses/restarts repeat the same request-specific stop.
+`.sent` marks terminal handling. Old local-only recordings without a pending
+marker are not automatically uploaded. Legacy pending reviews still support
+confirmed/cancelled decisions.
+
+Only the owning paired device can read or decide its voice request. There is no
+public file URL or `file.available` event for audio. The native JNI transport
+shares QUIC/TLS mechanics with the file client, but uses a separate voice API.
 
 ## Server worker
 
@@ -39,23 +56,34 @@ The file must be mode0600 and contain `url` (HTTPS), `server_name`, `ca_file`,
 `https://192.168.0.61:8090` verifies TLS name `llm-proxy` using its installed
 certificate. Token stays on the server; it is not embedded in Android or Git.
 
-The worker processes only authenticated device files carrying the explicit voice
-MIME. Normal shared audio and agent uploads never trigger inference. It converts
-bounded PCM16 WAV to float32 and splits recordings into20s STT requests. It then
-calls `/v1/chat/completions` with the recognized text and a short plain-text reply
-instruction. Thinking is disabled via `chat_template_kwargs.enable_thinking=false`
-to obtain a direct visible reply. Per the user's preference, brevity is requested
-only in the instruction: no `max_tokens` is supplied and the answer is not truncated.
+The worker uses a dedicated `migi-voice` directory next to the configured shared
+file directory (normally `~/.local/state/migi/migi-voice`). It reuses the bounded
+blob-storage primitives internally, but mounts no file routes and publishes no
+file notifications. Limits: PCM16 mono 16 kHz WAV, 60 seconds, 256 MiB total,
+512 recordings, seven-day audio retention. It converts PCM to float32 and sends
+20-second STT chunks to the existing HTTPS endpoint.
 
-State under the file store's `.voice-jobs` directory preserves transcription and
-answer across restarts. Request identity is a hash of source device, original
-filename/UUID and file digest. Retrying the same upload does not rerun a completed
-job. SQLite commits each request's pager reply atomically/idempotently; a crash
-after publication cannot create a second reply. In direct-model mode an in-flight inference may repeat
-after a crash. Agent mode instead looks up the stable run ID; interrupted runs
-fail without automatically re-executing tools. Transient failures get up to3 attempts; final failure produces a
-pager error. Processed recordings remain subject to normal file-exchange retention;
-job text and replies currently remain until explicitly removed.
+Jobs live under `migi-voice/.jobs`. Auto-send jobs proceed directly after STT;
+legacy awaiting_confirmation jobs keep their old decision boundary. The stop flag
+is durable. The private agent `/migi/voice/cancel` endpoint records a cancellation
+tombstone keyed by device/request ID, preventing a delayed submit from executing.
+It cancels only that run across the device's retained chats, never the latest run
+by accident. The worker waits for actual terminal state before acknowledging stop.
+Cancellation is cooperative; a blocked provider/tool call can delay completion.
+
+On startup old special-MIME recordings move out of shared Files into voice
+storage, preserving completed/in-flight job identities. Old recordings without a
+known accepted run are archived as cancelled, never newly executed. Old job files
+are retained in `.legacy-jobs`. Ordinary `audio/wav` files are untouched. The shared
+file API rejects the reserved voice MIME, so an older phone must update before
+uploading more voice recordings.
+
+After STT (or confirmation for a legacy review), the agent receives the text; without
+`agent_url`, the legacy direct-model request runs instead. There is no model token
+limit or answer truncation. Request identity is device/name/digest. SQLite commits
+pager replies idempotently; a document delivered by an agent tool remains visible
+instead of being covered by an acknowledgement. Job text and replies have no
+automatic retention policy yet.
 
 Replies use the existing instance-wide pager stream, like ordinary Migi pager
 messages. This demo does not isolate replies by paired phone. Use on the current

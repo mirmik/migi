@@ -35,6 +35,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
     }
 
     init {
+        voiceUploader.onChanged = { driver?.refreshPager(true) }
         config.registerOnSharedPreferenceChangeListener(configListener)
         pagerPrefs.registerOnSharedPreferenceChangeListener(pagerListener)
         configure()
@@ -54,7 +55,7 @@ class G2PagerBridge(private val context: Context, private val setDeviceType: (Bo
             release()
             setDeviceType(true)
             driver = G2Experiment(context, { Log.i("MigiG2Pager", it) },
-                { documents.active() ?: repository.current() }, documents::savePage, voiceUploader::enqueue)
+                { voiceUploader.current() ?: documents.active() ?: repository.current() }, documents::savePage, voiceUploader::enqueue, voiceUploader::decide)
             addresses = pair
             driver?.connect(pair.first, pair.second)
         } catch (e: Exception) {

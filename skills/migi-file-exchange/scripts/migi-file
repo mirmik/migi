@@ -63,16 +63,17 @@ def _server_result(response, *, expected: int, label: str):
     return decode_json(body, label=label)
 
 
-def put(
+def upload(
     client: MigiHTTPClient,
     path_text: str,
     *,
     source: str = "",
     mime_type: str = "",
-) -> None:
+) -> dict:
+    """Stream a regular file and return the server acknowledgement without printing."""
     path = Path(path_text)
     try:
-        stream = path.open("rb")
+        stream = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)), "rb")
     except OSError as exc:
         raise MigiClientError(f"open upload: {exc}") from exc
     with stream:
@@ -91,6 +92,14 @@ def put(
             shared = _server_result(response, expected=201, label="upload")
     if not isinstance(shared, dict):
         raise MigiClientError("upload response must be a JSON object")
+    if (not isinstance(shared.get("id"), str) or not FILE_ID_RE.fullmatch(shared["id"])
+            or not shared.get("name") or shared.get("size") != info.st_size or not shared.get("expires_at")):
+        raise MigiClientError("upload response lacks valid file acknowledgement; check list before retrying")
+    return shared
+
+
+def put(client: MigiHTTPClient, path_text: str, *, source: str = "", mime_type: str = "") -> None:
+    shared = upload(client, path_text, source=source, mime_type=mime_type)
     print(
         f"{shared.get('id', '')}\t{shared.get('name', '')}\t"
         f"{shared.get('size', 0)} bytes\t{format_timestamp(shared.get('expires_at'))}"

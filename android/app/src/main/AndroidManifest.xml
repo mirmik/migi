@@ -43,6 +43,7 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".AgentChatActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".DocumentsActivity" android:exported="false" />
         <activity android:name=".G2DisplaySettingsActivity" android:exported="false" />
         <activity android:name=".G2VoiceRecordingsActivity" android:exported="false" />

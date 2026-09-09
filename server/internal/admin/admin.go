@@ -33,6 +33,7 @@ import (
 var content embed.FS
 
 type Config struct {
+	AgentRequest           func(context.Context, string, string, any, any) (int, error)
 	Broker                 *events.Broker
 	Files                  FileExchange
 	PublicEndpoint         string
@@ -197,6 +198,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/agents/", h.agents)
 	mux.HandleFunc("GET /admin/files/", h.files)
 	mux.HandleFunc("GET /admin/system/", h.system)
+	mux.HandleFunc("GET /admin/chat/{$}", h.chatPage)
+	mux.HandleFunc("GET /admin/chat/state", h.chatAPI)
+	mux.HandleFunc("POST /admin/chat/state", h.chatAPI)
+	mux.HandleFunc("GET /admin/chat/prompt", h.promptAPI)
+	mux.HandleFunc("POST /admin/chat/prompt", h.promptAPI)
 	mux.HandleFunc("POST /admin/pair", h.createPairing)
 	mux.HandleFunc("POST /admin/notifications/test", h.sendTestNotification)
 	mux.HandleFunc("POST /admin/pager", h.setPagerMessage)
@@ -732,7 +738,7 @@ func (h *Handler) validCSRF(provided string) bool {
 func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; font-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")

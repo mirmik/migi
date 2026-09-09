@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,9 @@ type voiceConfig struct {
 	AgentURL   string `json:"agent_url,omitempty"`
 }
 type voiceJob struct {
+	AutoSend       bool      `json:"auto_send,omitempty"`
+	StopRequested  bool      `json:"stop_requested,omitempty"`
+	Approval       string    `json:"approval,omitempty"`
 	AgentSubmitted bool      `json:"agent_submitted,omitempty"`
 	AgentThread    string    `json:"agent_thread,omitempty"`
 	AgentRun       string    `json:"agent_run,omitempty"`
@@ -45,10 +49,12 @@ type voiceJob struct {
 	EventID        uint64    `json:"event_id,omitempty"`
 }
 type voiceProcessor struct {
-	config voiceConfig
-	client *http.Client
-	files  *transferStore
-	state  string
+	mu              sync.Mutex
+	requireApproval bool
+	config          voiceConfig
+	client          *http.Client
+	files           *transferStore
+	state           string
 }
 
 func newVoiceProcessor(configPath string, files *transferStore) (*voiceProcessor, error) {
@@ -88,8 +94,18 @@ func newVoiceProcessor(configPath string, files *transferStore) (*voiceProcessor
 		return nil, errors.New("invalid voice CA")
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: config.ServerName}, ResponseHeaderTimeout: 90 * time.Second}
-	processor := &voiceProcessor{config: config, files: files, state: filepath.Join(files.root, ".voice-jobs"), client: &http.Client{Transport: transport, Timeout: 100 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
-	return processor, os.MkdirAll(processor.state, 0700)
+	private, err := newTransferStore(files.broker, filepath.Join(filepath.Dir(files.root), "migi-voice"), voiceMaxWAV, 256<<20, 7*24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	processor := &voiceProcessor{requireApproval: true, config: config, files: private, state: filepath.Join(private.root, ".jobs"), client: &http.Client{Transport: transport, Timeout: 100 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	if err := os.MkdirAll(processor.state, 0700); err != nil {
+		return nil, err
+	}
+	if err := processor.migrateLegacy(files); err != nil {
+		return nil, err
+	}
+	return processor, nil
 }
 
 func (p *voiceProcessor) run(ctx context.Context) {
@@ -109,6 +125,8 @@ func voiceRequestID(file transfer) string {
 	return hex.EncodeToString(sum[:])
 }
 func (p *voiceProcessor) scan(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	files, err := p.files.list(time.Now().UTC())
 	if err != nil {
 		slog.Error("voice list failed", "error", err)
@@ -135,7 +153,7 @@ func (p *voiceProcessor) scan(ctx context.Context) {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if job.EventID != 0 || time.Now().Before(job.RetryAt) {
+		if job.EventID != 0 || job.Approval == "awaiting_confirmation" || job.Approval == "cancelled" || time.Now().Before(job.RetryAt) {
 			continue
 		}
 		p.process(ctx, file, id, path, &job)
@@ -164,6 +182,24 @@ func saveVoiceJob(path string, job *voiceJob) error {
 	return os.Rename(path+".new", path)
 }
 func (p *voiceProcessor) process(ctx context.Context, file transfer, id, path string, job *voiceJob) {
+	if job.StopRequested && job.EventID == 0 {
+		if p.config.AgentURL != "" {
+			var result struct {
+				Pending bool `json:"pending"`
+			}
+			_, err := p.agentRequest(ctx, "POST", "/migi/voice/cancel", map[string]string{"owner": file.Source, "request_id": voiceRequestID(file)}, &result)
+			if err != nil || result.Pending {
+				job.RetryAt = time.Now().Add(time.Second)
+				_ = saveVoiceJob(path, job)
+				return
+			}
+		}
+		job.Answer = "Выполнение остановлено. Можно отправить новый запрос."
+		job.Error = ""
+		if err := saveVoiceJob(path, job); err != nil {
+			return
+		}
+	}
 	if job.Answer == "" && (job.Attempts < 3 || job.AgentSubmitted) {
 		if !job.AgentSubmitted {
 			job.Attempts++
@@ -174,6 +210,11 @@ func (p *voiceProcessor) process(ctx context.Context, file transfer, id, path st
 		}
 		err := p.infer(ctx, file, job, path)
 		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errVoiceReview) {
+			job.RetryAt = time.Time{}
+			_ = saveVoiceJob(path, job)
 			return
 		}
 		if errors.Is(err, errAgentPending) {
@@ -257,6 +298,13 @@ func (p *voiceProcessor) infer(ctx context.Context, file transfer, job *voiceJob
 		if err = saveVoiceJob(path, job); err != nil {
 			return err
 		}
+	}
+	if p.requireApproval && !job.AutoSend && job.Approval != "confirmed" {
+		job.Approval = "awaiting_confirmation"
+		if err := saveVoiceJob(path, job); err != nil {
+			return err
+		}
+		return errVoiceReview
 	}
 	if p.config.AgentURL != "" {
 		return p.advanceAgent(ctx, file, job, path)

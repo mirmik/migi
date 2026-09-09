@@ -93,16 +93,16 @@ func TestVoiceCycleChunksDeduplicatesAndReplaysReply(t *testing.T) {
 	}
 	p := &voiceProcessor{files: store, state: state, client: remote.Client(), config: voiceConfig{URL: remote.URL, Token: "test", Model: "gemma4-26b-heretic"}}
 	wav := voiceTestWAV(21)
-	if _, err = store.share(t.Context(), "g2-request.wav", voiceMIME, "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
+	if _, err = store.store(t.Context(), "g2-request.wav", voiceMIME, "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
 		t.Fatal(err)
 	}
 	p.scan(t.Context())
 	// A lost upload response causes a duplicate file with the same request identity.
-	if _, err = store.share(t.Context(), "g2-request.wav", voiceMIME, "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
+	if _, err = store.store(t.Context(), "g2-request.wav", voiceMIME, "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
 		t.Fatal(err)
 	}
 	// Ordinary audio is never sent for inference.
-	if _, err = store.share(t.Context(), "other.wav", "audio/wav", "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
+	if _, err = store.store(t.Context(), "other.wav", "audio/wav", "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
 		t.Fatal(err)
 	}
 	again := *p

@@ -55,7 +55,7 @@ func TestVoiceAgentPollingBusyStopAndRestart(t *testing.T) {
 	p := &voiceProcessor{files: store, state: state, config: voiceConfig{AgentURL: remote.URL}}
 	add := func(name, text string) (transfer, string) {
 		wav := voiceTestWAV(1)
-		f, err := store.share(t.Context(), name, voiceMIME, "device:phone", bytes.NewReader(wav), int64(len(wav)))
+		f, err := store.store(t.Context(), name, voiceMIME, "device:phone", bytes.NewReader(wav), int64(len(wav)))
 		if err != nil {
 			t.Fatal(err)
 		}

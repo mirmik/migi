@@ -98,4 +98,8 @@ def test_document_tool(tmp_path):
         async with TestClient(TestServer(app)) as client:
             r = await client.get('/migi/result', params={'threadId': 'device:phone', 'runId': 'one'})
             assert (await r.json())['document_event_id'] == 42
+            r = await client.get('/migi/chat', params={'owner': 'device:phone'})
+            reply = (await r.json())['reply']
+            assert reply['document_event_id'] == 42
+            assert reply['text'] == 'Sent'
     asyncio.run(scenario())

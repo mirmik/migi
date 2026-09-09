@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="csrf-token" content="{{.CSRFToken}}"><title>Чат с агентом · Migi</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/chat.css"><script src="../assets/chat.js" defer></script></head>
+<body>
+<header><div><span class="eyebrow">Migi</span><h1>Чат с агентом</h1><p>Один разговор в браузере, на телефоне и в очках.</p></div></header>
+{{template "admin-nav" "../"}}
+<main id="agent-chat" data-enabled="{{.Enabled}}">
+{{if not .Enabled}}<p class="notice">Сервис агента не настроен.</p>{{end}}
+<div class="chat-layout">
+<section class="panel conversation">
+<div class="chat-toolbar"><label>Устройство<select id="device">{{range .Devices}}{{if not .RevokedAt}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select></label><label>Диалог<select id="threads" disabled></select></label><button id="new" disabled>Новый чат</button></div>
+<div class="chat-monitor"><strong id="status" role="status">Подключение…</strong><span id="model"></span><span id="context"></span><progress id="context-progress" max="100" hidden></progress><span id="tools"></span></div>
+<div class="chat-toolbar"><button id="compact" disabled>Сжать контекст</button><button id="stop" class="danger" disabled>Стоп</button><button id="refresh">Обновить</button></div>
+<p id="notice" role="status" hidden></p><p id="error" role="alert" hidden></p>
+<button id="earlier" hidden>Загрузить более ранние сообщения</button>
+<div id="history" tabindex="0" aria-label="Переписка"></div>
+<form id="composer"><label for="message">Сообщение агенту</label><textarea id="message" rows="3" placeholder="Напишите сообщение. Ctrl+Enter — отправить"></textarea><button id="send" disabled>Отправить</button></form>
+<p class="chat-hint">Новый чат сохраняет прежнюю переписку. Сжатие сокращает контекст модели, сохраняя историю для чтения.</p>
+</section>
+<aside class="panel prompt-panel"><h2>Системный промпт</h2><p>Общая инструкция агента для всех чатов. Изменения действуют со следующего сообщения; текущий ответ продолжится с прежней инструкцией.</p>
+<label for="prompt">Инструкция</label><textarea id="prompt" rows="20" spellcheck="false" disabled></textarea>
+<div class="chat-toolbar"><button id="save-prompt" disabled>Сохранить</button><button id="reload-prompt">Загрузить сохранённый</button><button id="reset-prompt" disabled>Вернуть штатный</button></div><p id="prompt-status" role="status"></p></aside>
+</div></main>
+</body></html>

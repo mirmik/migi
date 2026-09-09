@@ -13,7 +13,7 @@ import dev.migi.documents.ReadingDocument
 import dev.migi.documents.DocumentRenderer
 import java.util.concurrent.Executors
 
-data class PagerContent(val id: Long, val title: String, val body: String, val document: ReadingDocument? = null, val savedPage: Int = 0)
+data class PagerContent(val id: Long, val title: String, val body: String, val document: ReadingDocument? = null, val savedPage: Int = 0, val voiceReviewId: String? = null, val voicePending: Boolean = false, val voiceCanStop: Boolean = false)
 
 /** Shared G2 driver for the local experiment and service-owned pager, never both at once. */
 class G2Experiment(
@@ -22,6 +22,7 @@ class G2Experiment(
     private val pagerSource: (() -> PagerContent?)? = null,
     private val onDocumentPage: ((Long, Int) -> Unit)? = null,
     private val onVoiceRecorded: ((java.io.File) -> Unit)? = null,
+    private val onVoiceDecision: ((String, Boolean) -> Unit)? = null,
 ) : AutoCloseable {
     private val context = context.applicationContext
     companion object {
@@ -54,6 +55,8 @@ class G2Experiment(
     private var voiceBusy = false
     private var voiceTimer: Runnable? = null
     private var voiceGeneration = 0
+    private var shownReviewId: String? = null
+    private var reviewNotBefore = 0L
 
     fun refreshDisplaySettings() = execute {
         transport?.takeIf { it.isSessionReady }?.let { G2DisplaySettings.applyBrightness(context, it) }
@@ -137,6 +140,26 @@ class G2Experiment(
                                 else if (eventType == BleProtocol.EVENT_DOUBLE_CLICK) cancelVoice("Запись отменена")
                                 return@execute
                             }
+                            val review = pagerSource?.invoke()
+                            if (review?.voiceReviewId != null) {
+                                if (deliveredId != review.id || frameWait != null || sleeping) {
+                                    refreshPager(true)
+                                    return@execute
+                                }
+                                // Never reuse a trailing stop-recording click as confirmation.
+                                if (receivedAt < reviewNotBefore) return@execute
+                                when (eventType) {
+                                    BleProtocol.EVENT_CLICK -> if (!review.voiceCanStop) onVoiceDecision?.invoke(review.voiceReviewId, true)
+                                    BleProtocol.EVENT_RING_LONG_PRESS -> onVoiceDecision?.invoke(review.voiceReviewId, false)
+                                    BleProtocol.EVENT_SCROLL_TOP, BleProtocol.EVENT_SCROLL_BOTTOM -> {
+                                        val forward = (eventType == BleProtocol.EVENT_SCROLL_BOTTOM) != G2DisplaySettings.invertScroll(context)
+                                        page = (page + if (forward) 1 else -1).coerceIn(0, pageCount - 1)
+                                        showFrame()
+                                    }
+                                }
+                                return@execute
+                            }
+                            if (review?.voicePending == true) return@execute
                             if (eventType == BleProtocol.EVENT_RING_LONG_PRESS) {
                                 startVoice(connection)
                                 return@execute
@@ -322,7 +345,7 @@ class G2Experiment(
                 if (generation != voiceGeneration) return@execute
                 voiceBusy = false
                 result.onSuccess {
-                    voiceStatus(if (onVoiceRecorded != null) "Запись в очереди отправки\nЖду ответ модели…" else "Запись сохранена локально")
+                    voiceStatus(if (onVoiceRecorded != null) "Распознаю речь…\nЗатем покажу текст для проверки" else "Запись сохранена локально")
                     emit("G2 voice WAV=${it.name}, bytes=${it.length()}, lost=${recording.missingPackets}")
                 }.onFailure { voiceStatus("Не удалось отправить запись\n${it.message?.take(100)}") }
             }
@@ -396,10 +419,16 @@ class G2Experiment(
         } else if (BuildConfig.WIDGET_PROBE) {
             "Кириллица: Ёжик. Тест списка.\n$gestureCount: $lastGesture"
         } else if (content != null) {
-            val pages = NativePager.pages(content.body)
+            if (content.voiceReviewId != shownReviewId) {
+                shownReviewId = content.voiceReviewId
+                reviewNotBefore = android.os.SystemClock.elapsedRealtime() + 750
+            }
+            val pages = NativePager.pages(content.body, if (content.voiceReviewId != null) 4 else 6)
             pageCount = pages.size
             page = page.coerceIn(0, pageCount - 1)
-            "Migi / Пейджер\n${pages[page]}\n${page + 1}/$pageCount"
+            if (content.voiceCanStop) "Распознано · ${page + 1}/$pageCount\n${pages[page]}\nДолго — остановить"
+            else if (content.voiceReviewId != null) "Проверьте текст · ${page + 1}/$pageCount\n${pages[page]}\nКасание — отправить\nДолго — отменить"
+            else "Migi / Пейджер\n${pages[page]}\n${page + 1}/$pageCount"
         } else "Hello from Migi\nEven G2 / test $frameId\nПривет! Кириллица: Ёжик\nGestures: $gestureCount / $lastGesture\nDouble tap: sleep / wake"
         connection.submitNativeText(text, frameId)
         awaitFrameAsync(connection)
@@ -437,6 +466,7 @@ class G2Experiment(
     fun disconnect() = execute { release(); emit("Отключено") }
 
     private fun release() {
+        shownReviewId = null
         if (voiceBusy || voice != null) cancelVoice("Запись отменена: отключение", false)
         cancelTimer()
         cancelFrameWait()
