@@ -140,6 +140,16 @@ class G2Experiment(
                                 else if (eventType == BleProtocol.EVENT_DOUBLE_CLICK) cancelVoice("Запись отменена")
                                 return@execute
                             }
+                            // Display control remains available on voice status/review pages.
+                            // These pages consume other gestures below, including while the
+                            // agent is running; a double tap must not disappear in that branch.
+                            if (eventType == BleProtocol.EVENT_DOUBLE_CLICK) {
+                                if (eventType == lastGestureType && receivedAt - lastGestureAt < 300) return@execute
+                                lastGestureType = eventType
+                                lastGestureAt = receivedAt
+                                if (!sleeping) sleepDisplay() else showFrame()
+                                return@execute
+                            }
                             val review = pagerSource?.invoke()
                             if (review?.voiceReviewId != null) {
                                 if (deliveredId != review.id || frameWait != null || sleeping) {
