@@ -100,6 +100,7 @@ class VideoActivity : Activity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         // This activity is a bottom-navigation destination, not a pushed detail page.
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
@@ -115,10 +116,7 @@ class VideoActivity : Activity() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(MigiPalette.background)
-            setOnApplyWindowInsetsListener { view, insets ->
-                val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
-            }
+            applyMigiSystemInsets()
         }
         setContentView(root)
         onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {

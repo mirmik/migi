@@ -30,9 +30,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
@@ -783,11 +781,7 @@ class MainActivity : Activity() {
             })
             addView(bottomNavigation, matchWidth())
         }
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(0, bars.top, 0, bars.bottom)
-            insets
-        }
+        root.applyMigiSystemInsets()
         setContentView(root)
         showTab(selectedTab)
     }

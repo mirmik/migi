@@ -39,6 +39,19 @@ internal object MigiPalette {
 
 internal fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
+/** The screen owns system-bar padding; children must not add the same insets again. */
+internal fun View.applyMigiSystemInsets() {
+    androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
+        val types = androidx.core.view.WindowInsetsCompat.Type.systemBars() or
+            androidx.core.view.WindowInsetsCompat.Type.displayCutout()
+        val bars = insets.getInsets(types)
+        view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        androidx.core.view.WindowInsetsCompat.Builder(insets)
+            .setInsets(types, androidx.core.graphics.Insets.NONE)
+            .build()
+    }
+}
+
 internal fun roundedDrawable(
 	color: Int,
 	radius: Float,
