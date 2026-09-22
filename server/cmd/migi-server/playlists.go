@@ -37,7 +37,7 @@ type savedPlaylist struct {
 
 // savedPlaylistSummary is the deliberately narrow view exposed to paired
 // phones. Track and artwork IDs remain private until the phone chooses a
-// playlist and receives its authenticated, device-targeted queue event.
+// playlist and requests its authenticated manifest or device-targeted queue event.
 type savedPlaylistSummary struct {
 	Kind       string    `json:"kind"`
 	ID         string    `json:"id"`
@@ -63,6 +63,7 @@ func (s *mediaStore) savedPlaylistDeviceRoutes(
 	wrap func(http.Handler) http.Handler,
 ) {
 	mux.Handle("GET /v1/playlists", wrap(http.HandlerFunc(s.listSavedPlaylistsForDeviceHandler)))
+	mux.Handle("GET /v1/playlists/{playlistID}/manifest", wrap(http.HandlerFunc(s.savedPlaylistManifestForDeviceHandler)))
 	mux.Handle("POST /v1/playlists/{playlistID}/queue", wrap(http.HandlerFunc(s.queueSavedPlaylistForDeviceHandler)))
 }
 
@@ -89,6 +90,37 @@ func (s *mediaStore) listSavedPlaylistsForDeviceHandler(w http.ResponseWriter, _
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, summaries)
+}
+
+// Reading metadata does not publish a queue or fetch any media bytes.
+func (s *mediaStore) savedPlaylistManifestForDeviceHandler(w http.ResponseWriter, r *http.Request) {
+	device, ok := r.Context().Value(deviceContextKey{}).(authenticatedDevice)
+	if !ok {
+		http.Error(w, "device authentication required", http.StatusUnauthorized)
+		return
+	}
+	playlist, err := s.getSavedPlaylist(r.PathValue("playlistID"))
+	if errors.Is(err, os.ErrNotExist) {
+		http.Error(w, "saved playlist does not exist", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "failed to read saved playlist", http.StatusInternalServerError)
+		return
+	}
+	manifest, err := s.savedPlaylistManifest(r.Context(), playlist, device.ID)
+	if err != nil {
+		http.Error(w, "saved playlist media is unavailable", http.StatusConflict)
+		return
+	}
+	body, err := json.Marshal(manifest)
+	if err != nil || len(body) > maxPlaybackManifest {
+		http.Error(w, "saved playlist metadata exceeds the limit", http.StatusRequestEntityTooLarge)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
 }
 
 func (s *mediaStore) queueSavedPlaylistForDeviceHandler(w http.ResponseWriter, r *http.Request) {
@@ -331,7 +363,7 @@ func (s *mediaStore) savedPlaylistManifest(
 	deviceID string,
 ) (playbackQueueManifest, error) {
 	manifest := playbackQueueManifest{
-		Version: 1, Name: playlist.Name, DeviceID: deviceID,
+		Version: 1, Name: playlist.Name, DeviceID: deviceID, PlaylistID: playlist.ID,
 		Items: make([]playbackMediaReference, 0, len(playlist.MediaIDs)),
 	}
 	if deviceID != "" {

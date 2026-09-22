@@ -102,7 +102,16 @@ and never replaces the music queue.
 On the phone open Music → Video, or tap the video notification. Open a playlist,
 then tap an episode to play from a small buffer or its verified local copy.
 Use **⋮ → Скачать для офлайна / Продолжить скачивание** for a full copy.
-The top **Каталог** action adds a saved server collection.
+**Все видео** is the live saved-playlist catalog, refreshed when opened and periodically
+while browsing. Saving a video playlist is enough to make it appear; `start` is
+optional and sends a notification. Opening a collection reads its manifest without
+publishing a queue or fetching media bytes. Deleted playlists disappear after a
+successful refresh. **На телефоне** shows full and partial local downloads,
+including files whose playlists were deleted; deletion never removes these files,
+external subtitles, or watch positions. If the server is unavailable, the last
+catalog and previously opened collection manifests remain cached. **Обновить**
+retries synchronization. New one-off `queue` sends appear under **От агента**;
+legacy received history is not treated as catalog membership.
 Seeking online fetches the required portion directly. Keep Migi open during downloads. Complete verified videos are stored
 privately for offline playback and stay until manually deleted. The player
 remembers position and completion, pauses when backgrounded, and offers embedded

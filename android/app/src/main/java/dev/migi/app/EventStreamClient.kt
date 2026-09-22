@@ -82,6 +82,13 @@ internal object NativeQuicClient {
         playlistID: String,
     ): String
 
+    external fun getSavedPlaylist(
+        endpoint: String,
+        certificatePin: String,
+        credential: String,
+        playlistID: String,
+    ): String
+
     external fun uploadSharedFile(
         endpoint: String,
         certificatePin: String,

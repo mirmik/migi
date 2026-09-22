@@ -73,6 +73,17 @@ func TestVideoCatalogQueuesRemainSeparateFromMusic(t *testing.T) {
 			t.Fatalf("video replaced audio queue: %s", event.Kind)
 		}
 	}
+	var direct, savedQueue playbackQueueManifest
+	if err := json.Unmarshal([]byte(replay[0].Body), &direct); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(replay[1].Body), &savedQueue); err != nil {
+		t.Fatal(err)
+	}
+	if direct.PlaylistID != "" || savedQueue.PlaylistID != saved.ID || !strings.Contains(replay[0].Body, `"playlist_id":""`) {
+		t.Fatal("queue does not distinguish saved playlists from direct sends")
+	}
+
 	summaries := httptest.NewRecorder()
 	store.listSavedPlaylistsForDeviceHandler(summaries, httptest.NewRequest("GET", "/v1/playlists", nil))
 	if !strings.Contains(summaries.Body.String(), `"kind":"video"`) {

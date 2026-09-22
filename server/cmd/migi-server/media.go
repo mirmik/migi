@@ -96,11 +96,12 @@ type playbackArtworkReference struct {
 }
 
 type playbackQueueManifest struct {
-	Version  int                       `json:"version"`
-	Name     string                    `json:"name"`
-	DeviceID string                    `json:"device_id,omitempty"`
-	Artwork  *playbackArtworkReference `json:"artwork,omitempty"`
-	Items    []playbackMediaReference  `json:"items"`
+	PlaylistID string                    `json:"playlist_id"`
+	Version    int                       `json:"version"`
+	Name       string                    `json:"name"`
+	DeviceID   string                    `json:"device_id,omitempty"`
+	Artwork    *playbackArtworkReference `json:"artwork,omitempty"`
+	Items      []playbackMediaReference  `json:"items"`
 }
 
 type mediaStore struct {

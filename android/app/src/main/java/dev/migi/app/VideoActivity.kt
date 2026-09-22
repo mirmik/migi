@@ -11,7 +11,6 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.Toast
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import android.content.pm.ActivityInfo
@@ -63,8 +62,15 @@ class VideoActivity : Activity() {
     private val progress = mutableMapOf<PlaybackTrack, TextView>()
     private var downloadStatus: TextView? = null
     private var catalogButton: MaterialButton? = null
+    private var phoneOnly = false
+    private var refreshingCatalog = false
+    private var loadingCollection: String? = null
+    private var catalogNotice: String? = null
+    private var collectionNotice: String? = null
+    private var lastCatalogRefresh = 0L
     private val libraryListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == "entries") runOnUiThread { if (current == null) showLibrary() }
+        if (key in setOf("entries", "catalog")) runOnUiThread { if (current == null) showLibrary() }
+        if (key == "event") runOnUiThread { refreshCatalog() }
     }
     private val tick = object : Runnable {
         override fun run() {
@@ -80,6 +86,7 @@ class VideoActivity : Activity() {
             }
             if (player?.let { it.playWhenReady && it.playbackState in listOf(Player.STATE_BUFFERING, Player.STATE_READY) } == true || VideoDownloads.active != null) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (current == null && android.os.SystemClock.elapsedRealtime() - lastCatalogRefresh > 30_000) refreshCatalog(force = false)
             savePosition(); handler.postDelayed(this, 1000)
         }
     }
@@ -88,6 +95,7 @@ class VideoActivity : Activity() {
         library = VideoLibrary(this)
         restoreID = savedInstanceState?.getString("video")
         selectedCollection = savedInstanceState?.getString("collection")
+        phoneOnly = savedInstanceState?.getBoolean("phone-only") ?: false
         pendingSubtitleID = savedInstanceState?.getString("subtitle-picker")
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -112,13 +120,14 @@ class VideoActivity : Activity() {
     override fun onStart() {
         super.onStart()
         restoreID?.let { id -> library.entries().find { it.track.id == id }?.track?.let { play(it, false) } }
-        restoreID = null; handler.post(tick)
+        restoreID = null; refreshCatalog(); handler.post(tick)
     }
     override fun onPause() { savePosition(); player?.pause(); super.onPause() }
     override fun onStop() { restoreID = current?.id; releasePlayer(); handler.removeCallbacks(tick); super.onStop() }
     override fun onSaveInstanceState(outState: Bundle) {
         savePosition(); outState.putString("video", current?.id ?: restoreID)
         outState.putString("collection", selectedCollection)
+        outState.putBoolean("phone-only", phoneOnly)
         outState.putBoolean("fullscreen", fullscreen)
         outState.putInt("previous-orientation", orientationBeforeFullscreen)
         outState.putString("subtitle-picker", pendingSubtitleID); super.onSaveInstanceState(outState)
@@ -218,14 +227,16 @@ class VideoActivity : Activity() {
         progress.clear(); root.removeAllViews()
         val bar = toolbar("Видео") { leaveLibrary() }
         catalogButton = MaterialButton(this).apply {
-            text = "Каталог"; contentDescription = "Каталог видео на сервере"
+            text = if (refreshingCatalog) "Загрузка…" else "Обновить"
+            contentDescription = "Обновить видеотеку"
+            isEnabled = !refreshingCatalog
             isAllCaps = false
             applyMigiText(14f, MigiPalette.primary, Typeface.BOLD)
             backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
             insetTop = 0; insetBottom = 0; cornerRadius = dp(16)
             minimumWidth = 0; minWidth = 0
             setPadding(dp(12), 0, dp(12), 0)
-            setOnClickListener { loadCollections() }
+            setOnClickListener { refreshCatalog() }
             bar.addView(this, LinearLayout.LayoutParams(-2, dp(48)))
         }
         val content = column(20).apply { setPadding(dp(20), dp(8), dp(20), dp(20)) }
@@ -233,17 +244,41 @@ class VideoActivity : Activity() {
         downloadStatus = text(content, "", 13f, MigiPalette.muted).apply {
             visibility = View.GONE; setPadding(0, 0, 0, dp(16))
         }
-        val entries = library.entries()
-        if (entries.isEmpty()) {
-            val empty = card(content)
-            text(empty, "Что посмотрим?", 22f, bold = true)
-            gap(empty, 10)
-            text(empty, "Откройте каталог или попросите агента прислать сериал. Серии появятся здесь.", 15f, MigiPalette.muted)
-        }
-        val collections = entries.groupBy { it.collection }
-        if (selectedCollection !in collections) selectedCollection = null
+        val catalog = library.catalog()
+        if (selectedCollection != null && selectedCollection != RECEIVED && catalog != null &&
+            catalog.none { it.id == selectedCollection }) selectedCollection = null
         if (selectedCollection == null) {
-            for ((name, episodes) in collections) {
+            val tabs = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+            listOf("Все видео", "На телефоне").forEachIndexed { index, label ->
+                tabs.addView(MaterialButton(this).apply {
+                    text = label; isAllCaps = false; cornerRadius = dp(18)
+                    val selected = phoneOnly == (index == 1)
+                    backgroundTintList = ColorStateList.valueOf(if (selected) MigiPalette.primary else MigiPalette.surfaceHigh)
+                    applyMigiText(14f, if (selected) MigiPalette.onPrimary else MigiPalette.muted, Typeface.BOLD)
+                    setOnClickListener { phoneOnly = index == 1; showLibrary() }
+                }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { if (index > 0) marginStart = dp(8) })
+            }
+            content.addView(tabs, width())
+            gap(content, 16)
+        }
+        val notice = if (selectedCollection == null) catalogNotice else collectionNotice
+        if (!phoneOnly && notice != null) {
+            text(content, notice, 13f, MigiPalette.muted); gap(content, 16)
+        }
+        val received = library.received()
+        if (selectedCollection == null && !phoneOnly) {
+            val cards = VideoCatalogView.collections(catalog.orEmpty(), received)
+            if (cards.isEmpty()) {
+                val empty = card(content)
+                text(empty, if (refreshingCatalog) "Загружаем видеотеку…" else "Что посмотрим?", 22f, bold = true)
+                gap(empty, 10)
+                text(empty, if (catalog == null) "Подключитесь к серверу, чтобы увидеть сериалы и фильмы. Скачанные видео — во вкладке «На телефоне»."
+                    else "Попросите агента добавить сериал или фильм. Сохранённые плейлисты появятся здесь автоматически.", 15f, MigiPalette.muted)
+            }
+            for (collection in cards) {
+                val name = collection.name
+                val episodes = if (collection.id == RECEIVED) received else
+                    library.playlist(collection.id)?.items.orEmpty().map { VideoEntry(it, name) }
                 val body = LinearLayout(this).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     minimumHeight = dp(88)
@@ -258,7 +293,7 @@ class VideoActivity : Activity() {
                 text(labels, name, 16f, bold = true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
                 gap(labels, 6)
                 val downloaded = episodes.count { VideoDownloads.available(this, it.track) }
-                text(labels, "${episodes.size} видео" + if (downloaded > 0) " · Скачано: $downloaded" else "", 12f, MigiPalette.muted)
+                text(labels, "${collection.count} видео" + if (downloaded > 0) " · Скачано: $downloaded" else "", 12f, MigiPalette.muted)
                 body.addView(labels, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
                 body.addView(ImageView(this).apply {
                     setImageResource(R.drawable.ic_back); rotation = 180f
@@ -269,12 +304,25 @@ class VideoActivity : Activity() {
                     applyMigiCard(radiusDp = 18, stroke = false)
                     isFocusable = true
                     addView(body)
-                    setOnClickListener { selectedCollection = name; showLibrary() }
+                    setOnClickListener { openCollection(collection.id) }
                 }, width().apply { bottomMargin = dp(12) })
             }
             return
         }
-        for ((name, episodes) in collections.filterKeys { it == selectedCollection }) {
+        val id = selectedCollection
+        val name = when { phoneOnly -> "На телефоне"; id == RECEIVED -> "От агента"
+            else -> catalog.orEmpty().find { it.id == id }?.name ?: library.playlist(id.orEmpty())?.name.orEmpty() }
+        val episodes = when { phoneOnly -> VideoCatalogView.local(library.entries()) { VideoDownloads.bytes(this, it) > 0 }
+            id == RECEIVED -> received
+            else -> library.playlist(id.orEmpty())?.items.orEmpty().map { VideoEntry(it, name) } }
+        run {
+            if (episodes.isEmpty()) {
+                val empty = card(content)
+                text(empty, if (phoneOnly) "Здесь будут скачанные видео" else if (loadingCollection == id) "Загружаем серии…" else "Список серий пока не загружен", 20f, bold = true)
+                gap(empty, 10)
+                text(empty, if (phoneOnly) "В меню серии выберите «Скачать для офлайна»." else "Подключитесь к серверу и нажмите «Обновить».", 15f, MigiPalette.muted)
+                return
+            }
             text(content, name, 24f, bold = true)
             gap(content, 8)
             text(content, "${episodes.size} видео", 13f, MigiPalette.muted)
@@ -336,7 +384,7 @@ class VideoActivity : Activity() {
         if (bytes > 0 && VideoDownloads.active != track.id) {
             actions.add("Удалить с телефона" to {
                 dialog().setTitle("Удалить с телефона?")
-                    .setMessage("Видео останется на сервере. Его можно будет посмотреть онлайн или скачать снова.")
+                    .setMessage("Локальная копия будет удалена. Для повторного скачивания файл должен оставаться доступен на сервере.")
                     .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ ->
                         runCatching { VideoDownloads.remove(this, track) }.onFailure { showError(it.message) }
                         showLibrary()
@@ -356,33 +404,68 @@ class VideoActivity : Activity() {
         dialog().setTitle("Не получилось").setMessage(message ?: "Попробуйте ещё раз")
             .setPositiveButton("ОК", null).show()
     }
-    private fun loadCollections() {
-        val request = ++generation
+    private fun connectionStamp(): List<String?> = listOf(
+        DeviceIdentity.get(this),
+        getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE).getString(MainActivity.KEY_ENDPOINT, null),
+        getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE).getString(MainActivity.KEY_CERTIFICATE_PIN, null),
+        CredentialStore(this).load(),
+    )
+    private fun refreshCatalog(force: Boolean = true) {
+        if (refreshingCatalog || isDestroyed) return
+        refreshingCatalog = true
+        lastCatalogRefresh = android.os.SystemClock.elapsedRealtime()
+        val identity = connectionStamp()
         catalogButton?.apply { isEnabled = false; text = "Загрузка…" }
         executor.execute {
             val result = runCatching { SavedPlaylistClient(applicationContext).list().filter { it.kind == "video" } }
             runOnUiThread {
-                if (isDestroyed || generation != request) return@runOnUiThread
-                catalogButton?.apply { isEnabled = true; text = "Каталог" }
+                if (isDestroyed) return@runOnUiThread
+                refreshingCatalog = false
+                if (identity != connectionStamp()) return@runOnUiThread
+                val previousNotice = catalogNotice
+                var changed = false
                 result.onSuccess { collections ->
-                    if (collections.isEmpty()) {
-                        dialog().setTitle("На сервере пока нет видео")
-                            .setMessage("Попросите агента проиндексировать сериал или фильм.").setPositiveButton("Понятно", null).show()
-                    } else dialog().setTitle("Сериалы и фильмы")
-                        .setItems(collections.map { "${it.name} · ${it.trackCount}" }.toTypedArray()) { _, which ->
-                            executor.execute {
-                                val started = runCatching { SavedPlaylistClient(applicationContext).start(collections[which].id) }
-                                runOnUiThread {
-                                    if (!isDestroyed && generation == request) started.onSuccess {
-                                        Toast.makeText(this, "Обновляем видеотеку…", Toast.LENGTH_SHORT).show()
-                                    }.onFailure { showError(it.message) }
-                                }
-                            }
-                        }.setNegativeButton("Закрыть", null).show()
-                }.onFailure { showError(it.message) }
+                    catalogNotice = null
+                    changed = library.catalog() != collections
+                    library.saveCatalog(collections)
+                    if (force || changed) selectedCollection?.takeIf { it != RECEIVED && collections.any { p -> p.id == it } }
+                        ?.let { loadCollection(it) }
+                }.onFailure {
+                    catalogNotice = if (library.catalog() == null) "Не удалось связаться с сервером."
+                        else "Сервер недоступен · показан сохранённый каталог"
+                }
+                catalogButton?.apply { isEnabled = true; text = "Обновить" }
+                if (current == null && (changed || catalogNotice != previousNotice)) showLibrary()
             }
         }
     }
+    private fun openCollection(id: String) {
+        selectedCollection = id
+        collectionNotice = null
+        if (id != RECEIVED) loadCollection(id)
+        showLibrary()
+    }
+    private fun loadCollection(id: String) {
+        if (loadingCollection == id || isDestroyed) return
+        loadingCollection = id
+        val identity = connectionStamp()
+        executor.execute {
+            val result = runCatching { SavedPlaylistClient(applicationContext).manifest(id) }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (loadingCollection == id) loadingCollection = null
+                if (identity != connectionStamp()) return@runOnUiThread
+                val saved = result.mapCatching { library.savePlaylist(id, it) }
+                if (selectedCollection == id) {
+                    collectionNotice = if (saved.isSuccess) null else
+                        if (library.playlist(id) == null) "Не удалось загрузить список серий. Попробуйте обновить."
+                        else "Не удалось обновить серии · показана сохранённая версия"
+                    if (current == null) showLibrary()
+                }
+            }
+        }
+    }
+    companion object { private const val RECEIVED = "received" }
     private fun play(track: PlaybackTrack, autoplay: Boolean = true) {
         val offline = VideoDownloads.available(this, track)
         generation++; releasePlayer(); current = track
@@ -398,7 +481,9 @@ class VideoActivity : Activity() {
         root.addView(view, width())
         val details = column(20)
         root.addView(ScrollView(this).apply { addView(details); isFillViewport = true }, width(0).apply { weight = 1f })
-        text(details, library.entries().firstOrNull { it.track.id == track.id }?.collection.orEmpty(), 12f, MigiPalette.primary, bold = true)
+        val collectionName = library.catalog()?.firstOrNull { it.id == selectedCollection }?.name
+            ?: library.entries().firstOrNull { it.track.id == track.id }?.collection.orEmpty()
+        text(details, collectionName, 12f, MigiPalette.primary, bold = true)
         gap(details, 10)
         text(details, track.title, 24f, bold = true)
         gap(details, 12)

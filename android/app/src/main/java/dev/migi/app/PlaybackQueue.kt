@@ -32,6 +32,7 @@ data class PlaybackQueue(
 	val deviceID: String,
 	val items: List<PlaybackTrack>,
 	val artwork: PlaybackArtwork? = null,
+    val playlistID: String? = null,
 )
 
 internal object PlaybackQueueCodec {
@@ -53,10 +54,12 @@ internal object PlaybackQueueCodec {
 			deviceID = deviceID,
 			items = items,
 			artwork = manifest.optJSONObject("artwork")?.let(::parseArtwork),
+            playlistID = if (manifest.has("playlist_id")) manifest.getString("playlist_id") else null,
 		), video)
 	}
 
 	internal fun validate(queue: PlaybackQueue, video: Boolean = false): PlaybackQueue {
+		require(queue.playlistID.isNullOrEmpty() || MEDIA_ID.matches(queue.playlistID)) { "Playlist ID is invalid" }
 		require(queue.eventID > 0) { "Playback queue event ID is invalid" }
 		require(validText(queue.name, MAX_QUEUE_NAME_LENGTH)) { "Playback queue name is invalid" }
 		require(queue.deviceID.isEmpty() || DEVICE_ID.matches(queue.deviceID)) { "Playback target is invalid" }

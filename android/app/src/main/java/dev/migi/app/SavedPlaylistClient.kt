@@ -27,6 +27,14 @@ internal class SavedPlaylistClient(private val context: Context) {
         ))
     }
 
+    fun manifest(playlistID: String): String {
+        require(MEDIA_ID.matches(playlistID)) { "Saved playlist ID is malformed" }
+        val config = config()
+        return checkResponse(NativeQuicClient.getSavedPlaylist(
+            config.endpoint, config.pin, config.credential, playlistID,
+        ))
+    }
+
     fun start(playlistID: String): Long {
         require(MEDIA_ID.matches(playlistID)) { "Saved playlist ID is malformed" }
         val config = config()

@@ -454,6 +454,34 @@ func TestPairedDeviceCanListAndQueueSavedPlaylistsOnlyForItself(t *testing.T) {
 		t.Fatalf("device playlist list leaked curator media details: %s", listBody)
 	}
 
+	manifestPath := "/v1/playlists/" + playlist.ID + "/manifest"
+	deniedManifest := httptest.NewRecorder()
+	public.ServeHTTP(deniedManifest, httptest.NewRequest(http.MethodGet, manifestPath, nil))
+	if deniedManifest.Code != http.StatusUnauthorized {
+		t.Fatal("unauthenticated manifest was readable")
+	}
+	readManifest := httptest.NewRequest(http.MethodGet, manifestPath, nil)
+	readManifest.Header.Set("Authorization", "Bearer "+phoneToken)
+	manifestResponse := httptest.NewRecorder()
+	public.ServeHTTP(manifestResponse, readManifest)
+	var details playbackQueueManifest
+	if manifestResponse.Code != http.StatusOK {
+		t.Fatal(manifestResponse.Body.String())
+	}
+	if err := json.Unmarshal(manifestResponse.Body.Bytes(), &details); err != nil {
+		t.Fatal(err)
+	}
+	if details.PlaylistID != playlist.ID || details.DeviceID != "phone-1" || len(details.Items) != 1 || details.Items[0].ID != track.ID {
+		t.Fatalf("wrong playlist details: %#v", details)
+	}
+	beforeQueue, _, err := broker.Subscribe(t.Context(), 0)
+	if err != nil || len(beforeQueue) != 0 {
+		t.Fatal("browsing a playlist published an event")
+	}
+	if strings.Contains(manifestResponse.Body.String(), "curator") {
+		t.Fatal("manifest exposed origin identity")
+	}
+
 	foreignTarget := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/playlists/"+playlist.ID+"/queue",
@@ -487,6 +515,22 @@ func TestPairedDeviceCanListAndQueueSavedPlaylistsOnlyForItself(t *testing.T) {
 	if manifest.DeviceID != "phone-1" || len(manifest.Items) != 1 || manifest.Items[0].ID != track.ID {
 		t.Fatalf("device playlist manifest = %#v", manifest)
 	}
+	remove := httptest.NewRecorder()
+	ingest.ServeHTTP(remove, httptest.NewRequest(http.MethodDelete, "/v1/playlists/"+playlist.ID, nil))
+	if remove.Code != http.StatusNoContent {
+		t.Fatal(remove.Body.String())
+	}
+	afterDelete := httptest.NewRecorder()
+	public.ServeHTTP(afterDelete, list.Clone(t.Context()))
+	if strings.TrimSpace(afterDelete.Body.String()) != "[]" {
+		t.Fatalf("deleted playlist still listed: %s", afterDelete.Body.String())
+	}
+	deletedManifest := httptest.NewRecorder()
+	public.ServeHTTP(deletedManifest, readManifest.Clone(t.Context()))
+	if deletedManifest.Code != http.StatusNotFound {
+		t.Fatalf("deleted manifest returned %d", deletedManifest.Code)
+	}
+
 }
 
 func TestSavedPlaylistAcceptsRealisticFortyOneTrackAlbum(t *testing.T) {
