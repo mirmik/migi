@@ -11,6 +11,7 @@ internal object MigiNavigation {
         10_002 -> 1
         10_003 -> 2
         10_004 -> 3
+        VIDEO -> MainActivity.TAB_VIDEO
         else -> null
     }
 

@@ -100,6 +100,7 @@ sending to all paired phones matches the request. Video uses `video.queue.set`
 and never replaces the music queue.
 
 On the phone open **Видео** in the bottom navigation, or tap the video notification.
+Video shares the same app screen and bottom navigation as Music and Files.
 The permanent **Плеер** tab contains the current video and its episode list;
 **Плейлисты** contains the catalog. Opening a playlist switches to **Плеер**,
 with its current or first episode paused. Tap an episode to play from a small
@@ -130,7 +131,8 @@ QUIC, 2 MiB verified blocks and a 32 MiB in-memory LRU cache per player. It retr
 transient failures while buffering; after repeated failures the error offers retry.
 The fullscreen button switches to landscape without recreating the player or
 losing its buffer; leaving fullscreen restores the previous orientation policy.
-Closing the player cancels its active request. Streaming does not mark a video
+Switching to another app section pauses video while keeping its player and buffer.
+Backgrounding the app releases the player and cancels its active request. Streaming does not mark a video
 as downloaded: offline playback still requires the fully verified file.
 
 The agent does not receive phone watch history in this version. For "next episode",

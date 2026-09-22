@@ -25,7 +25,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -45,7 +46,7 @@
 
         <activity android:name=".AgentChatActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".VideoActivity" android:exported="false"
-            android:configChanges="orientation|screenSize" />
+            android:theme="@android:style/Theme.NoDisplay" />
         <activity android:name=".DocumentsActivity" android:exported="false" />
         <activity android:name=".G2DisplaySettingsActivity" android:exported="false" />
         <activity android:name=".G2VoiceRecordingsActivity" android:exported="false" />

@@ -92,7 +92,11 @@ class MainActivity : Activity() {
     private var trackStartRequest = 0L
     private val playlistOpenGeneration = AtomicLong()
     private var selectedTab = TAB_STATUS
-    private var tabPages: List<ScrollView> = emptyList()
+    private var tabPages: List<View> = emptyList()
+    private var videoPanel: VideoPanel? = null
+    private var savedVideoState: Bundle? = null
+    private var videoFullscreen = false
+    private var foregroundStarted = false
     private var playbackTrackRows: List<PlaybackTrackRow> = emptyList()
     private var pendingDownload: SharedFile? = null
     private val releaseExecutor = Executors.newSingleThreadExecutor()
@@ -141,14 +145,23 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         musicPlaylistsOpen = savedInstanceState?.getBoolean("music-playlists") ?: false
+        savedVideoState = savedInstanceState?.getBundle("video-panel")
         buildContentView()
         showMusicPage(musicPlaylistsOpen)
         handlePairingIntent(intent)
         handleSharedFileIntent(intent)
         openRequestedTab(intent)
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+        ) {
+            if (selectedTab == TAB_VIDEO) {
+                if (videoPanel?.handleBack() != true) showTab(TAB_STATUS)
+            } else finish()
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBundle("video-panel", videoPanel?.saveState() ?: savedVideoState)
         outState.putBoolean("music-playlists", musicPlaylistsOpen)
         outState.putInt(STATE_SELECTED_TAB, selectedTab)
         super.onSaveInstanceState(outState)
@@ -164,6 +177,8 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        foregroundStarted = true
+        if (selectedTab == TAB_VIDEO) videoPanel?.start()
         ReleaseInstaller.foregroundActivity = this
         preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
         releaseChanges = ReleaseChanges.subscribe(::refreshReleases)
@@ -178,7 +193,19 @@ class MainActivity : Activity() {
         playbackHandler.post(playbackProgress)
     }
 
+    override fun onPause() {
+        videoPanel?.pause()
+        super.onPause()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        videoPanel?.onConfigurationChanged()
+    }
+
     override fun onStop() {
+        foregroundStarted = false
+        videoPanel?.stop()
         releaseChanges?.close()
         releaseChanges = null
         if (ReleaseInstaller.foregroundActivity === this) {
@@ -191,6 +218,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        videoPanel?.destroy()
         releaseExecutor.shutdownNow()
         artworkRefreshGeneration.incrementAndGet()
         artworkExecutor.shutdownNow()
@@ -741,6 +769,7 @@ class MainActivity : Activity() {
                 addView(page, matchWidth())
             }
         }
+        tabPages = tabPages + FrameLayout(this)
         val pageHost = FrameLayout(this).apply {
             for (page in tabPages) {
                 addView(
@@ -754,14 +783,8 @@ class MainActivity : Activity() {
         }
         miniPlayer = buildMiniPlayer()
         bottomNavigation = MigiNavigation.create(this, NAV_HOME) { id ->
-            if (id == MigiNavigation.VIDEO) {
-                startActivity(Intent(this, VideoActivity::class.java),
-                    android.app.ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle())
-                false
-            } else {
-                MigiNavigation.mainTab(id)?.let(::displayTab)
-                true
-            }
+            MigiNavigation.mainTab(id)?.let(::displayTab)
+            true
         }.apply {
             setOnItemReselectedListener { item ->
                 MigiNavigation.mainTab(item.itemId)?.let(::displayTab)
@@ -795,7 +818,24 @@ class MainActivity : Activity() {
     }
 
     private fun displayTab(index: Int) {
-        selectedTab = index.coerceIn(tabPages.indices)
+        val nextTab = index.coerceIn(tabPages.indices)
+        if (selectedTab == TAB_VIDEO && nextTab != TAB_VIDEO) videoPanel?.hide()
+        selectedTab = nextTab
+        if (selectedTab == TAB_VIDEO) {
+            if (videoPanel == null) {
+                val panel = VideoPanel(this) { fullscreen ->
+                    videoFullscreen = fullscreen
+                    bottomNavigation.visibility = if (fullscreen) View.GONE else View.VISIBLE
+                    refreshPlaybackControls()
+                }
+                videoPanel = panel
+                (tabPages[TAB_VIDEO] as FrameLayout).addView(panel.create(savedVideoState),
+                    FrameLayout.LayoutParams(-1, -1))
+                savedVideoState = null
+            }
+            if (foregroundStarted) videoPanel?.start()
+        }
+        refreshPlaybackControls()
         tabPages.forEachIndexed { tabIndex, page ->
             page.visibility = if (tabIndex == selectedTab) View.VISIBLE else View.GONE
         }
@@ -1115,7 +1155,7 @@ class MainActivity : Activity() {
         playbackHeroLabel.setText(if (hasMedia) R.string.now_playing_label else R.string.playlist_ready_label)
         miniTitle.text = sessionMetadata?.title?.toString() ?: title
         miniArtist.text = sessionMetadata?.artist?.toString() ?: activeQueue?.name ?: artist
-        miniPlayer.visibility = if (sessionHasMedia) View.VISIBLE else View.GONE
+        miniPlayer.visibility = if (sessionHasMedia && selectedTab != TAB_VIDEO && !videoFullscreen) View.VISIBLE else View.GONE
         playbackStopButton.visibility = if (hasMedia) View.VISIBLE else View.GONE
         val duration = controller?.duration?.takeIf { hasMedia && it > 0 && it != C.TIME_UNSET } ?: 0L
         val position = controller?.currentPosition?.coerceAtLeast(0L)?.coerceAtMost(duration) ?: 0L
@@ -1398,6 +1438,7 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 41) { videoPanel?.onActivityResult(requestCode, resultCode, data); return }
         when (requestCode) {
             REQUEST_CHOOSE_FILE,
             REQUEST_CHOOSE_PHOTO -> handleUploadPickerResult(resultCode, data)
@@ -1929,6 +1970,7 @@ class MainActivity : Activity() {
         const val DEFAULT_AUDIO_VOLUME = 100
         const val EXTRA_OPEN_TAB = "dev.migi.app.extra.OPEN_TAB"
         const val TAB_MUSIC = 1
+        const val TAB_VIDEO = 5
         private const val REQUEST_CHOOSE_FILE = 20
         private const val REQUEST_SAVE_FILE = 21
         private const val REQUEST_CHOOSE_PHOTO = 22
@@ -1946,6 +1988,7 @@ class MainActivity : Activity() {
             NAV_FILES,
             NAV_UPDATES,
             NAV_SETTINGS,
+            MigiNavigation.VIDEO,
         )
 
         private fun normalizePin(raw: String?): String? {

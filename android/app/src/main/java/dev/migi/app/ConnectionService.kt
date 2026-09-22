@@ -202,7 +202,10 @@ class ConnectionService : Service() {
 		if (event.kind == PlaybackQueueCodec.VIDEO_EVENT_KIND) {
             val accepted = VideoLibrary(this).accept(event)
             if (!accepted) return
-            val pending = PendingIntent.getActivity(this, 4000, Intent(this, VideoActivity::class.java),
+            val intent = Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_OPEN_TAB, MainActivity.TAB_VIDEO)
+            val pending = PendingIntent.getActivity(this, 4000, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val notification = Notification.Builder(this, EVENT_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_media_play).setContentTitle("Видео готово")
