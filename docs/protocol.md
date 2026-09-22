@@ -503,3 +503,9 @@ discards the prefix, and relays the suffix. This retains compatibility with
 existing origin clients and saves phone bandwidth, but does not save origin
 bandwidth. Android hashes the existing prefix and received suffix, checks the
 full digest against the event manifest, then commits its private file.
+
+Android can additionally import a local ASS/SSA, SRT or VTT subtitle file up to
+4 MiB using the document picker. The bounded, atomically replaced private copy
+is associated with the video's digest and restored when it reopens. It does
+not change the media manifest or the verified video bytes. Origin-sidecar
+indexing/delivery is separate future work.

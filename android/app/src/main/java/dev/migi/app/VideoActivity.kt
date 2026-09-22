@@ -2,6 +2,8 @@ package dev.migi.app
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
+import android.provider.OpenableColumns
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
@@ -21,6 +23,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -35,6 +38,7 @@ class VideoActivity : Activity() {
     private var restoreID: String? = null
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
+    private var pendingSubtitleID: String? = null
     private var fullscreen = false
     private var playerView: PlayerView? = null
     private var generation = 0
@@ -60,6 +64,7 @@ class VideoActivity : Activity() {
         super.onCreate(savedInstanceState)
         library = VideoLibrary(this)
         restoreID = savedInstanceState?.getString("video")
+        pendingSubtitleID = savedInstanceState?.getString("subtitle-picker")
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setOnApplyWindowInsetsListener { view, insets ->
@@ -84,7 +89,8 @@ class VideoActivity : Activity() {
     override fun onPause() { savePosition(); player?.pause(); super.onPause() }
     override fun onStop() { restoreID = current?.id; releasePlayer(); handler.removeCallbacks(tick); super.onStop() }
     override fun onSaveInstanceState(outState: Bundle) {
-        savePosition(); outState.putString("video", current?.id ?: restoreID); super.onSaveInstanceState(outState)
+        savePosition(); outState.putString("video", current?.id ?: restoreID)
+        outState.putString("subtitle-picker", pendingSubtitleID); super.onSaveInstanceState(outState)
     }
     override fun onDestroy() {
         generation++; executor.shutdownNow()
@@ -191,8 +197,21 @@ class VideoActivity : Activity() {
         playerView = view
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
         button(root, "Звук и субтитры") {
-            AlertDialog.Builder(this).setItems(arrayOf("Звуковая дорожка", "Субтитры")) { _, which ->
-                chooseTracks(if (which == 0) C.TRACK_TYPE_AUDIO else C.TRACK_TYPE_TEXT)
+            val options = mutableListOf("Звуковая дорожка", "Субтитры", "Выбрать файл субтитров")
+            if (library.subtitle(track) != null) options.add("Убрать внешний файл субтитров")
+            AlertDialog.Builder(this).setItems(options.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> chooseTracks(C.TRACK_TYPE_AUDIO)
+                    1 -> chooseTracks(C.TRACK_TYPE_TEXT)
+                    2 -> {
+                        pendingSubtitleID = track.id
+                        savePosition()
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
+                        }, 41)
+                    }
+                    3 -> { savePosition(); library.removeSubtitle(track); play(track, false) }
+                }
             }.show()
         }
         player = ExoPlayer.Builder(this).build().also { active ->
@@ -200,7 +219,24 @@ class VideoActivity : Activity() {
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             active.setHandleAudioBecomingNoisy(true)
             view.player = active
+            var externalSelected = false
             active.addListener(object : Player.Listener {
+                override fun onTracksChanged(tracks: Tracks) {
+                    // MergingMediaSource prefixes format IDs with its child source index.
+                    // Select the attached file once, without fighting later user choices.
+                    if (!externalSelected) {
+                        for (group in tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }) {
+                            val index = (0 until group.length).firstOrNull {
+                                group.getTrackFormat(it).id?.substringAfterLast(':') == "migi-external-subtitle" && group.isTrackSupported(it)
+                            } ?: continue
+                            externalSelected = true
+                            active.trackSelectionParameters = active.trackSelectionParameters.buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index)).build()
+                            break
+                        }
+                    }
+                }
                 override fun onPlaybackStateChanged(state: Int) {
                     if (state == Player.STATE_ENDED) library.savePosition(track, 0, ended = true)
                 }
@@ -208,8 +244,35 @@ class VideoActivity : Activity() {
                     showError("Не удалось воспроизвести видео: ${error.errorCodeName}. Возможно, телефон не поддерживает кодек.")
                 }
             })
-            active.setMediaItem(MediaItem.fromUri(Uri.fromFile(VideoDownloads.file(this, track))))
+            val item = MediaItem.Builder().setUri(Uri.fromFile(VideoDownloads.file(this, track)))
+            library.subtitle(track)?.let { (file, mime) ->
+                item.setSubtitleConfigurations(listOf(MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
+                    .setId("migi-external-subtitle").setMimeType(mime).setLabel("Внешние субтитры")
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT).build()))
+            }
+            active.setMediaItem(item.build())
             active.seekTo(library.position(track)); active.prepare(); active.playWhenReady = autoplay
+        }
+    }
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 41) return
+        val id = pendingSubtitleID.also { pendingSubtitleID = null } ?: return
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val track = library.entries().find { it.track.id == id }?.track ?: return
+        executor.execute {
+            val result = runCatching {
+                val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                } ?: ""
+                val mime = VideoSubtitleFile.mimeForName(name)
+                contentResolver.openInputStream(uri)?.use { library.installSubtitle(track, it, mime) }
+                    ?: error("Не удалось открыть субтитры")
+            }
+            runOnUiThread {
+                if (!isDestroyed) result.onSuccess { play(track, false) }.onFailure { showError(it.message) }
+            }
         }
     }
     private fun setFullscreen(enabled: Boolean) {
@@ -228,7 +291,7 @@ class VideoActivity : Activity() {
         }
         val labels = listOf(if (type == C.TRACK_TYPE_TEXT) "Выключить" else "Автоматически") + choices.map { (group, index) ->
             val format = group.getTrackFormat(index)
-            listOfNotNull(format.label, format.language).distinct().joinToString(" · ").ifBlank { "Дорожка ${index + 1}" }
+            (if (group.isTrackSelected(index)) "✓ " else "") + listOfNotNull(format.label, format.language).distinct().joinToString(" · ").ifBlank { "Дорожка ${index + 1}" }
         }
         AlertDialog.Builder(this).setTitle(if (type == C.TRACK_TYPE_TEXT) "Субтитры" else "Звуковая дорожка")
             .setItems(labels.toTypedArray()) { _, selected ->

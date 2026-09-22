@@ -484,9 +484,10 @@ collections button retrieves saved video collections. Download one episode,
 then watch offline with seek, fullscreen, embedded audio/subtitle selection,
 position memory, and a watched marker. Delete downloaded files explicitly to
 free space. Keep the video screen open during downloads; a partial file survives
-network/process failure and can be resumed. No streaming-before-completion,
-external subtitle import, transcoding, or agent-visible watch-history API is
-provided in this version. Container/codec compatibility needs a real-device
+network/process failure and can be resumed. In "Звук и субтитры", import a local
+ASS/SSA, SRT or VTT file up to 4 MiB; its private copy is retained for that video
+and selected when reopened. No streaming-before-completion, transcoding, or
+agent-visible watch-history API is provided in this version. Container/codec compatibility needs a real-device
 check, particularly for anime subtitle styling and high-bit-depth encodes.
 
 Before device acceptance test a >256 MiB episode, interrupt and resume its

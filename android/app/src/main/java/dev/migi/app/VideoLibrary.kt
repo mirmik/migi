@@ -1,6 +1,8 @@
 package dev.migi.app
 
 import android.content.Context
+import java.io.File
+import java.io.InputStream
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -47,6 +49,24 @@ internal class VideoLibrary(context: Context) {
         prefs.edit().putLong("position-${track.sha256}", if (ended) 0 else position.coerceAtLeast(0))
             .apply { if (ended) putBoolean("watched-${track.sha256}", true) }.apply()
     }
-    fun reset() = synchronized(LOCK) { prefs.edit().clear().commit(); VideoDownloads.clear(app) }
+    private fun subtitleFile(track: PlaybackTrack) = File(File(app.filesDir, "video-subtitles"), track.sha256)
+    fun subtitle(track: PlaybackTrack): Pair<File, String>? {
+        val mime = prefs.getString("subtitle-${track.sha256}", null) ?: return null
+        return subtitleFile(track).takeIf { it.isFile }?.let { it to mime }
+    }
+    fun installSubtitle(track: PlaybackTrack, source: InputStream, mime: String) {
+        val file = subtitleFile(track)
+        file.parentFile!!.mkdirs()
+        VideoSubtitleFile.copy(source, file)
+        prefs.edit().putString("subtitle-${track.sha256}", mime).apply()
+    }
+    fun removeSubtitle(track: PlaybackTrack) {
+        subtitleFile(track).delete()
+        prefs.edit().remove("subtitle-${track.sha256}").apply()
+    }
+    fun reset() = synchronized(LOCK) {
+        prefs.edit().clear().commit(); VideoDownloads.clear(app)
+        File(app.filesDir, "video-subtitles").deleteRecursively()
+    }
     companion object { private val LOCK = Any() }
 }
