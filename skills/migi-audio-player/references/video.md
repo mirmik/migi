@@ -99,8 +99,12 @@ Neither downloads the entire season. Only claim delivery of a queue after
 sending to all paired phones matches the request. Video uses `video.queue.set`
 and never replaces the music queue.
 
-On the phone open Music → Video, or tap the video notification. Open a playlist,
-then tap an episode to play from a small buffer or its verified local copy.
+On the phone open **Видео** in the bottom navigation, or tap the video notification.
+The permanent **Плеер** tab contains the current video and its episode list;
+**Плейлисты** contains the catalog. Opening a playlist switches to **Плеер**,
+with its current or first episode paused. Tap an episode to play from a small
+buffer or its verified local copy. Switching to **Плейлисты** pauses playback
+and preserves the player; switching back keeps its position and buffer.
 Use **⋮ → Скачать для офлайна / Продолжить скачивание** for a full copy.
 **Все видео** is the live saved-playlist catalog, refreshed when opened and periodically
 while browsing. Saving a video playlist is enough to make it appear; `start` is
@@ -115,10 +119,10 @@ legacy received history is not treated as catalog membership.
 Seeking online fetches the required portion directly. Keep Migi open during downloads. Complete verified videos are stored
 privately for offline playback and stay until manually deleted. The player
 remembers the current video, its playlist order, position and completion across
-process restarts. Opening Video returns to that player paused, with **Продолжить
-просмотр** and **Следующая серия** when available. Playback does not start or
-fetch video merely because the screen was opened. The catalog also has a last-viewing
-card. The final episode does not wrap back to episode one. The player pauses when
+process restarts. Opening Video returns to that player paused, with **Продолжить**
+and **Следующая** when available. Playback does not start or
+fetch video merely because the screen was opened. The current episode is marked
+in the list below the player. The final episode does not wrap back to episode one. The player pauses when
 backgrounded and offers embedded
 audio/subtitle selection and an optional external subtitle file. Online playback
 prefers Russian subtitles when available. It uses authenticated, certificate-pinned

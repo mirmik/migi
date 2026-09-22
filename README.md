@@ -79,7 +79,8 @@ ordered seasons and saves collections silently. Phones stream videos from a
 small buffer with remote seeking, or download individual videos (up to 8 GiB)
 for verified offline playback. Both modes remember position and offer fullscreen
 and embedded track selection, including Russian subtitles. Open
-**Music → Video**; keep the video screen open while downloading. See
+**Видео** in the bottom navigation; the first tab restores the current player
+and episode list, and **Плейлисты** opens the catalog. Keep Migi open while downloading. See
 [the video workflow](docs/development.md#index-and-watch-server-side-videos).
 
 The `migi-audio-player` skill adds safe helpers for ordered album directories

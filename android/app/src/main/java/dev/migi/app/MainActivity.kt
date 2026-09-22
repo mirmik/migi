@@ -371,14 +371,13 @@ class MainActivity : Activity() {
             setPadding(padding, dp(24), padding, dp(36))
             addView(screenHeader(R.string.tab_playback, R.string.music_subtitle), matchWidth())
             val musicTabs = LinearLayout(this@MainActivity)
-            listOf("Треки", "Плейлисты", "Видео").forEachIndexed { index, label ->
+            listOf("Треки", "Плейлисты").forEachIndexed { index, label ->
                 val tab = MaterialButton(this@MainActivity).apply {
                     text = label; isAllCaps = false; cornerRadius = dp(18)
                     setPadding(dp(8), 0, dp(8), 0)
                     applyMigiText(14f, weight = Typeface.BOLD)
                     setOnClickListener {
-                        if (index == 2) startActivity(Intent(this@MainActivity, VideoActivity::class.java))
-                        else showMusicPage(index == 1)
+                        showMusicPage(index == 1)
                     }
                 }
                 musicTabButtons += tab
@@ -390,30 +389,28 @@ class MainActivity : Activity() {
             musicPlayerPage = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             addView(musicPlayerPage, matchWidth())
             musicPlayerPage.apply {
-                val hero = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
+                val artworkSize = minOf(resources.displayMetrics.widthPixels - dp(40), dp(360))
                 playbackArtwork = PlaylistArtworkView(this@MainActivity).apply { showFallback("migi") }
-                hero.addView(playbackArtwork, LinearLayout.LayoutParams(dp(96), dp(96)))
-                val heroText = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-                hero.addView(heroText, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
-                addView(hero, matchWidth())
-                heroText.apply {
-                    playbackHeroLabel = sectionLabel(R.string.playlist_ready_label)
-                    addView(playbackHeroLabel, matchWidth())
-                    addGap(8)
-                    playbackCurrent = TextView(this@MainActivity).apply {
-                        setText(R.string.playback_nothing_playing)
-                        applyMigiText(22f, weight = Typeface.BOLD)
-                        maxLines = 2
-                    }
-                    addView(playbackCurrent, matchWidth())
-                    addGap(6)
-                    playbackArtist = TextView(this@MainActivity).apply {
-                        setText(R.string.playback_unknown_artist)
-                        applyMigiText(16f, MigiPalette.muted)
-                        maxLines = 1
-                    }
-                    addView(playbackArtist, matchWidth())
+                addView(playbackArtwork, LinearLayout.LayoutParams(artworkSize, artworkSize).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                })
+                addGap(24)
+                playbackHeroLabel = sectionLabel(R.string.playlist_ready_label)
+                addView(playbackHeroLabel, matchWidth())
+                addGap(8)
+                playbackCurrent = TextView(this@MainActivity).apply {
+                    setText(R.string.playback_nothing_playing)
+                    applyMigiText(22f, weight = Typeface.BOLD)
+                    maxLines = 2
                 }
+                addView(playbackCurrent, matchWidth())
+                addGap(6)
+                playbackArtist = TextView(this@MainActivity).apply {
+                    setText(R.string.playback_unknown_artist)
+                    applyMigiText(16f, MigiPalette.muted)
+                    maxLines = 1
+                }
+                addView(playbackArtist, matchWidth())
                 addGap(20)
                 playbackSeek = Slider(this@MainActivity).apply {
                     valueFrom = 0f
@@ -730,28 +727,17 @@ class MainActivity : Activity() {
             }
         }
         miniPlayer = buildMiniPlayer()
-        bottomNavigation = BottomNavigationView(this).apply {
-            menu.add(0, NAV_HOME, 0, R.string.tab_status).setIcon(R.drawable.ic_nav_home)
-            menu.add(0, NAV_MUSIC, 1, R.string.tab_playback).setIcon(R.drawable.ic_nav_music)
-            menu.add(0, NAV_FILES, 2, R.string.tab_files).setIcon(R.drawable.ic_nav_files)
-            menu.add(0, NAV_UPDATES, 3, R.string.tab_updates).setIcon(R.drawable.ic_nav_updates)
-            menu.add(0, NAV_SETTINGS, 4, R.string.tab_settings).setIcon(R.drawable.ic_nav_settings)
-            val navigationColors = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(MigiPalette.primary, MigiPalette.muted),
-            )
-            itemIconTintList = navigationColors
-            itemTextColor = navigationColors
-            itemActiveIndicatorColor = ColorStateList.valueOf(0x332F4F91)
-            isItemActiveIndicatorEnabled = true
-            labelVisibilityMode = BottomNavigationView.LABEL_VISIBILITY_LABELED
-            setBackgroundColor(MigiPalette.surface)
-            elevation = 0f
-            setPadding(dp(4), dp(5), dp(4), dp(4))
-            setOnItemSelectedListener { item ->
-                val index = NAVIGATION_IDS.indexOf(item.itemId)
-                if (index >= 0) displayTab(index)
-                index >= 0
+        bottomNavigation = MigiNavigation.create(this, NAV_HOME) { id ->
+            if (id == MigiNavigation.VIDEO) {
+                startActivity(Intent(this, VideoActivity::class.java))
+                false
+            } else {
+                MigiNavigation.mainTab(id)?.let(::displayTab)
+                true
+            }
+        }.apply {
+            setOnItemReselectedListener { item ->
+                MigiNavigation.mainTab(item.itemId)?.let(::displayTab)
             }
         }
         val root = LinearLayout(this).apply {
@@ -780,10 +766,8 @@ class MainActivity : Activity() {
     private fun showTab(index: Int) {
         displayTab(index)
         if (::bottomNavigation.isInitialized) {
-            val navigationID = NAVIGATION_IDS[selectedTab]
-            if (bottomNavigation.selectedItemId != navigationID) {
-                bottomNavigation.selectedItemId = navigationID
-            }
+            val navigationID = if (selectedTab == 4) NAV_HOME else NAVIGATION_IDS[selectedTab]
+            bottomNavigation.menu.findItem(navigationID)?.isChecked = true
         }
     }
 
@@ -804,11 +788,21 @@ class MainActivity : Activity() {
 
     private fun screenHeader(title: Int, subtitle: Int): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        addView(TextView(this@MainActivity).apply {
+        val titleRow = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(TextView(this@MainActivity).apply {
             setText(title)
             applyMigiText(34f, weight = Typeface.BOLD)
             letterSpacing = -0.035f
-        }, matchWidth())
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        if (title == R.string.home_title || title == R.string.tab_settings) {
+            titleRow.addView(iconButton(
+                if (title == R.string.home_title) R.drawable.ic_nav_settings else R.drawable.ic_back,
+                if (title == R.string.home_title) getString(R.string.tab_settings) else "Назад",
+                sizeDp = 48,
+            ).apply { setOnClickListener { showTab(if (title == R.string.home_title) 4 else TAB_STATUS) } },
+                LinearLayout.LayoutParams(dp(48), dp(48)))
+        }
+        addView(titleRow, matchWidth())
         addGap(7)
         addView(TextView(this@MainActivity).apply {
             setText(subtitle)

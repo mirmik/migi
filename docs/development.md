@@ -479,9 +479,13 @@ skills/migi-audio-player/scripts/migi-video --device PHONE_ID \
 skills/migi-audio-player/scripts/migi-video --device PHONE_ID start COLLECTION_ID
 ```
 
-On Android open **Music → Video** or the video notification. The server
-collections button retrieves saved video collections. Choose **Смотреть онлайн**
-to start without a full download; remote seeks fetch aligned 2 MiB blocks through
+On Android open **Видео** in the bottom navigation or the video notification.
+The permanent **Плеер** tab restores the current episode paused and shows the
+ordered episode list below it. **Плейлисты** opens the saved-video catalog;
+choosing a collection returns to its current or first episode in **Плеер**.
+Tap an episode or **Продолжить / Смотреть** to start without a full download;
+**Следующая** advances within the playlist. Browsing playlists pauses playback
+and preserves the player. Remote seeks fetch aligned 2 MiB blocks through
 the pinned QUIC transport. Streaming requires updated Python or Go origin clients.
 The player uses a 32 MiB block cache, a small startup buffer and automatic network
 retries. **Скачать для офлайна** still downloads and verifies an entire episode.
