@@ -93,8 +93,9 @@ class VideoActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         library = VideoLibrary(this)
-        restoreID = savedInstanceState?.getString("video")
-        selectedCollection = savedInstanceState?.getString("collection")
+        val previous = library.currentSession()
+        restoreID = if (savedInstanceState == null) previous?.trackID else savedInstanceState.getString("video")
+        selectedCollection = if (savedInstanceState == null) previous?.collectionID else savedInstanceState.getString("collection")
         phoneOnly = savedInstanceState?.getBoolean("phone-only") ?: false
         pendingSubtitleID = savedInstanceState?.getString("subtitle-picker")
         root = LinearLayout(this).apply {
@@ -140,7 +141,7 @@ class VideoActivity : Activity() {
     private fun savePosition() {
         val track = current ?: return
         val active = player ?: return
-        if (active.playbackState != Player.STATE_IDLE && active.playbackState != Player.STATE_ENDED)
+        if (active.playbackState == Player.STATE_READY)
             library.savePosition(track, active.currentPosition)
     }
     private fun releasePlayer() { savePosition(); player?.release(); player = null }
@@ -264,6 +265,21 @@ class VideoActivity : Activity() {
         val notice = if (selectedCollection == null) catalogNotice else collectionNotice
         if (!phoneOnly && notice != null) {
             text(content, notice, 13f, MigiPalette.muted); gap(content, 16)
+        }
+        if (selectedCollection == null && !phoneOnly) {
+            library.currentTrack()?.let { last ->
+                val resume = card(content)
+                text(resume, if (library.watched(last) && library.position(last) == 0L) "Последний просмотр" else "Продолжить просмотр", 13f, MigiPalette.primary, true)
+                gap(resume, 8)
+                text(resume, library.currentSession()?.collectionName.orEmpty(), 16f, bold = true)
+                text(resume, last.title, 14f, MigiPalette.muted).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
+                gap(resume, 6)
+                text(resume, description(last), 12f, MigiPalette.muted)
+                button(resume, "Открыть плеер", icon = R.drawable.ic_play) {
+                    selectedCollection = library.currentSession()?.collectionID
+                    play(last, false)
+                }
+            }
         }
         val received = library.received()
         if (selectedCollection == null && !phoneOnly) {
@@ -469,6 +485,7 @@ class VideoActivity : Activity() {
     private fun play(track: PlaybackTrack, autoplay: Boolean = true) {
         val offline = VideoDownloads.available(this, track)
         generation++; releasePlayer(); current = track
+        library.remember(track, selectedCollection)
         progress.clear(); downloadStatus = null; root.removeAllViews()
         toolbar("Видеотека") { showLibrary() }
         val view = (layoutInflater.inflate(R.layout.migi_video_player, root, false) as PlayerView).apply {
@@ -481,14 +498,27 @@ class VideoActivity : Activity() {
         root.addView(view, width())
         val details = column(20)
         root.addView(ScrollView(this).apply { addView(details); isFillViewport = true }, width(0).apply { weight = 1f })
-        val collectionName = library.catalog()?.firstOrNull { it.id == selectedCollection }?.name
-            ?: library.entries().firstOrNull { it.track.id == track.id }?.collection.orEmpty()
+        val collectionName = library.currentSession()?.collectionName.orEmpty()
         text(details, collectionName, 12f, MigiPalette.primary, bold = true)
         gap(details, 10)
         text(details, track.title, 24f, bold = true)
         gap(details, 12)
-        val status = text(details, if (offline) "С телефона" else "Подключение к видео…", 13f, MigiPalette.muted)
-        gap(details, 18)
+        val status = text(details, description(track), 13f, MigiPalette.muted)
+        if (!autoplay) {
+            button(details, if (library.position(track) > 0) "Продолжить просмотр" else "Смотреть", primary = true, icon = R.drawable.ic_play) {
+                player?.let {
+                    if (it.playbackState == Player.STATE_ENDED) it.seekTo(0)
+                    it.prepare(); it.play()
+                }
+            }
+        }
+        library.nextTrack()?.let { next ->
+            button(details, "Следующая серия", icon = R.drawable.ic_next) {
+                selectedCollection = library.currentSession()?.collectionID
+                play(next)
+            }
+        }
+        gap(details, 8)
         button(details, "Полный экран", primary = true, icon = R.drawable.ic_fullscreen) { setFullscreen(true) }
         button(details, "Звук и субтитры", icon = R.drawable.ic_subtitles) {
             val options = mutableListOf("Звуковая дорожка", "Субтитры", "Выбрать файл субтитров")
@@ -540,7 +570,7 @@ class VideoActivity : Activity() {
                 override fun onPlaybackStateChanged(state: Int) {
                     status.text = when (state) {
                         Player.STATE_BUFFERING -> "Буферизация…"
-                        Player.STATE_READY -> if (offline) "С телефона" else "Просмотр онлайн"
+                        Player.STATE_READY -> description(track)
                         Player.STATE_ENDED -> "Просмотр завершён"
                         else -> "Подключение к видео…"
                     }
@@ -570,7 +600,9 @@ class VideoActivity : Activity() {
             }
             item.setSubtitleConfigurations(subtitleItems)
             active.setMediaItem(item.build())
-            active.seekTo(library.position(track)); active.prepare(); active.playWhenReady = autoplay
+            active.seekTo(library.position(track))
+            if (autoplay) active.prepare()
+            active.playWhenReady = autoplay
         }
     }
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

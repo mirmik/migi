@@ -114,7 +114,10 @@ protocol, never `migi-file-exchange`.
 Indexing, uploading, and saving are silent. Only `queue`, `play`, or `start`
 emits `media.queue.set`. The phone persists the newest targeted manifest and
 may fetch verified artwork, but an idle player starts only after the user taps
-Play. With **Hot-swap playlists** enabled and a queue already active, Android
+Play or a track. In Music, **Плейлисты** is a separate tab; opening a saved
+playlist reads its manifest and shows **Треки** without sending a queue or
+interrupting current audio. Tapping any track starts that exact track, including
+when no playback session exists. There is no separate Start Playlist step. With **Hot-swap playlists** enabled and a queue already active, Android
 prepares the newer first track, replaces the timeline atomically when ready,
 and preserves Play/Pause.
 

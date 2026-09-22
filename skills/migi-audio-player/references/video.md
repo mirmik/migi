@@ -114,7 +114,12 @@ retries synchronization. New one-off `queue` sends appear under **От аген�
 legacy received history is not treated as catalog membership.
 Seeking online fetches the required portion directly. Keep Migi open during downloads. Complete verified videos are stored
 privately for offline playback and stay until manually deleted. The player
-remembers position and completion, pauses when backgrounded, and offers embedded
+remembers the current video, its playlist order, position and completion across
+process restarts. Opening Video returns to that player paused, with **Продолжить
+просмотр** and **Следующая серия** when available. Playback does not start or
+fetch video merely because the screen was opened. The catalog also has a last-viewing
+card. The final episode does not wrap back to episode one. The player pauses when
+backgrounded and offers embedded
 audio/subtitle selection and an optional external subtitle file. Online playback
 prefers Russian subtitles when available. It uses authenticated, certificate-pinned
 QUIC, 2 MiB verified blocks and a 32 MiB in-memory LRU cache per player. It retries

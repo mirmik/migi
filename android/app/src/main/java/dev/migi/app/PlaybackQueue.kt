@@ -174,6 +174,20 @@ internal class PlaybackQueueRepository(private val context: Context) {
 		return Acceptance.STORED
 	}
 
+    /** Local browsing has its own identity and never advances the server event cursor. */
+    fun selectManifest(playlistID: String, raw: String): PlaybackQueue {
+        val manifest = JSONObject(raw)
+        val parsed = PlaybackQueueCodec.parse(AgentEvent(1, PlaybackQueueCodec.EVENT_KIND,
+            "Каталог", manifest.getString("name"), raw, java.time.Instant.EPOCH))
+        require(parsed.playlistID == playlistID) { "Unexpected playlist identity" }
+        require(parsed.deviceID.isEmpty() || parsed.deviceID == DeviceIdentity.get(context)) { "Unexpected playlist target" }
+        val localID = minOf(-System.currentTimeMillis(), preferences.getLong(KEY_LOCAL_ID, 0) - 1)
+        val envelope = JSONObject().put("event_id", localID).put("local", true)
+            .put("agent", "Каталог").put("manifest", manifest)
+        check(preferences.edit().putLong(KEY_LOCAL_ID, localID).putString(KEY_QUEUE, envelope.toString()).commit())
+        return parsed.copy(eventID = localID)
+    }
+
 	fun current(): PlaybackQueue? {
 		val raw = preferences.getString(KEY_QUEUE, null) ?: return null
 		return runCatching {
@@ -181,14 +195,20 @@ internal class PlaybackQueueRepository(private val context: Context) {
 			val manifest = envelope.getJSONObject("manifest")
 			PlaybackQueueCodec.parse(
 				AgentEvent(
-					id = envelope.getLong("event_id"),
+					id = if (envelope.optBoolean("local")) 1 else envelope.getLong("event_id"),
 					kind = PlaybackQueueCodec.EVENT_KIND,
 					agent = envelope.optString("agent"),
 					title = manifest.getString("name"),
 					body = manifest.toString(),
 					createdAt = java.time.Instant.EPOCH,
 				),
-			)
+            ).let { parsed ->
+                if (envelope.optBoolean("local")) {
+                    val localID = envelope.getLong("event_id")
+                    require(localID < 0) { "Local queue identity is invalid" }
+                    parsed.copy(eventID = localID)
+                } else parsed
+            }
 		}.getOrNull()
 	}
 
@@ -202,6 +222,7 @@ internal class PlaybackQueueRepository(private val context: Context) {
 	}
 
 	companion object {
+		private const val KEY_LOCAL_ID = "playback_local_id"
 		const val KEY_QUEUE = "playback_queue"
 		const val KEY_EVENT_ID = "playback_queue_event_id"
 	}

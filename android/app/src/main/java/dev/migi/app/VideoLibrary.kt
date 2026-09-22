@@ -80,11 +80,40 @@ internal class VideoLibrary(context: Context) {
             VideoEntry(PlaybackQueueCodec.parseTrack(item), item.getString("collection"))
         }
     }
+    fun currentSession(): VideoSession? = synchronized(LOCK) {
+        prefs.getString("current-video", null)?.let { raw -> runCatching {
+            val item = JSONObject(raw)
+            val ids = item.getJSONArray("media_ids")
+            VideoSession(item.getString("id"), item.optString("collection_id").ifEmpty { null },
+                item.getString("name"), (0 until ids.length()).map { ids.getString(it) })
+        }.getOrNull() }
+    }
+    fun currentTrack(): PlaybackTrack? = currentSession()?.let { session -> entries().find { it.track.id == session.trackID }?.track }
+    fun nextTrack(): PlaybackTrack? = currentSession()?.nextID()?.let { id -> entries().find { it.track.id == id }?.track }
+
+    fun remember(track: PlaybackTrack, collectionID: String?) = synchronized(LOCK) {
+        val previous = currentSession()
+        val selected = collectionID?.let { playlist(it) }?.takeIf { p -> p.items.any { it.id == track.id } }
+        val session = when {
+            selected != null -> VideoSession(track.id, selected.playlistID, selected.name, selected.items.map { it.id }.distinct())
+            previous != null && track.id in previous.orderedIDs && (collectionID == null || collectionID == previous.collectionID) -> previous.copy(trackID = track.id)
+            else -> {
+                val parent = catalog().orEmpty().asSequence().mapNotNull { playlist(it.id) }
+                    .firstOrNull { p -> p.items.any { it.id == track.id } }
+                VideoSession(track.id, parent?.playlistID,
+                    parent?.name ?: entries().find { it.track.id == track.id }?.collection.orEmpty(),
+                    parent?.items?.map { it.id }?.distinct() ?: listOf(track.id))
+            }
+        }
+        val raw = JSONObject().put("id", session.trackID).put("collection_id", session.collectionID.orEmpty())
+            .put("name", session.collectionName).put("media_ids", JSONArray(session.orderedIDs))
+        check(prefs.edit().putString("current-video", raw.toString()).commit())
+    }
     fun position(track: PlaybackTrack) = prefs.getLong("position-${track.sha256}", 0)
     fun watched(track: PlaybackTrack) = prefs.getBoolean("watched-${track.sha256}", false)
     fun savePosition(track: PlaybackTrack, position: Long, ended: Boolean = false) {
         prefs.edit().putLong("position-${track.sha256}", if (ended) 0 else position.coerceAtLeast(0))
-            .apply { if (ended) putBoolean("watched-${track.sha256}", true) }.apply()
+            .apply { if (ended || position > 0) putBoolean("watched-${track.sha256}", ended) }.apply()
     }
     private fun subtitleFile(track: PlaybackTrack) = File(File(app.filesDir, "video-subtitles"), track.sha256)
     fun subtitle(track: PlaybackTrack): Pair<File, String>? {

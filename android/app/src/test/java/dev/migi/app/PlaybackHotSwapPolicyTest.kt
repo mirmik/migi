@@ -5,6 +5,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackHotSwapPolicyTest {
+    @Test fun browsingLocalPlaylistsDoesNotTriggerAgentHotSwap() {
+        assertFalse(PlaybackHotSwapPolicy.shouldReplace(true, -200, -100))
+        assertTrue(PlaybackHotSwapPolicy.shouldReplace(true, -200, 42))
+        assertFalse(PlaybackHotSwapPolicy.shouldReplace(false, -200, 42))
+    }
+
     @Test
     fun replacesOnlyANewerQueueDuringAnOptedInActiveSession() {
         assertTrue(PlaybackHotSwapPolicy.shouldReplace(true, 41, 42))

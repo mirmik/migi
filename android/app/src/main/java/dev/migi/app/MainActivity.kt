@@ -66,7 +66,6 @@ class MainActivity : Activity() {
     private lateinit var savedPlaylistList: LinearLayout
     private lateinit var savedPlaylistStatus: TextView
     private lateinit var playbackStatus: TextView
-    private lateinit var playbackButton: Button
     private lateinit var playbackCurrent: TextView
     private lateinit var playbackArtist: TextView
     private lateinit var playbackHeroLabel: TextView
@@ -77,7 +76,7 @@ class MainActivity : Activity() {
     private lateinit var playbackNext: ImageButton
     private lateinit var playbackShuffle: ImageButton
     private lateinit var playbackRepeat: ImageButton
-    private lateinit var playbackStopButton: Button
+    private lateinit var playbackStopButton: ImageButton
     private lateinit var playbackArtwork: PlaylistArtworkView
     private lateinit var miniArtwork: PlaylistArtworkView
     private lateinit var miniPlayer: MaterialCardView
@@ -87,6 +86,13 @@ class MainActivity : Activity() {
     private lateinit var connectionDot: View
     private lateinit var bottomNavigation: BottomNavigationView
     private lateinit var batteryButton: Button
+    private lateinit var musicPlayerPage: LinearLayout
+    private lateinit var musicPlaylistsPage: LinearLayout
+    private val musicTabButtons = mutableListOf<MaterialButton>()
+    private var musicPlaylistsOpen = false
+    private var startingTrack = false
+    private var trackStartRequest = 0L
+    private val playlistOpenGeneration = AtomicLong()
     private var selectedTab = TAB_STATUS
     private var tabPages: List<ScrollView> = emptyList()
     private var playbackTrackRows: List<PlaybackTrackRow> = emptyList()
@@ -136,13 +142,16 @@ class MainActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        musicPlaylistsOpen = savedInstanceState?.getBoolean("music-playlists") ?: false
         buildContentView()
+        showMusicPage(musicPlaylistsOpen)
         handlePairingIntent(intent)
         handleSharedFileIntent(intent)
         openRequestedTab(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("music-playlists", musicPlaylistsOpen)
         outState.putInt(STATE_SELECTED_TAB, selectedTab)
         super.onSaveInstanceState(outState)
     }
@@ -361,174 +370,188 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, dp(24), padding, dp(36))
             addView(screenHeader(R.string.tab_playback, R.string.music_subtitle), matchWidth())
-            addView(secondaryActionButton(R.string.video_library).apply {
-                setOnClickListener { startActivity(Intent(this@MainActivity, VideoActivity::class.java)) }
-            }, matchWidth())
-            addGap(24)
-            val artworkSize = minOf(resources.displayMetrics.widthPixels - dp(40), dp(360))
-            playbackArtwork = PlaylistArtworkView(this@MainActivity).apply {
-                showFallback("migi")
+            val musicTabs = LinearLayout(this@MainActivity)
+            listOf("Треки", "Плейлисты", "Видео").forEachIndexed { index, label ->
+                val tab = MaterialButton(this@MainActivity).apply {
+                    text = label; isAllCaps = false; cornerRadius = dp(18)
+                    setPadding(dp(8), 0, dp(8), 0)
+                    applyMigiText(14f, weight = Typeface.BOLD)
+                    setOnClickListener {
+                        if (index == 2) startActivity(Intent(this@MainActivity, VideoActivity::class.java))
+                        else showMusicPage(index == 1)
+                    }
+                }
+                musicTabButtons += tab
+                musicTabs.addView(tab, LinearLayout.LayoutParams(0, dp(48), 1f).apply { if (index > 0) marginStart = dp(6) })
             }
-            addView(playbackArtwork, LinearLayout.LayoutParams(artworkSize, artworkSize).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-            })
-            addGap(24)
-            playbackHeroLabel = sectionLabel(R.string.playlist_ready_label)
-            addView(playbackHeroLabel, matchWidth())
-            addGap(8)
-            playbackCurrent = TextView(this@MainActivity).apply {
-                setText(R.string.playback_nothing_playing)
-                applyMigiText(27f, weight = Typeface.BOLD)
-                maxLines = 2
-            }
-            addView(playbackCurrent, matchWidth())
-            addGap(6)
-            playbackArtist = TextView(this@MainActivity).apply {
-                setText(R.string.playback_unknown_artist)
-                applyMigiText(16f, MigiPalette.muted)
-                maxLines = 1
-            }
-            addView(playbackArtist, matchWidth())
+            addGap(16)
+            addView(musicTabs, matchWidth())
             addGap(20)
-            playbackSeek = Slider(this@MainActivity).apply {
-                valueFrom = 0f
-                valueTo = PLAYBACK_SEEK_MAX.toFloat()
-                value = 0f
-                isEnabled = false
-                trackActiveTintList = ColorStateList.valueOf(MigiPalette.primary)
-                trackInactiveTintList = ColorStateList.valueOf(MigiPalette.outline)
-                thumbTintList = ColorStateList.valueOf(MigiPalette.primary)
-                haloTintList = ColorStateList.valueOf(0x30829BFF)
-                trackHeight = dp(4)
-                thumbRadius = dp(7)
-                addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
-                    override fun onStartTrackingTouch(slider: Slider) = Unit
-                    override fun onStopTrackingTouch(slider: Slider) {
-                        val controller = playbackController ?: return
-                        val duration = controller.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: return
-                        controller.seekTo(duration * slider.value.toLong() / PLAYBACK_SEEK_MAX)
+            musicPlayerPage = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            addView(musicPlayerPage, matchWidth())
+            musicPlayerPage.apply {
+                val hero = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
+                playbackArtwork = PlaylistArtworkView(this@MainActivity).apply { showFallback("migi") }
+                hero.addView(playbackArtwork, LinearLayout.LayoutParams(dp(96), dp(96)))
+                val heroText = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                hero.addView(heroText, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
+                addView(hero, matchWidth())
+                heroText.apply {
+                    playbackHeroLabel = sectionLabel(R.string.playlist_ready_label)
+                    addView(playbackHeroLabel, matchWidth())
+                    addGap(8)
+                    playbackCurrent = TextView(this@MainActivity).apply {
+                        setText(R.string.playback_nothing_playing)
+                        applyMigiText(22f, weight = Typeface.BOLD)
+                        maxLines = 2
                     }
-                })
-            }
-            addView(playbackSeek, matchWidth())
-            playbackPosition = TextView(this@MainActivity).apply {
-                text = getString(R.string.playback_position, "0:00", "0:00")
-                applyMigiText(12f, MigiPalette.muted)
-                gravity = Gravity.END
-            }
-            addView(playbackPosition, matchWidth())
-            addGap(12)
-            val transportControls = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                playbackPrevious = iconButton(
-                    R.drawable.ic_previous,
-                    getString(R.string.content_previous),
-                    sizeDp = 54,
-                ).apply { setOnClickListener { playbackController?.seekToPreviousMediaItem() } }
-                playbackPlayPause = iconButton(
-                    R.drawable.ic_play,
-                    getString(R.string.content_play_pause),
-                    backgroundColor = MigiPalette.primary,
-                    tint = MigiPalette.onPrimary,
-                    sizeDp = 68,
-                ).apply {
-                    setOnClickListener {
-                        playbackController?.let { if (it.isPlaying) it.pause() else it.play() }
+                    addView(playbackCurrent, matchWidth())
+                    addGap(6)
+                    playbackArtist = TextView(this@MainActivity).apply {
+                        setText(R.string.playback_unknown_artist)
+                        applyMigiText(16f, MigiPalette.muted)
+                        maxLines = 1
                     }
+                    addView(playbackArtist, matchWidth())
                 }
-                playbackNext = iconButton(
-                    R.drawable.ic_next,
-                    getString(R.string.content_next),
-                    sizeDp = 54,
-                ).apply { setOnClickListener { playbackController?.seekToNextMediaItem() } }
-                addView(playbackPrevious, LinearLayout.LayoutParams(dp(54), dp(54)))
-                addView(playbackPlayPause, LinearLayout.LayoutParams(dp(68), dp(68)).apply {
-                    marginStart = dp(22)
-                    marginEnd = dp(22)
-                })
-                addView(playbackNext, LinearLayout.LayoutParams(dp(54), dp(54)))
-            }
-            addView(transportControls, matchWidth())
-            addGap(14)
-            val playbackModes = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                playbackShuffle = iconButton(
-                    R.drawable.ic_shuffle,
-                    getString(R.string.content_shuffle),
-                    sizeDp = 44,
-                ).apply {
-                    setOnClickListener {
-                        playbackController?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }
-                    }
+                addGap(20)
+                playbackSeek = Slider(this@MainActivity).apply {
+                    valueFrom = 0f
+                    valueTo = PLAYBACK_SEEK_MAX.toFloat()
+                    value = 0f
+                    isEnabled = false
+                    trackActiveTintList = ColorStateList.valueOf(MigiPalette.primary)
+                    trackInactiveTintList = ColorStateList.valueOf(MigiPalette.outline)
+                    thumbTintList = ColorStateList.valueOf(MigiPalette.primary)
+                    haloTintList = ColorStateList.valueOf(0x30829BFF)
+                    trackHeight = dp(4)
+                    thumbRadius = dp(7)
+                    addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
+                        override fun onStartTrackingTouch(slider: Slider) = Unit
+                        override fun onStopTrackingTouch(slider: Slider) {
+                            val controller = playbackController ?: return
+                            val duration = controller.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: return
+                            controller.seekTo(duration * slider.value.toLong() / PLAYBACK_SEEK_MAX)
+                        }
+                    })
                 }
-                playbackRepeat = iconButton(
-                    R.drawable.ic_repeat,
-                    getString(R.string.content_repeat),
-                    sizeDp = 44,
-                ).apply {
-                    setOnClickListener {
-                        playbackController?.let {
-                            it.repeatMode = when (it.repeatMode) {
-                                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                                else -> Player.REPEAT_MODE_OFF
+                addView(playbackSeek, matchWidth())
+                playbackPosition = TextView(this@MainActivity).apply {
+                    text = getString(R.string.playback_position, "0:00", "0:00")
+                    applyMigiText(12f, MigiPalette.muted)
+                    gravity = Gravity.END
+                }
+                addView(playbackPosition, matchWidth())
+                addGap(12)
+                val transportControls = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    playbackPrevious = iconButton(
+                        R.drawable.ic_previous,
+                        getString(R.string.content_previous),
+                        sizeDp = 54,
+                    ).apply { setOnClickListener { playbackController?.seekToPreviousMediaItem() } }
+                    playbackPlayPause = iconButton(
+                        R.drawable.ic_play,
+                        getString(R.string.content_play_pause),
+                        backgroundColor = MigiPalette.primary,
+                        tint = MigiPalette.onPrimary,
+                        sizeDp = 68,
+                    ).apply {
+                        setOnClickListener {
+                            toggleMusicPlayback()
+                        }
+                    }
+                    playbackNext = iconButton(
+                        R.drawable.ic_next,
+                        getString(R.string.content_next),
+                        sizeDp = 54,
+                    ).apply { setOnClickListener { playbackController?.seekToNextMediaItem() } }
+                    addView(playbackPrevious, LinearLayout.LayoutParams(dp(54), dp(54)))
+                    addView(playbackPlayPause, LinearLayout.LayoutParams(dp(68), dp(68)).apply {
+                        marginStart = dp(22)
+                        marginEnd = dp(22)
+                    })
+                    addView(playbackNext, LinearLayout.LayoutParams(dp(54), dp(54)))
+                }
+                addView(transportControls, matchWidth())
+                addGap(14)
+                val playbackModes = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    playbackShuffle = iconButton(
+                        R.drawable.ic_shuffle,
+                        getString(R.string.content_shuffle),
+                        sizeDp = 44,
+                    ).apply {
+                        setOnClickListener {
+                            playbackController?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }
+                        }
+                    }
+                    playbackRepeat = iconButton(
+                        R.drawable.ic_repeat,
+                        getString(R.string.content_repeat),
+                        sizeDp = 44,
+                    ).apply {
+                        setOnClickListener {
+                            playbackController?.let {
+                                it.repeatMode = when (it.repeatMode) {
+                                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                                    Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                                    else -> Player.REPEAT_MODE_OFF
+                                }
                             }
                         }
                     }
+                    addView(playbackShuffle, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(16) })
+                    addView(playbackRepeat, LinearLayout.LayoutParams(dp(44), dp(44)))
+                    playbackStopButton = iconButton(R.drawable.ic_stop, getString(R.string.playback_end_session), sizeDp = 44).apply {
+                        setOnClickListener {
+                            trackStartRequest++; startingTrack = false
+                            playbackController?.stop(); playbackController?.clearMediaItems()
+                            PlaybackService.stop(this@MainActivity)
+                            refreshPlaybackControls()
+                        }
+                    }
+                    addView(playbackStopButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(16) })
                 }
-                addView(playbackShuffle, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(16) })
-                addView(playbackRepeat, LinearLayout.LayoutParams(dp(44), dp(44)))
-            }
-            addView(playbackModes, matchWidth())
-            playbackStatus = TextView(this@MainActivity).apply {
-                applyMigiText(13f, MigiPalette.muted)
-                gravity = Gravity.CENTER
-                setPadding(0, dp(12), 0, 0)
-            }
-            addView(playbackStatus, matchWidth())
-            addGap(18)
-            playbackButton = primaryActionButton(R.string.playback_start_playlist).apply {
-                visibility = View.GONE
-                setOnClickListener { prepareAndPlayQueue() }
-            }
-            addView(playbackButton, matchWidth())
-            playbackStopButton = secondaryActionButton(R.string.playback_end_session, R.drawable.ic_stop).apply {
-                visibility = View.GONE
-                setOnClickListener {
-                    playbackController?.stop()
-                    playbackController?.clearMediaItems()
-                    PlaybackService.stop(this@MainActivity)
-                    playbackStatus.setText(R.string.playback_stopped)
+                addView(playbackModes, matchWidth())
+                playbackStatus = TextView(this@MainActivity).apply {
+                    applyMigiText(13f, MigiPalette.muted)
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(12), 0, 0)
                 }
+                addView(playbackStatus, matchWidth())
+                addGap(20)
+                addView(sectionLabel(R.string.queue_title), matchWidth())
+                playbackSummary = TextView(this@MainActivity).apply {
+                    applyMigiText(14f, MigiPalette.muted)
+                    setPadding(0, dp(7), 0, dp(14))
+                }
+                addView(playbackSummary, matchWidth())
+                playbackTracks = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                addView(playbackTracks, matchWidth())
             }
-            addView(playbackStopButton, matchWidth().apply { topMargin = dp(10) })
-            addGap(34)
-            addView(sectionLabel(R.string.saved_playlists_title), matchWidth())
-            savedPlaylistStatus = TextView(this@MainActivity).apply {
-                applyMigiText(13f, MigiPalette.muted)
-                setPadding(0, dp(7), 0, dp(12))
-            }
-            addView(savedPlaylistStatus, matchWidth())
-            savedPlaylistList = LinearLayout(this@MainActivity).apply {
+            musicPlaylistsPage = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
+                addView(sectionLabel(R.string.saved_playlists_title), matchWidth())
+                savedPlaylistStatus = TextView(this@MainActivity).apply {
+                    applyMigiText(13f, MigiPalette.muted)
+                    setPadding(0, dp(7), 0, dp(12))
+                }
+                addView(savedPlaylistStatus, matchWidth())
+                savedPlaylistList = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                addView(savedPlaylistList, matchWidth())
+                addView(secondaryActionButton(R.string.saved_playlists_refresh).apply {
+                    setOnClickListener { refreshSavedPlaylists() }
+                }, matchWidth().apply { topMargin = dp(3) })
+
             }
-            addView(savedPlaylistList, matchWidth())
-            addView(secondaryActionButton(R.string.saved_playlists_refresh).apply {
-                setOnClickListener { refreshSavedPlaylists() }
-            }, matchWidth().apply { topMargin = dp(3) })
-            addGap(34)
-            addView(sectionLabel(R.string.queue_title), matchWidth())
-            playbackSummary = TextView(this@MainActivity).apply {
-                applyMigiText(14f, MigiPalette.muted)
-                setPadding(0, dp(7), 0, dp(14))
-            }
-            addView(playbackSummary, matchWidth())
-            playbackTracks = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            addView(playbackTracks, matchWidth())
+            addView(musicPlaylistsPage, matchWidth())
         }
         val filesPage = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -903,7 +926,7 @@ class MainActivity : Activity() {
         isFocusable = true
         foreground = rippleDrawable(this@MainActivity, Color.TRANSPARENT, 20)
         contentDescription = getString(R.string.mini_player_description)
-        setOnClickListener { showTab(TAB_MUSIC) }
+        setOnClickListener { showMusicPage(false); showTab(TAB_MUSIC) }
         addView(LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -953,7 +976,7 @@ class MainActivity : Activity() {
                 loadedArtworkKey = null
                 artworkRefreshGeneration.incrementAndGet()
                 playbackArtwork.showFallback(queue.name)
-                miniArtwork.showFallback(queue.name)
+                miniArtwork.showFallback((PlaybackService.activeQueueSnapshot() ?: queue).name)
                 return
             }
             PlaybackArtworkRefreshAction.LOAD -> Unit
@@ -963,7 +986,7 @@ class MainActivity : Activity() {
         loadedArtworkKey = key
         val generation = artworkRefreshGeneration.incrementAndGet()
         playbackArtwork.showFallback(queue.name)
-        miniArtwork.showFallback(queue.name)
+        miniArtwork.showFallback((PlaybackService.activeQueueSnapshot() ?: queue).name)
         artworkExecutor.execute {
             val result = runCatching {
                 decodeArtwork(PlaybackMediaCache(applicationContext).prepare(artwork))
@@ -973,11 +996,12 @@ class MainActivity : Activity() {
                 if (isDestroyed || generation != artworkRefreshGeneration.get()) return@runOnUiThread
                 result.onSuccess { bitmap ->
                     playbackArtwork.showArtwork(queue.name, bitmap)
-                    miniArtwork.showArtwork(queue.name, bitmap)
+                    if (PlaybackService.activeQueueSnapshot()?.eventID == queue.eventID) miniArtwork.showArtwork(queue.name, bitmap)
+                    else miniArtwork.showFallback((PlaybackService.activeQueueSnapshot() ?: queue).name)
                 }.onFailure {
                     loadedArtworkKey = null
                     playbackArtwork.showFallback(queue.name)
-                    miniArtwork.showFallback(queue.name)
+                    miniArtwork.showFallback((PlaybackService.activeQueueSnapshot() ?: queue).name)
                 }
             }
         }
@@ -1032,21 +1056,23 @@ class MainActivity : Activity() {
     private fun refreshPlaybackControls() {
         if (!::playbackPlayPause.isInitialized) return
         val controller = playbackController
-        val hasMedia = controller != null && controller.mediaItemCount > 0
-        val isPlaying = controller?.isPlaying == true
+        val sessionHasMedia = controller != null && controller.mediaItemCount > 0
         val queue = PlaybackQueueRepository(this).current()
-        playbackPlayPause.isEnabled = hasMedia
-        playbackPrevious.isEnabled = controller?.hasPreviousMediaItem() == true
-        playbackNext.isEnabled = controller?.hasNextMediaItem() == true
+        val activeQueue = PlaybackService.activeQueueSnapshot()
+        val hasMedia = sessionHasMedia && activeQueue?.eventID == queue?.eventID
+        val isPlaying = hasMedia && controller?.playWhenReady == true
+        playbackPlayPause.isEnabled = (hasMedia || queue != null) && !startingTrack
+        playbackPrevious.isEnabled = hasMedia && controller?.hasPreviousMediaItem() == true
+        playbackNext.isEnabled = hasMedia && controller?.hasNextMediaItem() == true
         playbackShuffle.isEnabled = hasMedia
         playbackRepeat.isEnabled = hasMedia
         playbackPrevious.alpha = if (playbackPrevious.isEnabled) 1f else 0.32f
         playbackNext.alpha = if (playbackNext.isEnabled) 1f else 0.32f
-        playbackPlayPause.alpha = if (hasMedia) 1f else 0.38f
+        playbackPlayPause.alpha = if (playbackPlayPause.isEnabled) 1f else 0.38f
         playbackPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
-        miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
-        miniPlayPause.isEnabled = hasMedia
-        miniPlayPause.alpha = if (hasMedia) 1f else 0.38f
+        miniPlayPause.setImageResource(if (controller?.playWhenReady == true) R.drawable.ic_pause else R.drawable.ic_play)
+        miniPlayPause.isEnabled = sessionHasMedia
+        miniPlayPause.alpha = if (sessionHasMedia) 1f else 0.38f
         setIconButtonActive(playbackShuffle, controller?.shuffleModeEnabled == true)
         setIconButtonActive(playbackRepeat, hasMedia && controller?.repeatMode != Player.REPEAT_MODE_OFF)
         playbackShuffle.contentDescription = getString(
@@ -1057,24 +1083,24 @@ class MainActivity : Activity() {
             Player.REPEAT_MODE_ONE -> R.string.playback_repeat_one
             else -> R.string.playback_repeat_off
         })
-        val metadata = controller?.currentMediaItem?.mediaMetadata
+        val sessionMetadata = controller?.currentMediaItem?.mediaMetadata
+        val metadata = sessionMetadata.takeIf { hasMedia }
         val title = metadata?.title?.toString()?.takeIf { it.isNotBlank() }
             ?: queue?.name
             ?: getString(R.string.playback_nothing_playing)
         val artist = metadata?.artist?.toString()?.takeIf { it.isNotBlank() }
             ?: queue?.takeIf { !hasMedia }?.let {
-                resources.getQuantityString(R.plurals.queue_tracks, it.items.size, it.items.size, it.agent)
+                "${it.items.size} треков"
             }
             ?: getString(R.string.playback_unknown_artist)
         playbackCurrent.text = title
         playbackArtist.text = artist
         playbackHeroLabel.setText(if (hasMedia) R.string.now_playing_label else R.string.playlist_ready_label)
-        miniTitle.text = title
-        miniArtist.text = artist
-        miniPlayer.visibility = if (hasMedia) View.VISIBLE else View.GONE
-        playbackButton.visibility = if (queue != null && !hasMedia) View.VISIBLE else View.GONE
+        miniTitle.text = sessionMetadata?.title?.toString() ?: title
+        miniArtist.text = sessionMetadata?.artist?.toString() ?: activeQueue?.name ?: artist
+        miniPlayer.visibility = if (sessionHasMedia) View.VISIBLE else View.GONE
         playbackStopButton.visibility = if (hasMedia) View.VISIBLE else View.GONE
-        val duration = controller?.duration?.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L
+        val duration = controller?.duration?.takeIf { hasMedia && it > 0 && it != C.TIME_UNSET } ?: 0L
         val position = controller?.currentPosition?.coerceAtLeast(0L)?.coerceAtMost(duration) ?: 0L
         playbackPosition.text = getString(
             R.string.playback_position,
@@ -1087,7 +1113,6 @@ class MainActivity : Activity() {
                 (position * PLAYBACK_SEEK_MAX / duration).toFloat()
             } else 0f
         }
-        val activeQueue = PlaybackService.activeQueueSnapshot()
         refreshPlaybackTrackSelection(
             if (activeQueue?.eventID == queue?.eventID) {
                 controller?.currentMediaItemIndex ?: -1
@@ -1114,7 +1139,6 @@ class MainActivity : Activity() {
         if (queue == null) {
             playbackSummary.setText(R.string.playback_empty)
             refreshPlaybackStatus(null)
-            playbackButton.isEnabled = false
             playbackArtwork.showFallback("migi")
             miniArtwork.showFallback("migi")
             loadedArtworkKey = null
@@ -1122,16 +1146,9 @@ class MainActivity : Activity() {
             refreshPlaybackControls()
             return
         }
-        playbackSummary.text = resources.getQuantityString(
-            R.plurals.queue_tracks,
-            queue.items.size,
-            queue.items.size,
-            queue.agent,
-        )
+        playbackSummary.text = "${queue.name} · ${queue.items.size} треков"
         refreshPlaybackStatus(queue)
-        playbackButton.isEnabled = true
-        val artworkQueue = PlaybackService.activeQueueSnapshot() ?: queue
-        loadPlaylistArtwork(artworkQueue)
+        loadPlaylistArtwork(queue)
         val rows = ArrayList<PlaybackTrackRow>(queue.items.size)
         for ((index, track) in queue.items.withIndex()) {
             val number = TextView(this).apply {
@@ -1173,10 +1190,7 @@ class MainActivity : Activity() {
                     })
                 }, matchWidth())
                 setOnClickListener {
-                    playbackController?.takeIf { it.mediaItemCount > index }?.let { controller ->
-                        controller.seekTo(index, 0)
-                        controller.play()
-                    }
+                    if (PlaybackQueueRepository(this@MainActivity).current()?.eventID == queue.eventID) playMusicTrack(index)
                 }
             }
             playbackTracks.addView(card, matchWidth().apply { bottomMargin = dp(9) })
@@ -1212,7 +1226,7 @@ class MainActivity : Activity() {
                         playlists.size,
                     )
                     for (playlist in playlists) {
-                        val switchButton = secondaryActionButton(R.string.saved_playlist_switch)
+                        val switchButton = secondaryActionButton(R.string.saved_playlist_open)
                         val card = MaterialCardView(this).apply {
                             applyMigiCard(radiusDp = 18)
                             addView(LinearLayout(this@MainActivity).apply {
@@ -1245,7 +1259,7 @@ class MainActivity : Activity() {
                             }, matchWidth())
                         }
                         switchButton.setOnClickListener {
-                            queueSavedPlaylist(playlist, switchButton)
+                            openSavedPlaylist(playlist, switchButton)
                         }
                         savedPlaylistList.addView(card, matchWidth().apply { bottomMargin = dp(9) })
                     }
@@ -1254,26 +1268,40 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun queueSavedPlaylist(playlist: SavedPlaylistSummary, button: MaterialButton) {
+    private fun showMusicPage(playlists: Boolean) {
+        musicPlaylistsOpen = playlists
+        musicPlayerPage.visibility = if (playlists) View.GONE else View.VISIBLE
+        musicPlaylistsPage.visibility = if (playlists) View.VISIBLE else View.GONE
+        musicTabButtons.forEachIndexed { index, button ->
+            val selected = index == if (playlists) 1 else 0
+            button.backgroundTintList = ColorStateList.valueOf(if (selected) MigiPalette.primary else MigiPalette.surfaceHigh)
+            button.setTextColor(if (selected) MigiPalette.onPrimary else MigiPalette.muted)
+        }
+        tabPages.getOrNull(TAB_MUSIC)?.scrollTo(0, 0)
+    }
+
+    private fun mediaConnectionIdentity(): List<String?> = listOf(
+        DeviceIdentity.get(this), preferences.getString(KEY_ENDPOINT, null),
+        preferences.getString(KEY_CERTIFICATE_PIN, null), CredentialStore(this).load(),
+    )
+
+    private fun openSavedPlaylist(playlist: SavedPlaylistSummary, button: MaterialButton) {
         if (playlistExecutor.isShutdown) return
+        val request = playlistOpenGeneration.incrementAndGet()
+        val identity = mediaConnectionIdentity()
         button.isEnabled = false
-        savedPlaylistStatus.text = getString(R.string.saved_playlist_switching, playlist.name)
+        savedPlaylistStatus.text = "Открываем ${playlist.name}…"
         playlistExecutor.execute {
-            val result = runCatching { SavedPlaylistClient(applicationContext).start(playlist.id) }
+            val result = runCatching { SavedPlaylistClient(applicationContext).manifest(playlist.id) }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 button.isEnabled = true
-                savedPlaylistStatus.text = result.fold(
-                    onSuccess = { eventID ->
-                        getString(R.string.saved_playlist_queued, playlist.name, eventID)
-                    },
-                    onFailure = { error ->
-                        getString(
-                            R.string.saved_playlist_switch_failed,
-                            error.message ?: "unknown error",
-                        )
-                    },
-                )
+                if (request != playlistOpenGeneration.get() || identity != mediaConnectionIdentity()) return@runOnUiThread
+                result.mapCatching { PlaybackQueueRepository(this).selectManifest(playlist.id, it) }
+                    .onSuccess {
+                        refreshPlaybackQueue()
+                        showMusicPage(false)
+                    }.onFailure { savedPlaylistStatus.text = "Не удалось открыть плейлист: ${it.message}" }
             }
         }
     }
@@ -1319,24 +1347,34 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun prepareAndPlayQueue() {
-        val queue = PlaybackQueueRepository(this).current() ?: run {
-            refreshPlaybackQueue()
+    private fun toggleMusicPlayback() {
+        val controller = playbackController
+        val queue = PlaybackQueueRepository(this).current()
+        if (controller != null && controller.mediaItemCount > 0 &&
+            PlaybackService.activeQueueSnapshot()?.eventID == queue?.eventID) {
+            if (controller.playWhenReady) controller.pause() else { controller.prepare(); controller.play() }
+        } else playMusicTrack(0)
+    }
+
+    private fun playMusicTrack(index: Int) {
+        val queue = PlaybackQueueRepository(this).current() ?: return
+        if (index !in queue.items.indices) return
+        val controller = playbackController
+        if (controller != null && PlaybackService.activeQueueSnapshot()?.eventID == queue.eventID && controller.mediaItemCount > index) {
+            trackStartRequest++; startingTrack = false
+            controller.seekTo(index, 0); controller.prepare(); controller.play()
             return
         }
-        playbackButton.isEnabled = false
+        val request = ++trackStartRequest
+        startingTrack = true
         playbackStatus.setText(R.string.playback_starting)
-        PlaybackService.start(this, queue.eventID) { playbackError ->
-            if (!isDestroyed) {
-                if (playbackError == null) {
-                    playbackStatus.setText(R.string.playback_started)
-                } else {
-                    playbackStatus.text = getString(
-                        R.string.playback_failed,
-                        playbackError.message ?: "unknown error",
-                    )
-                }
-                playbackButton.isEnabled = true
+        refreshPlaybackControls()
+        PlaybackService.start(this, queue.eventID, index) { error ->
+            if (!isDestroyed && request == trackStartRequest) {
+                startingTrack = false
+                if (error != null) playbackStatus.text = getString(R.string.playback_failed, error.message ?: "unknown error")
+                else refreshPlaybackStatus()
+                refreshPlaybackControls()
             }
         }
     }

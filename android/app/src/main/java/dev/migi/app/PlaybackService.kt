@@ -195,24 +195,28 @@ class PlaybackService : MediaSessionService() {
 		const val HOT_SWAP_STATE_FAILED = "failed"
 		@Volatile private var instance: PlaybackService? = null
 		@Volatile private var activeQueue: PlaybackQueue? = null
+        private val startGeneration = AtomicLong()
 
-		fun start(context: Context, eventID: Long, onComplete: (Throwable?) -> Unit) {
+		fun start(context: Context, eventID: Long, startIndex: Int = 0, onComplete: (Throwable?) -> Unit) {
 			val application = context.applicationContext
 			cancelPendingReplacement(application)
+            val generation = startGeneration.get()
 			val token = SessionToken(application, ComponentName(application, PlaybackService::class.java))
 			val controllerFuture = MediaController.Builder(application, token).buildAsync()
 			controllerFuture.addListener({
 				val result = runCatching {
+                    check(generation == startGeneration.get()) { "Playback selection changed" }
 					val queue = requireNotNull(PlaybackQueueRepository(application).current()) {
 						"No playback queue is available"
 					}
 					require(queue.eventID == eventID) { "Playback queue changed before it could start" }
+                    require(startIndex in queue.items.indices) { "Track index is invalid" }
 					val items = mediaItems(application, queue)
 					val controller = controllerFuture.get()
 					val previousQueue = activeQueue
 					activeQueue = queue
 					runCatching {
-						controller.setMediaItems(items)
+						controller.setMediaItems(items, startIndex, 0L)
 						controller.prepare()
 						controller.play()
 					}.onFailure {
@@ -238,6 +242,7 @@ class PlaybackService : MediaSessionService() {
 		}
 
 		fun cancelPendingReplacement(context: Context) {
+            startGeneration.incrementAndGet()
 			instance?.replacementGeneration?.incrementAndGet()
 			clearHotSwapState(context.applicationContext)
 		}

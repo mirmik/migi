@@ -5,7 +5,7 @@ internal object PlaybackHotSwapPolicy {
         enabled: Boolean,
         activeEventID: Long?,
         incomingEventID: Long,
-    ): Boolean = enabled && activeEventID != null && incomingEventID > activeEventID
+    ): Boolean = enabled && incomingEventID > 0 && activeEventID != null && incomingEventID > activeEventID
 
     fun canCommit(
         enabled: Boolean,
