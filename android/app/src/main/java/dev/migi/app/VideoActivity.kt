@@ -1,8 +1,19 @@
 package dev.migi.app
 
 import android.app.Activity
-import android.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.Typeface
+import android.text.TextUtils
+import android.view.Gravity
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.Toast
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
 import android.content.pm.ActivityInfo
 import android.provider.OpenableColumns
 import android.content.SharedPreferences
@@ -15,7 +26,6 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.View
 import android.window.OnBackInvokedDispatcher
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -51,6 +61,7 @@ class VideoActivity : Activity() {
     private var lastActive: String? = null
     private val progress = mutableMapOf<PlaybackTrack, TextView>()
     private var downloadStatus: TextView? = null
+    private var catalogButton: MaterialButton? = null
     private val libraryListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "entries") runOnUiThread { if (current == null) showLibrary() }
     }
@@ -59,8 +70,13 @@ class VideoActivity : Activity() {
             if (current == null && lastActive != VideoDownloads.active) showLibrary()
             lastActive = VideoDownloads.active
             for ((track, label) in progress) label.text = description(track)
-            downloadStatus?.text = VideoDownloads.error ?: if (VideoDownloads.active != null)
-                "Загрузка… Оставьте Migi открытым. При обрыве можно продолжить." else "Выберите серию. Скачанное доступно без интернета."
+            downloadStatus?.let { label ->
+                val message = VideoDownloads.error ?: if (VideoDownloads.active != null)
+                    "Скачиваем видео. Оставьте Migi открытым — после обрыва загрузку можно продолжить." else ""
+                label.text = message
+                label.visibility = if (message.isEmpty()) View.GONE else View.VISIBLE
+                label.setTextColor(if (VideoDownloads.error != null) MigiPalette.danger else MigiPalette.muted)
+            }
             if (player?.let { it.playWhenReady && it.playbackState in listOf(Player.STATE_BUFFERING, Player.STATE_READY) } == true || VideoDownloads.active != null) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             savePosition(); handler.postDelayed(this, 1000)
@@ -73,6 +89,7 @@ class VideoActivity : Activity() {
         pendingSubtitleID = savedInstanceState?.getString("subtitle-picker")
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(MigiPalette.background)
             setOnApplyWindowInsetsListener { view, insets ->
                 val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars())
                 view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
@@ -115,12 +132,65 @@ class VideoActivity : Activity() {
             library.savePosition(track, active.currentPosition)
     }
     private fun releasePlayer() { savePosition(); player?.release(); player = null }
-    private fun text(parent: LinearLayout, value: String, size: Float = 16f): TextView = TextView(this).apply {
-        text = value; textSize = size; setPadding(20, 12, 20, 12); parent.addView(this)
+    private fun width(height: Int = -2) = LinearLayout.LayoutParams(-1, height)
+    private fun column(padding: Int = 0) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
     }
-    private fun button(parent: LinearLayout, label: String, enabled: Boolean = true, action: () -> Unit) {
-        parent.addView(Button(this).apply { text = label; isEnabled = enabled; setOnClickListener { action() } })
+    private fun gap(parent: LinearLayout, size: Int) { parent.addView(View(this), width(dp(size))) }
+    private fun text(parent: LinearLayout, value: String, size: Float = 16f,
+        color: Int = MigiPalette.text, bold: Boolean = false): TextView = TextView(this).apply {
+        text = value
+        applyMigiText(size, color, if (bold) Typeface.BOLD else Typeface.NORMAL)
+        setLineSpacing(0f, 1.12f)
+        parent.addView(this, width())
     }
+    private fun button(parent: LinearLayout, label: String, enabled: Boolean = true,
+        primary: Boolean = false, icon: Int = 0, action: () -> Unit): MaterialButton = MaterialButton(this).apply {
+        text = label; isAllCaps = false; isEnabled = enabled
+        applyMigiText(14f, if (primary) MigiPalette.onPrimary else MigiPalette.text, Typeface.BOLD)
+        minimumHeight = dp(50); minHeight = dp(50)
+        insetTop = 0; insetBottom = 0; cornerRadius = dp(16)
+        backgroundTintList = ColorStateList.valueOf(if (primary) MigiPalette.primary else MigiPalette.surfaceHigh)
+        strokeWidth = if (primary) 0 else dp(1)
+        strokeColor = ColorStateList.valueOf(MigiPalette.outline)
+        if (icon != 0) {
+            setIconResource(icon); iconSize = dp(20); iconPadding = dp(8)
+            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+            iconTint = ColorStateList.valueOf(if (primary) MigiPalette.onPrimary else MigiPalette.primary)
+        }
+        alpha = if (enabled) 1f else 0.45f
+        setOnClickListener { action() }
+        parent.addView(this, width().apply { topMargin = dp(10) })
+    }
+    private fun iconButton(icon: Int, label: String, action: () -> Unit) = ImageButton(this).apply {
+        setImageResource(icon); contentDescription = label
+        imageTintList = ColorStateList.valueOf(MigiPalette.muted)
+        background = rippleDrawable(this@VideoActivity, MigiPalette.surfaceHigh, 24)
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        setOnClickListener { action() }
+    }
+    private fun toolbar(title: String, action: () -> Unit) {
+        val bar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        bar.addView(iconButton(R.drawable.ic_back, "Назад", action), LinearLayout.LayoutParams(dp(48), dp(48)))
+        bar.addView(TextView(this).apply {
+            text = title; applyMigiText(16f, weight = Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) })
+        root.addView(bar, width())
+    }
+    private fun card(parent: LinearLayout): LinearLayout {
+        val body = column(18)
+        parent.addView(MaterialCardView(this).apply {
+            applyMigiCard(radiusDp = 22)
+            addView(body)
+        }, width().apply { bottomMargin = dp(12) })
+        return body
+    }
+    private fun dialog() = MaterialAlertDialogBuilder(this)
+        .setBackground(roundedDrawable(MigiPalette.surface, dp(28).toFloat(), MigiPalette.outline, dp(1)))
     private fun description(track: PlaybackTrack): String {
         val downloaded = VideoDownloads.bytes(this, track)
         val state = when {
@@ -136,62 +206,100 @@ class VideoActivity : Activity() {
     }
     private fun showLibrary() {
         setFullscreen(false)
-        generation++; releasePlayer(); current = null; restoreID = null
+        generation++; releasePlayer(); current = null; restoreID = null; playerView = null
         progress.clear(); root.removeAllViews()
-        text(root, "Видео", 26f)
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(ScrollView(this).apply { addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
-        downloadStatus = text(content, VideoDownloads.error ?: "Выберите серию. Скачанное доступно без интернета.")
-        button(content, "Сериалы и фильмы на сервере") { loadCollections(content) }
+        toolbar("Медиатека") { finish() }
+        val content = column(20)
+        root.addView(ScrollView(this).apply { isFillViewport = true; clipToPadding = false; addView(content) }, width(0).apply { weight = 1f })
+        text(content, "Видео", 34f, bold = true).letterSpacing = -0.035f
+        gap(content, 8)
+        text(content, "Сериалы и фильмы. Онлайн и с собой.", 15f, MigiPalette.muted)
+        gap(content, 12)
+        catalogButton = button(content, "Сериалы и фильмы на сервере", icon = R.drawable.ic_video) { loadCollections() }
+        downloadStatus = text(content, "", 13f, MigiPalette.muted).apply {
+            visibility = View.GONE; setPadding(0, dp(12), 0, 0)
+        }
+        gap(content, 24)
         val entries = library.entries()
-        if (entries.isEmpty()) text(content, "Попросите агента прислать сериал или фильм, либо выберите сохранённую подборку на сервере.")
+        if (entries.isEmpty()) {
+            val empty = card(content)
+            text(empty, "Что посмотрим?", 22f, bold = true)
+            gap(empty, 10)
+            text(empty, "Выберите подборку на сервере или попросите агента прислать сериал. Серии появятся здесь.", 15f, MigiPalette.muted)
+        }
         for ((name, episodes) in entries.groupBy { it.collection }) {
-            text(content, name, 22f)
+            text(content, name, 20f, bold = true)
+            gap(content, 12)
             for (entry in episodes) {
                 val track = entry.track
-                text(content, track.title, 18f)
-                progress[track] = text(content, description(track), 14f)
+                val body = card(content)
+                val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+                row.addView(ImageView(this).apply {
+                    setImageResource(R.drawable.ic_video)
+                    imageTintList = ColorStateList.valueOf(MigiPalette.primary)
+                    background = roundedDrawable(MigiPalette.surfaceHigh, dp(14).toFloat())
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                row.addView(TextView(this).apply {
+                    text = track.title; applyMigiText(16f, weight = Typeface.BOLD)
+                    maxLines = 3; ellipsize = TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12) })
+                if (VideoDownloads.bytes(this, track) > 0) {
+                    row.addView(iconButton(R.drawable.ic_delete, "Удалить с телефона: ${track.title}") {
+                        dialog().setTitle("Удалить с телефона?")
+                            .setMessage("Видео останется на сервере. Его можно будет посмотреть онлайн или скачать снова.")
+                            .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ ->
+                                runCatching { VideoDownloads.remove(this, track) }.onFailure { showError(it.message) }
+                                showLibrary()
+                            }.show()
+                    }.apply { isEnabled = VideoDownloads.active != track.id; alpha = if (isEnabled) 1f else 0.4f },
+                        LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(6) })
+                }
+                body.addView(row, width())
+                gap(body, 12)
+                progress[track] = text(body, description(track), 13f, MigiPalette.muted)
                 if (VideoDownloads.available(this, track)) {
-                    button(content, if (library.position(track) > 0) "Продолжить" else "Смотреть") { play(track) }
+                    button(body, if (library.position(track) > 0) "Продолжить" else "Смотреть", primary = true, icon = R.drawable.ic_play) { play(track) }
                 } else {
-                    button(content, if (library.position(track) > 0) "Продолжить онлайн" else "Смотреть онлайн") { play(track) }
-                    button(content, if (VideoDownloads.bytes(this, track) > 0) "Докачать" else "Скачать для офлайна", VideoDownloads.active == null) {
+                    button(body, if (library.position(track) > 0) "Продолжить онлайн" else "Смотреть онлайн", primary = true, icon = R.drawable.ic_play) { play(track) }
+                    button(body, if (VideoDownloads.bytes(this, track) > 0) "Докачать" else "Скачать для офлайна",
+                        enabled = VideoDownloads.active == null, icon = R.drawable.ic_nav_updates) {
                         VideoDownloads.start(this, track); showLibrary()
                     }
                 }
-                if (VideoDownloads.bytes(this, track) > 0) button(content, "Удалить с телефона", VideoDownloads.active != track.id) {
-                    runCatching { VideoDownloads.remove(this, track) }.onFailure { showError(it.message) }
-                    showLibrary()
-                }
             }
+            gap(content, 12)
         }
     }
     private fun showError(message: String?) {
-        AlertDialog.Builder(this).setMessage(message ?: "Ошибка").setPositiveButton("ОК", null).show()
+        dialog().setTitle("Не получилось").setMessage(message ?: "Попробуйте ещё раз")
+            .setPositiveButton("ОК", null).show()
     }
-    private fun loadCollections(content: LinearLayout) {
+    private fun loadCollections() {
         val request = ++generation
-        val status = text(content, "Загрузка списка…")
+        catalogButton?.apply { isEnabled = false; text = "Загрузка подборок…" }
         executor.execute {
             val result = runCatching { SavedPlaylistClient(applicationContext).list().filter { it.kind == "video" } }
             runOnUiThread {
                 if (isDestroyed || generation != request) return@runOnUiThread
+                catalogButton?.apply { isEnabled = true; text = "Сериалы и фильмы на сервере" }
                 result.onSuccess { collections ->
-                    status.text = if (collections.isEmpty()) "Сохранённых видео пока нет" else "Выберите подборку:"
-                    collections.forEach { collection ->
-                        button(content, "${collection.name} · ${collection.trackCount}") {
-                            status.text = "Получение списка серий…"
+                    if (collections.isEmpty()) {
+                        dialog().setTitle("На сервере пока нет видео")
+                            .setMessage("Попросите агента проиндексировать сериал или фильм.").setPositiveButton("Понятно", null).show()
+                    } else dialog().setTitle("Сериалы и фильмы")
+                        .setItems(collections.map { "${it.name} · ${it.trackCount}" }.toTypedArray()) { _, which ->
                             executor.execute {
-                                val started = runCatching { SavedPlaylistClient(applicationContext).start(collection.id) }
+                                val started = runCatching { SavedPlaylistClient(applicationContext).start(collections[which].id) }
                                 runOnUiThread {
-                                    if (!isDestroyed && generation == request) status.text = started.fold(
-                                        { "Подборка запрошена. Список появится после получения события." },
-                                        { "Не удалось получить подборку: ${it.message}" })
+                                    if (!isDestroyed && generation == request) started.onSuccess {
+                                        Toast.makeText(this, "Обновляем видеотеку…", Toast.LENGTH_SHORT).show()
+                                    }.onFailure { showError(it.message) }
                                 }
                             }
-                        }
-                    }
-                }.onFailure { status.text = "Не удалось загрузить список: ${it.message}" }
+                        }.setNegativeButton("Закрыть", null).show()
+                }.onFailure { showError(it.message) }
             }
         }
     }
@@ -199,20 +307,28 @@ class VideoActivity : Activity() {
         val offline = VideoDownloads.available(this, track)
         generation++; releasePlayer(); current = track
         progress.clear(); downloadStatus = null; root.removeAllViews()
-        button(root, "К списку видео") { showLibrary() }
-        text(root, track.title, 18f)
-        val status = text(root, if (offline) "С телефона" else "Подключение к видео…", 14f)
-        val view = PlayerView(this).apply {
+        toolbar("Видеотека") { showLibrary() }
+        val view = (layoutInflater.inflate(R.layout.migi_video_player, root, false) as PlayerView).apply {
             setShowSubtitleButton(true)
             setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             setFullscreenButtonClickListener { setFullscreen(it) }
         }
         playerView = view
-        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
-        button(root, "Звук и субтитры") {
+        stylePlayer(view)
+        root.addView(view, width())
+        val details = column(20)
+        root.addView(ScrollView(this).apply { addView(details); isFillViewport = true }, width(0).apply { weight = 1f })
+        text(details, library.entries().firstOrNull { it.track.id == track.id }?.collection.orEmpty(), 12f, MigiPalette.primary, bold = true)
+        gap(details, 10)
+        text(details, track.title, 24f, bold = true)
+        gap(details, 12)
+        val status = text(details, if (offline) "С телефона" else "Подключение к видео…", 13f, MigiPalette.muted)
+        gap(details, 18)
+        button(details, "Полный экран", primary = true, icon = R.drawable.ic_fullscreen) { setFullscreen(true) }
+        button(details, "Звук и субтитры", icon = R.drawable.ic_subtitles) {
             val options = mutableListOf("Звуковая дорожка", "Субтитры", "Выбрать файл субтитров")
             if (library.subtitle(track) != null) options.add("Убрать внешний файл субтитров")
-            AlertDialog.Builder(this).setItems(options.toTypedArray()) { _, which ->
+            dialog().setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> chooseTracks(C.TRACK_TYPE_AUDIO)
                     1 -> chooseTracks(C.TRACK_TYPE_TEXT)
@@ -268,7 +384,7 @@ class VideoActivity : Activity() {
                 }
                 override fun onPlayerError(error: PlaybackException) {
                     status.text = "Воспроизведение остановлено"
-                    AlertDialog.Builder(this@VideoActivity)
+                    dialog()
                         .setMessage("Не удалось воспроизвести видео: ${error.errorCodeName}")
                         .setPositiveButton("Повторить") { _, _ -> active.prepare(); active.play() }
                         .setNegativeButton("Закрыть", null).show()
@@ -306,6 +422,37 @@ class VideoActivity : Activity() {
             }
         }
     }
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updatePlayerLayout()
+    }
+    private fun updatePlayerLayout() {
+        val view = playerView ?: return
+        root.setBackgroundColor(if (fullscreen) Color.BLACK else MigiPalette.background)
+        view.background = roundedDrawable(Color.BLACK, if (fullscreen) 0f else dp(20).toFloat())
+        view.clipToOutline = !fullscreen
+        view.layoutParams = if (fullscreen) width(0).apply { weight = 1f } else {
+            val availableWidth = resources.displayMetrics.widthPixels - dp(40)
+            val height = minOf(availableWidth * 9 / 16, resources.displayMetrics.heightPixels / 2)
+            width(height).apply { marginStart = dp(20); marginEnd = dp(20) }
+        }
+    }
+    private fun stylePlayer(view: PlayerView) {
+        view.setShowPreviousButton(false); view.setShowNextButton(false)
+        view.setControllerAnimationEnabled(false)
+        val play = view.findViewById<ImageButton>(androidx.media3.ui.R.id.exo_play_pause)
+        play?.apply {
+            background = rippleDrawable(this@VideoActivity, MigiPalette.primary, 32)
+            imageTintList = ColorStateList.valueOf(MigiPalette.onPrimary)
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            layoutParams = layoutParams.apply { width = dp(64); height = dp(64) }
+        }
+        for (id in listOf(androidx.media3.ui.R.id.exo_position, androidx.media3.ui.R.id.exo_duration)) {
+            view.findViewById<TextView>(id)?.applyMigiText(12f, MigiPalette.text)
+        }
+        view.findViewById<android.widget.ProgressBar>(androidx.media3.ui.R.id.exo_buffering)
+            ?.indeterminateTintList = ColorStateList.valueOf(MigiPalette.primary)
+    }
     private fun setFullscreen(enabled: Boolean) {
         if (enabled && !fullscreen) orientationBeforeFullscreen = requestedOrientation
         fullscreen = enabled
@@ -318,6 +465,7 @@ class VideoActivity : Activity() {
             val child = root.getChildAt(index)
             if (child !== playerView) child.visibility = if (enabled) View.GONE else View.VISIBLE
         }
+        updatePlayerLayout()
         window.insetsController?.let { controller ->
             controller.systemBarsBehavior = if (enabled)
                 WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -335,7 +483,7 @@ class VideoActivity : Activity() {
             val format = group.getTrackFormat(index)
             (if (group.isTrackSelected(index)) "✓ " else "") + listOfNotNull(format.label, format.language).distinct().joinToString(" · ").ifBlank { "Дорожка ${index + 1}" }
         }
-        AlertDialog.Builder(this).setTitle(if (type == C.TRACK_TYPE_TEXT) "Субтитры" else "Звуковая дорожка")
+        dialog().setTitle(if (type == C.TRACK_TYPE_TEXT) "Субтитры" else "Звуковая дорожка")
             .setItems(labels.toTypedArray()) { _, selected ->
                 val parameters = active.trackSelectionParameters.buildUpon().clearOverridesOfType(type)
                     .setTrackTypeDisabled(type, type == C.TRACK_TYPE_TEXT && selected == 0)
