@@ -319,8 +319,8 @@ func publishAgentEventHandler(broker *events.Broker) http.HandlerFunc {
 			http.Error(w, "document.published must use /v1/documents", http.StatusBadRequest)
 			return
 		}
-		if input.Kind == playbackQueueEventKind {
-			http.Error(w, "media.queue.set must use /v1/playback/queue", http.StatusBadRequest)
+		if input.Kind == playbackQueueEventKind || input.Kind == videoQueueEventKind {
+			http.Error(w, "media/video queue events must use /v1/playback/queue", http.StatusBadRequest)
 			return
 		}
 		if !utf8.ValidString(input.Title) || !utf8.ValidString(input.Body) ||

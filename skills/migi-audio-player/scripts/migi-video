@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Index server-side video collections and deliver selected videos through Migi."""
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import re
+import sys
+from pathlib import Path
+from urllib.parse import urlencode
+
+loader = importlib.machinery.SourceFileLoader("_migi_video_media", str(Path(__file__).with_name("migi-play")))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+media = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = media
+loader.exec_module(media)
+
+VIDEO_MIME = {".mkv": "video/x-matroska", ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".avi": "video/x-msvideo"}
+MAX_VIDEO_BYTES = 8 << 30
+MAX_COLLECTION_BYTES = 1 << 40
+
+
+def natural_key(path: Path) -> tuple:
+    return tuple((0, int(part)) if part.isdigit() else (1, part.casefold()) for part in re.split(r"(\d+)", str(path)))
+
+
+def video_paths(operands: list[str]) -> list[Path]:
+    result = []
+    for operand in operands:
+        path = Path(operand).expanduser().resolve(strict=True)
+        candidates = path.rglob("*") if path.is_dir() else [path]
+        for candidate in candidates:
+            if candidate.is_file() and candidate.suffix.lower() in VIDEO_MIME:
+                result.append(candidate)
+            elif not path.is_dir():
+                raise media.MigiClientError(f"unsupported video extension: {path.suffix}")
+    result = sorted(set(result), key=natural_key)
+    if not result or len(result) > 256:
+        raise media.MigiClientError("index requires 1-256 videos; index seasons separately")
+    sizes = [path.stat().st_size for path in result]
+    if any(size <= 0 or size > MAX_VIDEO_BYTES for size in sizes) or sum(sizes) > MAX_COLLECTION_BYTES:
+        raise media.MigiClientError("video limit: 8 GiB per file, 1 TiB per collection")
+    return result
+
+
+def run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", "-config")
+    parser.add_argument("--endpoint", "-endpoint")
+    parser.add_argument("--device", "-device", default="")
+    parser.add_argument("--name", "-name", default="")
+    parser.add_argument("command", choices=("index", "list", "search", "queue", "save", "playlists", "start", "forget"))
+    parser.add_argument("operands", nargs="*")
+    args = parser.parse_args(argv)
+    client = media.resolve_agent_client(endpoint=args.endpoint, config=args.config)
+    if args.command == "index":
+        if not client.token:
+            raise media.MigiClientError("video indexing requires an authenticated origin configuration")
+        paths = video_paths(args.operands)
+        name = args.name or (Path(args.operands[0]).expanduser().resolve().stem if len(args.operands) == 1 else paths[0].parent.name)
+        if not name.strip() or name != name.strip() or len(name) > 128 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            raise media.MigiClientError("collection name must be 1-128 characters without surrounding whitespace or controls")
+        # Hash and validate every input before publishing catalog entries.
+        inputs = [media.origin_media_input(str(path), mime_type=VIDEO_MIME[path.suffix.lower()],
+            title=path.stem, maximum_bytes=MAX_VIDEO_BYTES) for path in paths]
+        objects = []
+        for offset in range(0, len(inputs), 128):
+            objects.extend(media.register_origin_media(client, inputs[offset:offset + 128]))
+        for item in objects:
+            media.print_object(item)
+        media.save_playlist(client, [str(item["id"]) for item in objects], name=name)
+        print("Indexed silently. Keep migi-origin running on this storage host; start the saved collection or queue selected IDs.")
+    elif args.command in ("list", "search"):
+        if args.command == "list" and args.operands or args.command == "search" and not args.operands:
+            raise media.MigiClientError("list takes no arguments; search requires words")
+        query = " ".join(args.operands)
+        path = "/v1/media" + ("?" + urlencode({"q": query}) if query else "")
+        with client.open("GET", path) as response:
+            items = media._server_result(response, expected=200, label="video catalog")
+        for item in items:
+            if item.get("mime", "").startswith("video/"):
+                media.print_object(item)
+    elif args.command in ("queue", "save"):
+        if not args.name:
+            raise media.MigiClientError("--name is required for queue and save")
+        # Reject audio IDs rather than unexpectedly replacing the phone's music.
+        with client.open("GET", "/v1/media") as response:
+            catalog = media._server_result(response, expected=200, label="video catalog")
+        video_ids = {item["id"] for item in catalog if item.get("mime", "").startswith("video/")}
+        if not args.operands or any(item not in video_ids for item in args.operands):
+            raise media.MigiClientError("queue/save requires existing video media IDs")
+        if args.command == "queue":
+            media.queue(client, args.operands, name=args.name, device=args.device)
+        else:
+            media.save_playlist(client, args.operands, name=args.name)
+    elif args.command == "playlists":
+        if args.operands:
+            raise media.MigiClientError("playlists takes no arguments")
+        # Agent endpoint provides references; only display video collections.
+        with client.open("GET", "/v1/media") as response:
+            catalog = media._server_result(response, expected=200, label="video catalog")
+        videos = {item["id"] for item in catalog if item.get("mime", "").startswith("video/")}
+        with client.open("GET", "/v1/playlists") as response:
+            playlists = media._server_result(response, expected=200, label="collections")
+        for item in playlists:
+            ids = item.get("media_ids", [])
+            if ids and all(id_ in videos for id_ in ids):
+                media.print_playlist(item)
+    else:
+        if len(args.operands) != 1:
+            raise media.MigiClientError(f"{args.command} requires one saved collection ID")
+        if not media.MEDIA_ID_RE.fullmatch(args.operands[0]):
+            raise media.MigiClientError("invalid saved collection ID")
+        if args.command == "start":
+            # Resolve references before publishing; this command is video-only.
+            with client.open("GET", "/v1/playlists/" + args.operands[0]) as response:
+                playlist = media._server_result(response, expected=200, label="video collection")
+            with client.open("GET", "/v1/media") as response:
+                catalog = media._server_result(response, expected=200, label="video catalog")
+            videos = {item["id"] for item in catalog if item.get("mime", "").startswith("video/")}
+            if not playlist.get("media_ids") or any(id_ not in videos for id_ in playlist["media_ids"]):
+                raise media.MigiClientError("collection contains unavailable or non-video media")
+            media.start_playlist(client, args.operands[0], device=args.device)
+        else:
+            media.forget_playlist(client, args.operands[0])
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(run())
+    except (media.MigiClientError, OSError, ValueError) as exc:
+        print(f"migi-video: {exc}", file=sys.stderr)
+        raise SystemExit(1)

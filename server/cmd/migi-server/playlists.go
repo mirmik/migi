@@ -39,6 +39,7 @@ type savedPlaylist struct {
 // phones. Track and artwork IDs remain private until the phone chooses a
 // playlist and receives its authenticated, device-targeted queue event.
 type savedPlaylistSummary struct {
+	Kind       string    `json:"kind"`
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
 	TrackCount int       `json:"track_count"`
@@ -74,8 +75,15 @@ func (s *mediaStore) listSavedPlaylistsForDeviceHandler(w http.ResponseWriter, _
 	}
 	summaries := make([]savedPlaylistSummary, 0, len(playlists))
 	for _, playlist := range playlists {
+		kind := "audio"
+		if len(playlist.MediaIDs) > 0 {
+			if object, err := s.get(playlist.MediaIDs[0], time.Now().UTC()); err == nil && isVideoMIME(object.MIME) {
+				kind = "video"
+			}
+		}
 		summaries = append(summaries, savedPlaylistSummary{
-			ID: playlist.ID, Name: playlist.Name,
+			Kind: kind,
+			ID:   playlist.ID, Name: playlist.Name,
 			TrackCount: len(playlist.MediaIDs), UpdatedAt: playlist.UpdatedAt,
 		})
 	}
@@ -277,7 +285,7 @@ func (s *mediaStore) queueSavedPlaylistForTarget(
 		return
 	}
 	event, err := s.broker.Publish(r.Context(), events.Input{
-		Kind: playbackQueueEventKind, Agent: agent,
+		Kind: manifest.eventKind(), Agent: agent,
 		Title: "Playlist ready: " + playlist.Name, Body: string(body),
 	})
 	if err != nil {
@@ -299,16 +307,18 @@ func (s *mediaStore) validateSavedPlaylistReferences(artworkID string, mediaIDs 
 		}
 	}
 	var total int64
+	var firstMIME string
 	for _, id := range mediaIDs {
 		object, err := s.get(id, time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		if !isAudioMIME(object.MIME) {
-			return errors.New("saved playlist tracks must reference audio media")
+		if !isPlayableMIME(object.MIME) || firstMIME != "" && isVideoMIME(firstMIME) != isVideoMIME(object.MIME) {
+			return errors.New("saved playlist must contain only audio or only video")
 		}
+		firstMIME = object.MIME
 		total += object.Size
-		if total > maxPlaybackQueueBytes {
+		if total > playbackByteLimit(object.MIME) {
 			return errors.New("saved playlist exceeds the size limit")
 		}
 	}
@@ -353,8 +363,8 @@ func (s *mediaStore) savedPlaylistManifest(
 		if err != nil {
 			return manifest, err
 		}
-		if !isAudioMIME(object.MIME) {
-			return manifest, errors.New("saved playlist track is not audio")
+		if !isPlayableMIME(object.MIME) {
+			return manifest, errors.New("saved playlist item is not playable")
 		}
 		manifest.Items = append(manifest.Items, playbackMediaReference{
 			ID: object.ID, Title: object.Title, Artist: object.Artist,

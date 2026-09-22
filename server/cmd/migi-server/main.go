@@ -65,7 +65,7 @@ func run() error {
 	transferTotalBytes := flag.Int64("file-total-bytes", defaultTransferTotalBytes, "maximum total shared file bytes")
 	transferTTL := flag.Duration("file-ttl", defaultTransferTTL, "shared file retention period")
 	mediaDirectory := flag.String("media-dir", mediaDirectoryDefault, "private agent media directory")
-	mediaMaxBytes := flag.Int64("media-max-bytes", defaultMediaMaxBytes, "maximum bytes per media object")
+	mediaMaxBytes := flag.Int64("media-max-bytes", defaultMediaMaxBytes, "maximum bytes per audio media object (video limit is 8 GiB)")
 	mediaTotalBytes := flag.Int64("media-total-bytes", defaultMediaTotalBytes, "maximum total media bytes")
 	mediaTTL := flag.Duration("media-ttl", defaultMediaTTL, "unreferenced directly uploaded media retention period")
 	voiceConfigPath := flag.String("voice-config", os.Getenv("MIGI_VOICE_CONFIG"), "optional private config for the voice STT/model demo")
@@ -448,8 +448,8 @@ func publishHandler(broker *events.Broker) http.HandlerFunc {
 			http.Error(w, "kind and title are required", http.StatusBadRequest)
 			return
 		}
-		if input.Kind == playbackQueueEventKind {
-			http.Error(w, "media.queue.set must use /v1/playback/queue", http.StatusBadRequest)
+		if input.Kind == playbackQueueEventKind || input.Kind == videoQueueEventKind {
+			http.Error(w, "media/video queue events must use /v1/playback/queue", http.StatusBadRequest)
 			return
 		}
 

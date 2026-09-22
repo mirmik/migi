@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,9 @@ const (
 	// messages so full albums with realistic titles still fit.
 	maxPlaybackManifest    = 256 << 10
 	playbackQueueEventKind = "media.queue.set"
+	videoQueueEventKind    = "video.queue.set"
+	maxVideoBytes          = int64(8 << 30)
+	maxVideoQueueBytes     = int64(1 << 40)
 )
 
 var (
@@ -237,6 +241,11 @@ func (s *mediaStore) contentHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read media metadata", http.StatusInternalServerError)
 		return
 	}
+	if _, err := mediaResumeOffset(r, record.Size); err != nil {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", record.Size))
+		http.Error(w, err.Error(), http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
 	if record.RemoteOrigin != nil {
 		s.proxyRemoteMedia(w, r, record)
 		return
@@ -247,7 +256,12 @@ func (s *mediaStore) contentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer content.Close()
-	writeMediaContentHeaders(w, record.mediaObject)
+	offset, _ := mediaResumeOffset(r, record.Size)
+	if _, err := content.Seek(offset, io.SeekStart); err != nil {
+		http.Error(w, "cannot seek media", 500)
+		return
+	}
+	writeMediaResumeHeaders(w, record.mediaObject, offset)
 	_, _ = io.Copy(w, content)
 }
 
@@ -270,7 +284,7 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 		}
 		contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if err != nil || !isPlaybackMediaMIME(contentType) {
-			http.Error(w, "Content-Type must be audio/*, image/jpeg, image/png, or image/webp", http.StatusUnsupportedMediaType)
+			http.Error(w, "Content-Type must be audio/*, video/*, image/jpeg, image/png, or image/webp", http.StatusUnsupportedMediaType)
 			return
 		}
 		title, err := normalizeMediaText(r.Header.Get("X-Migi-Title"), false)
@@ -293,7 +307,7 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 			http.Error(w, "a non-empty Content-Length is required", http.StatusLengthRequired)
 			return
 		}
-		if r.ContentLength > s.maxBytes {
+		if r.ContentLength > s.objectLimit(contentType) {
 			http.Error(w, "media exceeds configured size", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -407,12 +421,12 @@ func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Han
 				http.Error(w, "failed to resolve queue media", http.StatusInternalServerError)
 				return
 			}
-			if !isAudioMIME(object.MIME) {
-				http.Error(w, "queue tracks must reference audio media", http.StatusBadRequest)
+			if !isPlayableMIME(object.MIME) || len(manifest.Items) > 0 && isVideoMIME(object.MIME) != isVideoMIME(manifest.Items[0].MIME) {
+				http.Error(w, "queue must contain only audio or only video media", http.StatusBadRequest)
 				return
 			}
 			totalBytes += object.Size
-			if totalBytes > maxPlaybackQueueBytes {
+			if totalBytes > playbackByteLimit(object.MIME) {
 				http.Error(w, "playback queue exceeds the size limit", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -428,7 +442,7 @@ func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Han
 		}
 		agent := normalizeMediaAgent(agentName(r))
 		event, err := s.broker.Publish(r.Context(), events.Input{
-			Kind: playbackQueueEventKind, Agent: agent,
+			Kind: manifest.eventKind(), Agent: agent,
 			Title: "Playlist ready: " + request.Name, Body: string(body),
 		})
 		if err != nil {
@@ -469,7 +483,7 @@ func (s *mediaStore) store(
 	body io.Reader,
 	declared int64,
 ) (mediaObject, error) {
-	if declared <= 0 || declared > s.maxBytes {
+	if declared <= 0 || declared > s.objectLimit(contentType) {
 		return mediaObject{}, errMediaTooLarge
 	}
 	idBytes := make([]byte, 16)
@@ -743,7 +757,7 @@ func isArtworkMIME(value string) bool {
 }
 
 func isPlaybackMediaMIME(value string) bool {
-	return isAudioMIME(value) || isArtworkMIME(value)
+	return isPlayableMIME(value) || isArtworkMIME(value)
 }
 
 func normalizeMediaAgent(raw string) string {
@@ -752,4 +766,55 @@ func normalizeMediaAgent(raw string) string {
 		return "local"
 	}
 	return raw
+}
+
+func isVideoMIME(value string) bool {
+	return strings.HasPrefix(strings.ToLower(value), "video/") && len(value) <= 127
+}
+func isPlayableMIME(value string) bool { return isAudioMIME(value) || isVideoMIME(value) }
+func playbackByteLimit(mime string) int64 {
+	if isVideoMIME(mime) {
+		return maxVideoQueueBytes
+	}
+	return maxPlaybackQueueBytes
+}
+func (s *mediaStore) objectLimit(mime string) int64 {
+	if isVideoMIME(mime) {
+		return maxVideoBytes
+	}
+	return s.maxBytes
+}
+func (m playbackQueueManifest) eventKind() string {
+	if len(m.Items) > 0 && isVideoMIME(m.Items[0].MIME) {
+		return videoQueueEventKind
+	}
+	return playbackQueueEventKind
+}
+
+func mediaResumeOffset(r *http.Request, size int64) (int64, error) {
+	value := r.Header.Get("Range")
+	if value == "" {
+		return 0, nil
+	}
+	if !strings.HasPrefix(value, "bytes=") || !strings.HasSuffix(value, "-") {
+		return 0, errors.New("only open-ended byte ranges are supported")
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(value, "bytes="), "-")
+	if raw == "" || strings.IndexFunc(raw, func(c rune) bool { return c < '0' || c > '9' }) >= 0 {
+		return 0, errors.New("invalid range")
+	}
+	offset, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || offset < 0 || offset >= size {
+		return 0, errors.New("range outside media")
+	}
+	return offset, nil
+}
+func writeMediaResumeHeaders(w http.ResponseWriter, object mediaObject, offset int64) {
+	writeMediaContentHeaders(w, object)
+	w.Header().Set("Accept-Ranges", "bytes")
+	if offset > 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(object.Size-offset))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, object.Size-1, object.Size))
+		w.WriteHeader(http.StatusPartialContent)
+	}
 }

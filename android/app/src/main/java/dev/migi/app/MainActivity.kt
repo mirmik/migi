@@ -361,6 +361,9 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, dp(24), padding, dp(36))
             addView(screenHeader(R.string.tab_playback, R.string.music_subtitle), matchWidth())
+            addView(secondaryActionButton(R.string.video_library).apply {
+                setOnClickListener { startActivity(Intent(this@MainActivity, VideoActivity::class.java)) }
+            }, matchWidth())
             addGap(24)
             val artworkSize = minOf(resources.displayMetrics.widthPixels - dp(40), dp(360))
             playbackArtwork = PlaylistArtworkView(this@MainActivity).apply {
@@ -1189,7 +1192,7 @@ class MainActivity : Activity() {
         savedPlaylistStatus.setText(R.string.saved_playlists_loading)
         savedPlaylistList.removeAllViews()
         playlistExecutor.execute {
-            val result = runCatching { SavedPlaylistClient(applicationContext).list() }
+            val result = runCatching { SavedPlaylistClient(applicationContext).list().filter { it.kind == "audio" } }
             runOnUiThread {
                 if (isDestroyed || generation != playlistRefreshGeneration.get()) return@runOnUiThread
                 savedPlaylistList.removeAllViews()
@@ -1762,6 +1765,7 @@ class MainActivity : Activity() {
                 ) { "Failed to save paired server" }
                 ReleaseRepository(this).use { it.resetForPairing() }
                 PlaybackQueueRepository(this).reset()
+                VideoLibrary(this).reset()
                 PlaybackMediaCache(this).clear()
             }
             runOnUiThread {

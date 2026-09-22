@@ -6,7 +6,7 @@ Observed on 2026-07-21:
 
 - OpenJDK 21 is installed;
 - system Go 1.26.0 is installed; the server module requires the patched Go
-  1.26.5 toolchain, which the default `GOTOOLCHAIN=auto` setting downloads;
+  1.26.8 toolchain, which the default `GOTOOLCHAIN=auto` setting downloads;
 - Android command-line tools and `adb` are installed;
 - Android platform 36 is installed;
 - Android build-tools 35.0.0 and 36.0.0 are installed;
@@ -389,7 +389,7 @@ compiler; the current workstation already has GCC and SQLite development files.
 
 ### Server security verification
 
-The server requires Go 1.26.5 or newer. Run the complete verification below
+The server requires Go 1.26.8 or newer. Run the complete verification below
 after changing the toolchain or dependencies and before deploying a new binary:
 
 ```bash
@@ -457,3 +457,39 @@ adb shell dumpsys deviceidle unforce
 ```
 
 The reliability checklist is tracked separately on the Kanboard project.
+
+### Index and watch server-side videos
+
+Use the Python video client bundled with the media skill:
+
+```bash
+skills/migi-audio-player/scripts/migi-video --config /secure/origin.json \
+  --name "Series · Season 1" index /storage/series/season-1
+skills/migi-audio-player/scripts/migi-origin --config /secure/origin.json
+```
+
+Indexing recursively sorts episodes naturally and silently saves a collection.
+Keep the origin process running. On a curator host, search the catalog and send
+one episode or the collection metadata:
+
+```bash
+skills/migi-audio-player/scripts/migi-video search Series
+skills/migi-audio-player/scripts/migi-video --device PHONE_ID \
+  --name "Series · Season 1" queue EPISODE_MEDIA_ID
+skills/migi-audio-player/scripts/migi-video --device PHONE_ID start COLLECTION_ID
+```
+
+On Android open **Music → Video** or the video notification. The server
+collections button retrieves saved video collections. Download one episode,
+then watch offline with seek, fullscreen, embedded audio/subtitle selection,
+position memory, and a watched marker. Delete downloaded files explicitly to
+free space. Keep the video screen open during downloads; a partial file survives
+network/process failure and can be resumed. No streaming-before-completion,
+external subtitle import, transcoding, or agent-visible watch-history API is
+provided in this version. Container/codec compatibility needs a real-device
+check, particularly for anime subtitle styling and high-bit-depth encodes.
+
+Before device acceptance test a >256 MiB episode, interrupt and resume its
+transfer, disable networking after completion, seek and rotate during playback,
+choose alternate audio/subtitles, reopen at the saved position, finish an
+episode, delete it locally, and confirm music queues still work independently.

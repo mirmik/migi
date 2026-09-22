@@ -1,6 +1,6 @@
 ---
 name: migi-audio-player
-description: Index audio on a remote storage host, run a pull-on-demand Migi media origin, search the shared media catalog, save and replay persistent playlists, or send one-off audio queues to paired Android phones. Use when a user asks an agent to put on music, catalog an album, save or start a playlist, send album artwork, or diagnose Migi music delivery. Do not use migi-file-exchange for playable music or covers.
+description: Index audio or video on a remote storage host, run a pull-on-demand Migi media origin, search the shared media catalog, save and replay persistent playlists, or send one-off audio queues to paired Android phones. Use when a user asks an agent to put on music, catalog an album, save or start a playlist, send album artwork, send a movie or anime episode, index a video series, or diagnose Migi media delivery. Do not use migi-file-exchange for playable music or covers.
 ---
 
 # Migi Audio Player
@@ -130,3 +130,9 @@ and preserves Play/Pause.
   control.
 - Do not restart, deploy, or publish Migi merely to send music unless the user
   explicitly requests operational changes.
+
+## Video: series and movies
+
+Use the bundled `scripts/migi-video` for video; `.mp4` is video here and remains
+an audio input in the music helpers. Read [references/video.md](references/video.md)
+for indexing a season, queuing episodes, and download/player limitations.

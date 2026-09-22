@@ -169,9 +169,9 @@ func (s *mediaStore) registerRemoteMedia(input originMediaInput, agent events.Ag
 	}
 	contentType, _, err := mime.ParseMediaType(input.MIME)
 	if err != nil || !isPlaybackMediaMIME(contentType) {
-		return object, errors.New("mime must be audio/*, image/jpeg, image/png, or image/webp")
+		return object, errors.New("mime must be audio/*, video/*, image/jpeg, image/png, or image/webp")
 	}
-	if input.Size <= 0 || input.Size > s.maxBytes || isArtworkMIME(contentType) && input.Size > maxPlaybackArtwork {
+	if input.Size <= 0 || input.Size > s.objectLimit(contentType) || isArtworkMIME(contentType) && input.Size > maxPlaybackArtwork {
 		return object, errMediaTooLarge
 	}
 	if !mediaSHA256Pattern.MatchString(input.SHA256) {
@@ -356,23 +356,30 @@ func (s *mediaStore) proxyRemoteMedia(w http.ResponseWriter, r *http.Request, re
 	})
 	defer stopCancellation()
 
-	writeMediaContentHeaders(w, record.mediaObject)
-	w.WriteHeader(http.StatusOK)
+	offset, _ := mediaResumeOffset(r, record.Size)
+	hash := sha256.New()
+	// Re-read and hash the origin prefix without sending it to the phone.
+	// This preserves compatibility with existing origin clients and full-object verification.
+	if _, err := io.CopyN(hash, stream.Body, offset); err != nil {
+		s.completeOriginRequest(request, err)
+		http.Error(w, "origin prefix unavailable", http.StatusBadGateway)
+		return
+	}
+	writeMediaResumeHeaders(w, record.mediaObject, offset)
 	output := io.Writer(w)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 		output = flushingWriter{Writer: w, Flush: flusher.Flush}
 	}
-	hash := sha256.New()
 	written, copyErr := io.Copy(
 		io.MultiWriter(output, hash),
-		io.LimitReader(stream.Body, request.Size+1),
+		io.LimitReader(stream.Body, request.Size-offset+1),
 	)
 	var result error
 	switch {
 	case copyErr != nil:
 		result = fmt.Errorf("%w: proxy origin content: %v", errMediaOriginUnavailable, copyErr)
-	case written != request.Size:
+	case written+offset != request.Size:
 		result = errMediaOriginRejected
 	case hex.EncodeToString(hash.Sum(nil)) != request.SHA256:
 		result = errMediaOriginRejected

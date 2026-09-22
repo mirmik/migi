@@ -160,7 +160,7 @@ internal class EventAudioPlayer(context: Context) : AutoCloseable {
             "agent.completed" -> Cue.COMPLETED
             "agent.attention_required" -> Cue.ATTENTION
             "pager.message" -> if (event.body.isBlank()) null else Cue.PAGER
-			PlaybackQueueCodec.EVENT_KIND -> null
+			PlaybackQueueCodec.EVENT_KIND, PlaybackQueueCodec.VIDEO_EVENT_KIND -> null
             else -> Cue.ATTENTION
         }
     }

@@ -29,8 +29,8 @@ data class PlaybackQueue(
 )
 
 internal object PlaybackQueueCodec {
-	fun parse(event: AgentEvent): PlaybackQueue {
-		require(event.kind == EVENT_KIND) { "Not a playback queue event" }
+	fun parse(event: AgentEvent, video: Boolean = false): PlaybackQueue {
+		require(event.kind == if (video) VIDEO_EVENT_KIND else EVENT_KIND) { "Not a playback queue event" }
 		val manifest = JSONObject(event.body)
 		require(manifest.getInt("version") == SCHEMA_VERSION) { "Unsupported playback queue version" }
 		val name = manifest.getString("name")
@@ -47,10 +47,10 @@ internal object PlaybackQueueCodec {
 			deviceID = deviceID,
 			items = items,
 			artwork = manifest.optJSONObject("artwork")?.let(::parseArtwork),
-		))
+		), video)
 	}
 
-	internal fun validate(queue: PlaybackQueue): PlaybackQueue {
+	internal fun validate(queue: PlaybackQueue, video: Boolean = false): PlaybackQueue {
 		require(queue.eventID > 0) { "Playback queue event ID is invalid" }
 		require(validText(queue.name, MAX_QUEUE_NAME_LENGTH)) { "Playback queue name is invalid" }
 		require(queue.deviceID.isEmpty() || DEVICE_ID.matches(queue.deviceID)) { "Playback target is invalid" }
@@ -60,11 +60,11 @@ internal object PlaybackQueueCodec {
 			require(MEDIA_ID.matches(track.id)) { "Media ID is invalid" }
 			require(validText(track.title, MAX_TRACK_TEXT_LENGTH)) { "Track title is invalid" }
 			require(track.artist.isEmpty() || validText(track.artist, MAX_TRACK_TEXT_LENGTH)) { "Track artist is invalid" }
-			require(track.mime.startsWith("audio/") && track.mime.length <= 127) { "Track MIME type is invalid" }
-			require(track.size in 1..MAX_TRACK_BYTES) { "Track size is invalid" }
+			require(track.mime.startsWith(if (video) "video/" else "audio/") && track.mime.length <= 127) { "Track MIME type is invalid" }
+			require(track.size in 1..(if (video) MAX_VIDEO_BYTES else MAX_TRACK_BYTES)) { "Track size is invalid" }
 			require(SHA256.matches(track.sha256)) { "Track digest is invalid" }
 			totalBytes = Math.addExact(totalBytes, track.size)
-			require(totalBytes <= MAX_QUEUE_BYTES) { "Playback queue is too large" }
+			require(totalBytes <= if (video) MAX_VIDEO_QUEUE_BYTES else MAX_QUEUE_BYTES) { "Playback queue is too large" }
 		}
 		queue.artwork?.let { artwork ->
 			require(MEDIA_ID.matches(artwork.id)) { "Artwork media ID is invalid" }
@@ -95,6 +95,9 @@ internal object PlaybackQueueCodec {
 	private fun validText(value: String, maxLength: Int): Boolean =
 		value.isNotBlank() && value == value.trim() && value.length <= maxLength && value.none(Char::isISOControl)
 
+	const val VIDEO_EVENT_KIND = "video.queue.set"
+	const val MAX_VIDEO_BYTES = 8L * 1024 * 1024 * 1024
+	const val MAX_VIDEO_QUEUE_BYTES = 1024L * 1024 * 1024 * 1024
 	const val EVENT_KIND = "media.queue.set"
 	const val SCHEMA_VERSION = 1
 	const val MAX_TRACK_BYTES = 256L * 1024 * 1024

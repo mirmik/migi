@@ -533,6 +533,42 @@ class SkillClientTests(unittest.TestCase):
         saved = json.loads(registry.read_text(encoding="utf-8"))
         self.assertEqual(len(saved["entries"]), 2)
 
+    def test_video_indexes_naturally_sorted_collection_without_delivery(self) -> None:
+        skill = self.copied_skill(AUDIO_SKILL)
+        video = load_script("portable_migi_video", skill / "scripts/migi-video")
+        transport = sys.modules["_migi_transport"]
+        client = transport.MigiHTTPClient(transport.urlsplit(self.endpoint), token="migi_at_test_origin")
+        folder = self.root / "Season 1"
+        folder.mkdir()
+        (folder / "Episode 10.mkv").write_bytes(b"mkv")
+        (folder / "Episode 2.mp4").write_bytes(b"mp4")
+        (folder / "cover.jpg").write_bytes(b"cover")
+        registry = self.root / "video-origin.json"
+        with (
+            mock.patch.dict(os.environ, {"MIGI_ORIGIN_REGISTRY": str(registry)}),
+            mock.patch.object(video.media, "resolve_agent_client", return_value=client),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(video.run(["index", str(folder)]), 0)
+        items = self.state["origin_media_manifests"][0]["items"]
+        self.assertEqual([item["name"] for item in items], ["Episode 2.mp4", "Episode 10.mkv"])
+        self.assertEqual([item["mime"] for item in items], ["video/mp4", "video/x-matroska"])
+        self.assertEqual(self.state["queues"], [])
+        self.assertEqual(self.state["media_uploads"], [])
+        self.assertEqual(len(self.state["playlist_saves"]), 1)
+        self.assertEqual(len(json.loads(registry.read_text())["entries"]), 2)
+        self.assertNotIn(str(folder), json.dumps(items))
+
+    def test_video_rejects_large_input_before_registering_any_metadata(self) -> None:
+        skill = self.copied_skill(AUDIO_SKILL)
+        video = load_script("portable_migi_video_limits", skill / "scripts/migi-video")
+        path = self.root / "huge.mkv"
+        with path.open("wb") as file:
+            file.truncate(video.MAX_VIDEO_BYTES + 1)
+        with self.assertRaises(video.media.MigiClientError):
+            video.video_paths([str(path)])
+        self.assertEqual(self.state["origin_media_manifests"], [])
+
     def test_audio_skill_searches_and_reuses_saved_playlist(self) -> None:
         skill = self.copied_skill(AUDIO_SKILL)
         self.state["media"] = [

@@ -10,6 +10,7 @@ data class SavedPlaylistSummary(
     val name: String,
     val trackCount: Int,
     val updatedAt: Instant,
+    val kind: String = "audio",
 )
 
 internal class SavedPlaylistClient(private val context: Context) {
@@ -76,6 +77,7 @@ internal class SavedPlaylistClient(private val context: Context) {
                         name = name,
                         trackCount = trackCount,
                         updatedAt = Instant.parse(item.getString("updated_at")),
+                        kind = item.optString("kind", "audio"),
                     )))
                 }
             }

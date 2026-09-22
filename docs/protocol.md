@@ -476,3 +476,30 @@ user enables hot playlist replacement and a Media3 queue is already active,
 Android keeps that queue intact while it downloads and verifies the first track
 of the newer revision. It then replaces the Media3 timeline atomically and
 preserves Play/Pause. An idle player still requires an explicit user start.
+
+### Video collections and resumable media downloads
+
+The media store also accepts `video/*` objects up to 8 GiB. Audio retains its
+configured per-object limit (256 MiB by default); artwork retains its 8 MiB
+limit. Direct-upload storage quotas still apply; origin-backed video avoids
+server blob storage. Video queues and saved collections are homogeneous:
+mixing audio and video is rejected. Video reference bytes may total up to
+1 TiB; existing request/manifest metadata bounds still apply.
+
+The queue and saved-playlist endpoints derive the event kind from the referenced
+objects: `video.queue.set` for video and `media.queue.set` for audio. Both use
+the version-1 playback manifest and device targeting. Neither kind may be
+submitted through raw event ingress. Device playlist summaries additionally
+contain `kind: "audio" | "video"` (clients treat an absent field as audio).
+Video events accumulate in a separate Android library and never hot-swap music.
+
+`GET /v1/media/{id}/content` supports `Range: bytes=N-` for resume. A positive
+valid offset produces 206, `Content-Range: bytes N-(size-1)/size`, the remaining
+Content-Length, and the **full object's** X-Content-SHA256. Invalid, suffix,
+closed and multipart ranges produce 416. An offset of zero returns the full
+200 response. Immutable media IDs/digests bind a partial file to its object.
+For remote objects, the server rereads and hashes the whole origin stream,
+discards the prefix, and relays the suffix. This retains compatibility with
+existing origin clients and saves phone bandwidth, but does not save origin
+bandwidth. Android hashes the existing prefix and received suffix, checks the
+full digest against the event manifest, then commits its private file.

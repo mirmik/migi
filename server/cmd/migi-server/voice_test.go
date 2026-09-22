@@ -105,7 +105,7 @@ func TestVoiceCycleChunksDeduplicatesAndReplaysReply(t *testing.T) {
 	if _, err = store.store(t.Context(), "other.wav", "audio/wav", "device:phone", bytes.NewReader(wav), int64(len(wav))); err != nil {
 		t.Fatal(err)
 	}
-	again := *p
+	again := voiceProcessor{requireApproval: p.requireApproval, config: p.config, client: p.client, files: p.files, state: p.state}
 	again.scan(t.Context())
 	if sttCalls != 2 || modelCalls != 1 {
 		t.Fatalf("stt=%d model=%d", sttCalls, modelCalls)

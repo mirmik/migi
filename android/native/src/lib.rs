@@ -6,7 +6,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::{FromRawFd, RawFd};
 use std::time::{Duration, Instant};
@@ -1006,6 +1006,33 @@ fn upload_request(
     })
 }
 
+// Shared-file destinations may be non-seekable Android document-provider pipes.
+// Only private media files support resume; do not seek or inspect other outputs.
+fn prepare_download_prefix(
+    destination: &mut File,
+    max_bytes: u64,
+    resume: bool,
+) -> Result<(u64, Sha256), AnyError> {
+    let mut digest = Sha256::new();
+    if !resume {
+        return Ok((0, digest));
+    }
+    let offset = destination.metadata()?.len();
+    if offset >= max_bytes {
+        return Err(invalid("partial download is already complete or oversized"));
+    }
+    destination.seek(SeekFrom::Start(0))?;
+    let mut prefix = [0_u8; 64 * 1024];
+    let mut remaining = offset;
+    while remaining > 0 {
+        let count = remaining.min(prefix.len() as u64) as usize;
+        destination.read_exact(&mut prefix[..count])?;
+        digest.update(&prefix[..count]);
+        remaining -= count as u64;
+    }
+    Ok((offset, digest))
+}
+
 fn download_request(
     endpoint: &str,
     expected_pin: &[u8; 32],
@@ -1014,6 +1041,11 @@ fn download_request(
     destination: &mut File,
     max_bytes: u64,
 ) -> Result<String, AnyError> {
+    let (offset, mut digest) = prepare_download_prefix(
+        destination,
+        max_bytes,
+        request_path.starts_with("/v1/media/"),
+    )?;
     let url = Url::parse(endpoint)?;
     if url.scheme() != "https" {
         return Err(invalid("endpoint must use https"));
@@ -1044,11 +1076,15 @@ fn download_request(
     let mut request_stream = None;
     let mut expected_length = None::<u64>;
     let mut expected_digest = None::<String>;
-    let mut received = 0_u64;
-    let mut digest = Sha256::new();
+    let mut received = offset;
     let mut input = [0_u8; 65_535];
     let mut output = [0_u8; MAX_DATAGRAM_SIZE];
-    let deadline = Instant::now() + Duration::from_secs(15 * 60);
+    let deadline = Instant::now()
+        + Duration::from_secs(if request_path.starts_with("/v1/media/") {
+            6 * 60 * 60
+        } else {
+            15 * 60
+        });
 
     let result = (|| -> Result<String, AnyError> {
         loop {
@@ -1091,7 +1127,14 @@ fn download_request(
                 )?);
             }
             if certificate_checked && request_stream.is_none() {
-                let headers = request_headers("GET", &url, request_path, None, Some(credential));
+                let mut headers =
+                    request_headers("GET", &url, request_path, None, Some(credential));
+                if offset > 0 {
+                    headers.push(quiche::h3::Header::new(
+                        b"range",
+                        format!("bytes={offset}-").as_bytes(),
+                    ));
+                }
                 request_stream = Some(http3.as_mut().unwrap().send_request(
                     &mut connection,
                     &headers,
@@ -1109,7 +1152,9 @@ fn download_request(
                                 .map(|value| value.parse::<u64>())
                                 .transpose()?;
                             expected_digest = header_value(&list, b"x-content-sha256");
-                            if response_status.as_deref() != Some("200") {
+                            if response_status.as_deref()
+                                != Some(if offset > 0 { "206" } else { "200" })
+                            {
                                 return Err(format!(
                                     "artifact download returned HTTP {}",
                                     response_status.as_deref().unwrap_or("unknown")
@@ -1119,7 +1164,18 @@ fn download_request(
                             let length = expected_length.ok_or_else(|| {
                                 invalid("artifact response has no content length")
                             })?;
-                            if length == 0 || length > max_bytes {
+                            if offset > 0
+                                && header_value(&list, b"content-range").as_deref()
+                                    != Some(
+                                        format!("bytes {}-{}/{}", offset, max_bytes - 1, max_bytes)
+                                            .as_str(),
+                                    )
+                            {
+                                return Err(invalid(
+                                    "media resume range differs from requested object",
+                                ));
+                            }
+                            if length == 0 || length > max_bytes - offset {
                                 return Err(invalid("artifact response exceeds configured size"));
                             }
                         }
@@ -1129,7 +1185,8 @@ fn download_request(
                             {
                                 received += read as u64;
                                 if received > max_bytes
-                                    || expected_length.is_some_and(|value| received > value)
+                                    || expected_length
+                                        .is_some_and(|value| received - offset > value)
                                 {
                                     return Err(invalid("artifact body exceeds declared size"));
                                 }
@@ -1143,7 +1200,7 @@ fn download_request(
                             let length = expected_length.ok_or_else(|| {
                                 invalid("artifact response has no content length")
                             })?;
-                            if received != length {
+                            if received - offset != length {
                                 return Err(invalid(
                                     "artifact byte count differs from content length",
                                 ));
@@ -1604,4 +1661,49 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_chatRequest(
     env.new_string(response)
         .map(JString::into_raw)
         .unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(test)]
+mod video_resume_tests {
+    use super::*;
+    use std::os::fd::IntoRawFd;
+
+    #[test]
+    fn non_media_output_does_not_require_a_seekable_file() {
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut destination = unsafe { File::from_raw_fd(socket.into_raw_fd()) };
+        assert_eq!(
+            prepare_download_prefix(&mut destination, 100, false)
+                .unwrap()
+                .0,
+            0
+        );
+    }
+
+    #[test]
+    fn resume_hash_includes_existing_prefix_and_appends_at_its_end() {
+        let path = std::env::temp_dir().join(format!(
+            "migi-resume-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        file.write_all(b"prefix-").unwrap();
+        let (offset, mut digest) = prepare_download_prefix(&mut file, 13, true).unwrap();
+        assert_eq!(offset, 7);
+        file.write_all(b"suffix").unwrap();
+        digest.update(b"suffix");
+        assert_eq!(digest.finalize(), Sha256::digest(b"prefix-suffix"));
+        file.rewind().unwrap();
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "prefix-suffix");
+        assert!(prepare_download_prefix(&mut file, 13, true).is_err());
+    }
 }

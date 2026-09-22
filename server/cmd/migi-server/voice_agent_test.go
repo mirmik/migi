@@ -77,7 +77,7 @@ func TestVoiceAgentPollingBusyStopAndRestart(t *testing.T) {
 		j := read(path)
 		j.RetryAt = time.Time{}
 		saveVoiceJob(path, &j)
-		again := *p
+		again := voiceProcessor{requireApproval: p.requireApproval, config: p.config, client: p.client, files: p.files, state: p.state}
 		again.scan(t.Context())
 	}
 	if j := read(path); j.EventID != 0 || !j.AgentSubmitted || submitted != 1 {
