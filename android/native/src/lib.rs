@@ -538,7 +538,7 @@ fn run_client(
 
         flush_packets(&socket, &mut connection, &mut output)?;
 
-        match socket.recv_from(&mut input) {
+        match retry_interrupted(|| socket.recv_from(&mut input)) {
             Ok((length, from)) => {
                 let info = quiche::RecvInfo {
                     from,
@@ -710,7 +710,7 @@ fn small_request(
                 return Err("request timed out".into());
             }
             flush_packets(&socket, &mut connection, &mut output)?;
-            match socket.recv_from(&mut input) {
+            match retry_interrupted(|| socket.recv_from(&mut input)) {
                 Ok((length, from)) => {
                     let info = quiche::RecvInfo {
                         from,
@@ -880,7 +880,7 @@ fn upload_request(
                 return Err("file upload timed out".into());
             }
             flush_packets(&socket, &mut connection, &mut output)?;
-            match socket.recv_from(&mut input) {
+            match retry_interrupted(|| socket.recv_from(&mut input)) {
                 Ok((length, from)) => {
                     let info = quiche::RecvInfo {
                         from,
@@ -1092,7 +1092,7 @@ fn download_request(
                 return Err("artifact download timed out".into());
             }
             flush_packets(&socket, &mut connection, &mut output)?;
-            match socket.recv_from(&mut input) {
+            match retry_interrupted(|| socket.recv_from(&mut input)) {
                 Ok((length, from)) => {
                     let info = quiche::RecvInfo {
                         from,
@@ -1274,6 +1274,19 @@ fn verify_certificate_pin(
     Ok(())
 }
 
+// Android runtime signals can interrupt blocking UDP syscalls. EINTR leaves the
+// datagram unsent/unreceived; retry the same operation without closing QUIC or
+// losing the packet already obtained from connection.send(). Other errors,
+// including socket timeouts, must reach the caller's QUIC timer handling.
+fn retry_interrupted<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match operation() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
 fn flush_packets(
     socket: &UdpSocket,
     connection: &mut quiche::Connection,
@@ -1282,7 +1295,7 @@ fn flush_packets(
     loop {
         match connection.send(output) {
             Ok((written, info)) => {
-                socket.send_to(&output[..written], info.to)?;
+                retry_interrupted(|| socket.send_to(&output[..written], info.to))?;
             }
             Err(quiche::Error::Done) => return Ok(()),
             Err(error) => return Err(format!("QUIC send failed: {error:?}").into()),
@@ -1535,6 +1548,34 @@ fn invalid(message: &str) -> AnyError {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn interrupted_datagram_io_retries_without_losing_payload() {
+        let payload = b"QUIC datagram";
+        let mut attempts = 0;
+        let written = retry_interrupted(|| {
+            attempts += 1;
+            if attempts <= 2 {
+                return Err(io::Error::from_raw_os_error(4));
+            }
+            Ok(payload.len())
+        }).unwrap();
+        assert_eq!(attempts, 3);
+        assert_eq!(written, payload.len());
+    }
+
+    #[test]
+    fn datagram_timeouts_and_network_errors_are_not_retried() {
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut, io::ErrorKind::ConnectionReset] {
+            let mut attempts = 0;
+            let error = retry_interrupted::<()>(|| {
+                attempts += 1;
+                Err(io::Error::from(kind))
+            }).unwrap_err();
+            assert_eq!(attempts, 1);
+            assert_eq!(error.kind(), kind);
+        }
+    }
 
     #[test]
     fn parses_openssl_fingerprint() {

@@ -2,6 +2,7 @@ package dev.migi.app
 
 import android.content.Context
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.Executors
@@ -48,6 +49,7 @@ internal object VideoDownloads {
                 }
                 if (part.length() > track.size || part.length() == track.size && sha256(part) != track.sha256) check(part.delete())
                 check(directory(app).usableSpace > track.size - part.length() + 32L * 1024 * 1024) { "Недостаточно места на телефоне" }
+                Log.i("MigiVideo", "Download ${track.id}: resume=${part.length()} total=${track.size}")
                 if (part.length() < track.size) {
                     ParcelFileDescriptor.open(part, ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_READ_WRITE).use { descriptor ->
                         val response = NativeQuicClient.downloadMedia(endpoint, pin, credential, track.id, descriptor.fd, track.size)
@@ -60,9 +62,11 @@ internal object VideoDownloads {
                 synchronized(this) {
                     check(generation == expectedGeneration) { "Подключение изменилось" }
                     check(part.renameTo(target)) { "Не удалось сохранить видео" }
+                    Log.i("MigiVideo", "Verified ${track.id}: bytes=${target.length()} sha256=${track.sha256}")
                 }
             } catch (e: Exception) {
                 error = e.message ?: "Не удалось загрузить видео"
+                Log.w("MigiVideo", "Download ${track.id} stopped at ${bytes(app, track)}/${track.size}: $error")
             } finally {
                 active = null
             }
