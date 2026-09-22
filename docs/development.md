@@ -480,17 +480,27 @@ skills/migi-audio-player/scripts/migi-video --device PHONE_ID start COLLECTION_I
 ```
 
 On Android open **Music → Video** or the video notification. The server
-collections button retrieves saved video collections. Download one episode,
-then watch offline with seek, fullscreen, embedded audio/subtitle selection,
+collections button retrieves saved video collections. Choose **Смотреть онлайн**
+to start without a full download; remote seeks fetch aligned 2 MiB blocks through
+the pinned QUIC transport. Streaming requires updated Python or Go origin clients.
+The player uses a 32 MiB block cache, a small startup buffer and automatic network
+retries. **Скачать для офлайна** still downloads and verifies an entire episode.
+Both modes offer seek, fullscreen, embedded audio/subtitle selection,
 position memory, and a watched marker. Delete downloaded files explicitly to
 free space. Keep the video screen open during downloads; a partial file survives
 network/process failure and can be resumed. In "Звук и субтитры", import a local
 ASS/SSA, SRT or VTT file up to 4 MiB; its private copy is retained for that video
-and selected when reopened. No streaming-before-completion, transcoding, or
-agent-visible watch-history API is provided in this version. Container/codec compatibility needs a real-device
+and selected when reopened. Streaming prefers embedded Russian subtitles when
+available. No transcoding or agent-visible watch-history API is provided. Container/codec compatibility needs a real-device
 check, particularly for anime subtitle styling and high-bit-depth encodes.
 
 Before device acceptance test a >256 MiB episode, interrupt and resume its
 transfer, disable networking after completion, seek and rotate during playback,
 choose alternate audio/subtitles, reopen at the saved position, finish an
 episode, delete it locally, and confirm music queues still work independently.
+
+For streaming acceptance, choose an episode absent from the offline cache,
+check that first playback transfers far less than its full size, seek to uncached
+positions in both directions, verify embedded subtitles, and briefly stop/restart
+the origin to check buffering and automatic recovery. Check prompt cancellation
+when closing during a stalled request and verify cached offline videos still play.

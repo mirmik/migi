@@ -50,6 +50,19 @@ type mediaOriginStream struct {
 	Body   io.ReadCloser
 	Result chan error
 	once   sync.Once
+	Range  *originByteRange
+	Digest string
+}
+
+// Version 1 ranges are optional: an older origin may still upload the whole object.
+type originByteRange struct {
+	Version int   `json:"version"`
+	Offset  int64 `json:"offset"`
+	Length  int64 `json:"length"`
+}
+
+func (b originByteRange) contentRange(size int64) string {
+	return fmt.Sprintf("bytes %d-%d/%d", b.Offset, b.Offset+b.Length-1, size)
 }
 
 type flushingWriter struct {
@@ -76,6 +89,7 @@ func (s *mediaOriginStream) finish(err error) {
 }
 
 type mediaOriginRequest struct {
+	Range        *originByteRange
 	ID           string
 	MediaID      string
 	AgentTokenID string
@@ -93,13 +107,14 @@ type mediaOriginRequest struct {
 }
 
 type mediaOriginRequestView struct {
-	ID        string `json:"id"`
-	MediaID   string `json:"media_id"`
-	Name      string `json:"name"`
-	MIME      string `json:"mime"`
-	Size      int64  `json:"size"`
-	SHA256    string `json:"sha256"`
-	CreatedAt string `json:"created_at"`
+	Range     *originByteRange `json:"range,omitempty"`
+	ID        string           `json:"id"`
+	MediaID   string           `json:"media_id"`
+	Name      string           `json:"name"`
+	MIME      string           `json:"mime"`
+	Size      int64            `json:"size"`
+	SHA256    string           `json:"sha256"`
+	CreatedAt string           `json:"created_at"`
 }
 
 // originRoutes is deliberately installed only on the authenticated remote
@@ -261,8 +276,13 @@ func (s *mediaStore) pollOriginHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	var requestedRange *originByteRange
+	if r.URL.Query().Get("ranges") == "1" {
+		requestedRange = request.Range
+	}
 	writeJSON(w, http.StatusOK, mediaOriginRequestView{
-		ID: request.ID, MediaID: request.MediaID, Name: request.Name, MIME: request.MIME,
+		Range: requestedRange,
+		ID:    request.ID, MediaID: request.MediaID, Name: request.Name, MIME: request.MIME,
 		Size: request.Size, SHA256: request.SHA256,
 		CreatedAt: request.CreatedAt.Format(time.RFC3339Nano),
 	})
@@ -287,7 +307,18 @@ func (s *mediaStore) uploadOriginHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "failed to claim media origin request", http.StatusInternalServerError)
 		return
 	}
-	if r.ContentLength != request.Size {
+	length := request.Size
+	var receivedRange *originByteRange
+	if value := r.Header.Get("Content-Range"); value != "" {
+		if request.Range == nil || value != request.Range.contentRange(request.Size) {
+			s.completeOriginRequest(request, errMediaOriginRejected)
+			http.Error(w, "origin range does not match request", http.StatusBadRequest)
+			return
+		}
+		receivedRange = request.Range
+		length = receivedRange.Length
+	}
+	if r.ContentLength != length {
 		s.completeOriginRequest(request, errMediaOriginRejected)
 		http.Error(w, "origin content length does not match the manifest", http.StatusBadRequest)
 		return
@@ -299,6 +330,8 @@ func (s *mediaStore) uploadOriginHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	stream := newMediaOriginStream(r.Body)
+	stream.Range = receivedRange
+	stream.Digest = r.Header.Get("X-Range-SHA256")
 	if err := s.attachOriginStream(request, stream); err != nil {
 		stream.finish(err)
 		http.Error(w, "media origin request no longer has a waiting download", http.StatusNotFound)
@@ -310,8 +343,8 @@ func (s *mediaStore) uploadOriginHandler(w http.ResponseWriter, r *http.Request)
 		switch {
 		case result == nil:
 			slog.Info("remote origin media streamed on demand without server persistence",
-				"media_id", request.MediaID, "size", request.Size,
-				"agent", agent.Name, "token_id", agent.ID,
+				"media_id", request.MediaID, "size", length, "object_size", request.Size,
+				"range", r.Header.Get("Content-Range"), "agent", agent.Name, "token_id", agent.ID,
 			)
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(result, errMediaOriginRejected):
@@ -344,7 +377,8 @@ func (s *mediaStore) failOriginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *mediaStore) proxyRemoteMedia(w http.ResponseWriter, r *http.Request, record mediaStoredObject) {
-	request, stream, err := s.waitOriginStream(r.Context(), record)
+	offset, _ := mediaResumeOffset(r, record.Size)
+	request, stream, err := s.waitOriginStream(r.Context(), record, &originByteRange{1, offset, record.Size - offset})
 	if err != nil {
 		if r.Context().Err() == nil {
 			http.Error(w, "media origin is unavailable", http.StatusServiceUnavailable)
@@ -356,11 +390,14 @@ func (s *mediaStore) proxyRemoteMedia(w http.ResponseWriter, r *http.Request, re
 	})
 	defer stopCancellation()
 
-	offset, _ := mediaResumeOffset(r, record.Size)
 	hash := sha256.New()
-	// Re-read and hash the origin prefix without sending it to the phone.
-	// This preserves compatibility with existing origin clients and full-object verification.
-	if _, err := io.CopyN(hash, stream.Body, offset); err != nil {
+	// Legacy origins send the whole object; hash/discard their prefix. With a
+	// range-capable origin, the phone verifies its existing prefix plus this suffix.
+	prefix := offset
+	if stream.Range != nil {
+		prefix = 0
+	}
+	if _, err := io.CopyN(hash, stream.Body, prefix); err != nil {
 		s.completeOriginRequest(request, err)
 		http.Error(w, "origin prefix unavailable", http.StatusBadGateway)
 		return
@@ -381,7 +418,7 @@ func (s *mediaStore) proxyRemoteMedia(w http.ResponseWriter, r *http.Request, re
 		result = fmt.Errorf("%w: proxy origin content: %v", errMediaOriginUnavailable, copyErr)
 	case written+offset != request.Size:
 		result = errMediaOriginRejected
-	case hex.EncodeToString(hash.Sum(nil)) != request.SHA256:
+	case (stream.Range == nil || offset == 0) && hex.EncodeToString(hash.Sum(nil)) != request.SHA256:
 		result = errMediaOriginRejected
 	}
 	if result != nil && r.Context().Err() == nil {
@@ -396,8 +433,9 @@ func (s *mediaStore) proxyRemoteMedia(w http.ResponseWriter, r *http.Request, re
 func (s *mediaStore) waitOriginStream(
 	ctx context.Context,
 	record mediaStoredObject,
+	ranges ...*originByteRange,
 ) (*mediaOriginRequest, *mediaOriginStream, error) {
-	request, err := s.createOriginRequest(record)
+	request, err := s.createOriginRequest(record, ranges...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -429,7 +467,7 @@ func (s *mediaStore) waitOriginStream(
 	}
 }
 
-func (s *mediaStore) createOriginRequest(record mediaStoredObject) (*mediaOriginRequest, error) {
+func (s *mediaStore) createOriginRequest(record mediaStoredObject, ranges ...*originByteRange) (*mediaOriginRequest, error) {
 	if record.RemoteOrigin == nil {
 		return nil, errMediaOriginUnavailable
 	}
@@ -442,6 +480,9 @@ func (s *mediaStore) createOriginRequest(record mediaStoredObject) (*mediaOrigin
 		AgentTokenID: record.RemoteOrigin.AgentTokenID,
 		Name:         record.Name, MIME: record.MIME, Size: record.Size, SHA256: record.SHA256,
 		CreatedAt: time.Now().UTC(), StreamReady: make(chan struct{}), Done: make(chan struct{}),
+	}
+	if len(ranges) > 0 {
+		request.Range = ranges[0]
 	}
 	s.originMu.Lock()
 	s.originByID[request.ID] = request

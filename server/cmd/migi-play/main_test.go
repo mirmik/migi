@@ -320,3 +320,52 @@ func TestConfigureClientUsesAgentConfig(t *testing.T) {
 		t.Fatal("agent authorization header is missing")
 	}
 }
+
+func TestVideoOriginPollAndRangeUpload(t *testing.T) {
+	data := "prefix-video-suffix"
+	path := filepath.Join(t.TempDir(), "video.mkv")
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := inspectOriginFile(path, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := originRegistryEntry{Path: snapshot.Path, Name: snapshot.Name, MIME: "video/x-matroska", Size: snapshot.Size, SHA256: snapshot.SHA256, Device: snapshot.Device, Inode: snapshot.Inode, ModifiedAtUnixNano: snapshot.ModifiedAtUnixNano}
+	job := originFetchRequest{ID: strings.Repeat("a", 32), MediaID: strings.Repeat("b", 32), Name: entry.Name, MIME: entry.MIME, Size: entry.Size, SHA256: entry.SHA256, Range: &originFetchRange{1, 7, 5}}
+	uploads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			if r.URL.Query().Get("ranges") != "1" {
+				t.Error("capability missing")
+			}
+			_ = json.NewEncoder(w).Encode(job)
+			return
+		}
+		uploads++
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "video" || r.ContentLength != 5 || r.Header.Get("Content-Range") != "bytes 7-11/19" || r.Header.Get("X-Range-SHA256") != fmt.Sprintf("%x", sha256.Sum256([]byte("video"))) {
+			t.Errorf("invalid range upload: headers=%v body=%q", r.Header, body)
+		}
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	client := &playClient{http: server.Client(), token: "test"}
+	fetched, err := pollMediaOrigin(client, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := uploadOriginMedia(client, base, *fetched, entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := uploadOriginMedia(client, base, *fetched, entry); err == nil {
+		t.Fatal("accepted changed source")
+	}
+	if uploads != 1 {
+		t.Fatal("unexpected upload")
+	}
+}

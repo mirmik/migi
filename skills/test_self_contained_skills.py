@@ -505,6 +505,40 @@ class SkillClientTests(unittest.TestCase):
             ],
         )
 
+    def test_origin_sends_only_requested_bytes_and_rejects_changed_source(self):
+        origin = load_script("portable_range_origin", AUDIO_SKILL / "scripts/migi-origin")
+        path = self.root / "range.mkv"
+        data = b"prefix not sent" + b"video suffix"
+        path.write_bytes(data)
+        info = path.stat()
+        entry = dict(path=str(path), mime="video/x-matroska", size=len(data),
+                     sha256=hashlib.sha256(data).hexdigest(), device=info.st_dev,
+                     inode=info.st_ino, modified_at_unix_nano=info.st_mtime_ns)
+        job = dict(id=FILE_ID, media_id=SECOND_ID, mime=entry["mime"], size=len(data),
+                   sha256=entry["sha256"], range=dict(version=1, offset=15, length=12))
+        client = mock.MagicMock()
+        response = client.open.return_value.__enter__.return_value
+        response.status = 204
+        with mock.patch.object(origin, "read_bounded", return_value=b""):
+            origin.upload(client, job, entry)
+        args = client.open.call_args.kwargs
+        self.assertEqual(args["body"], b"video suffix")
+        self.assertEqual(args["headers"]["Content-Range"], "bytes 15-26/27")
+        self.assertEqual(args["headers"]["X-Range-SHA256"], hashlib.sha256(b"video suffix").hexdigest())
+        original_open = origin.open_source
+        def change_after_open(entry, job):
+            source = original_open(entry, job)
+            path.write_bytes(b"x" * len(data))
+            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1000000))
+            return source
+        with mock.patch.object(origin, "open_source", side_effect=change_after_open):
+            with self.assertRaises(origin.OriginSourceError):
+                origin.upload(client, job, entry)
+        path.write_bytes(b"changed")
+        with self.assertRaises(origin.OriginSourceError):
+            origin.upload(client, job, entry)
+        self.assertEqual(client.open.call_count, 1)
+
     def test_audio_skill_indexes_origin_without_publishing_queue(self) -> None:
         skill = self.copied_skill(AUDIO_SKILL)
         player = load_script("portable_migi_index", skill / "scripts/migi-play")

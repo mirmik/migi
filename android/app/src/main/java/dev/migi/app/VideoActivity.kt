@@ -26,6 +26,9 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.PlayerView
 import java.util.concurrent.Executors
 
@@ -55,7 +58,7 @@ class VideoActivity : Activity() {
             for ((track, label) in progress) label.text = description(track)
             downloadStatus?.text = VideoDownloads.error ?: if (VideoDownloads.active != null)
                 "Загрузка… Оставьте Migi открытым. При обрыве можно продолжить." else "Выберите серию. Скачанное доступно без интернета."
-            if (player?.isPlaying == true || VideoDownloads.active != null) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (player?.let { it.playWhenReady && it.playbackState in listOf(Player.STATE_BUFFERING, Player.STATE_READY) } == true || VideoDownloads.active != null) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             savePosition(); handler.postDelayed(this, 1000)
         }
@@ -143,7 +146,8 @@ class VideoActivity : Activity() {
                 if (VideoDownloads.available(this, track)) {
                     button(content, if (library.position(track) > 0) "Продолжить" else "Смотреть") { play(track) }
                 } else {
-                    button(content, if (VideoDownloads.bytes(this, track) > 0) "Докачать" else "Скачать", VideoDownloads.active == null) {
+                    button(content, if (library.position(track) > 0) "Продолжить онлайн" else "Смотреть онлайн") { play(track) }
+                    button(content, if (VideoDownloads.bytes(this, track) > 0) "Докачать" else "Скачать для офлайна", VideoDownloads.active == null) {
                         VideoDownloads.start(this, track); showLibrary()
                     }
                 }
@@ -185,13 +189,15 @@ class VideoActivity : Activity() {
     }
     private fun play(track: PlaybackTrack, autoplay: Boolean = true) {
         setFullscreen(false)
-        if (!VideoDownloads.available(this, track)) { showLibrary(); return }
+        val offline = VideoDownloads.available(this, track)
         generation++; releasePlayer(); current = track
         progress.clear(); downloadStatus = null; root.removeAllViews()
         button(root, "К списку видео") { showLibrary() }
         text(root, track.title, 18f)
+        val status = text(root, if (offline) "С телефона" else "Подключение к видео…", 14f)
         val view = PlayerView(this).apply {
             setShowSubtitleButton(true)
+            setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             setFullscreenButtonClickListener { setFullscreen(it) }
         }
         playerView = view
@@ -214,7 +220,12 @@ class VideoActivity : Activity() {
                 }
             }.show()
         }
-        player = ExoPlayer.Builder(this).build().also { active ->
+        val builder = ExoPlayer.Builder(this)
+            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(15_000, 45_000, 3_000, 5_000).build())
+        if (!offline) builder.setMediaSourceFactory(DefaultMediaSourceFactory(VideoStreamDataSource.factory(this, track))
+            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(10)))
+        player = builder.build().also { active ->
+            active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setPreferredTextLanguage("ru").build()
             active.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             active.setHandleAudioBecomingNoisy(true)
@@ -238,13 +249,25 @@ class VideoActivity : Activity() {
                     }
                 }
                 override fun onPlaybackStateChanged(state: Int) {
+                    status.text = when (state) {
+                        Player.STATE_BUFFERING -> "Буферизация…"
+                        Player.STATE_READY -> if (offline) "С телефона" else "Просмотр онлайн"
+                        Player.STATE_ENDED -> "Просмотр завершён"
+                        else -> "Подключение к видео…"
+                    }
+                    if (state == Player.STATE_READY) android.util.Log.i("MigiVideo", "Player ready ${track.id}: position=${active.currentPosition} offline=$offline")
                     if (state == Player.STATE_ENDED) library.savePosition(track, 0, ended = true)
                 }
                 override fun onPlayerError(error: PlaybackException) {
-                    showError("Не удалось воспроизвести видео: ${error.errorCodeName}. Возможно, телефон не поддерживает кодек.")
+                    status.text = "Воспроизведение остановлено"
+                    AlertDialog.Builder(this@VideoActivity)
+                        .setMessage("Не удалось воспроизвести видео: ${error.errorCodeName}")
+                        .setPositiveButton("Повторить") { _, _ -> active.prepare(); active.play() }
+                        .setNegativeButton("Закрыть", null).show()
                 }
             })
-            val item = MediaItem.Builder().setUri(Uri.fromFile(VideoDownloads.file(this, track)))
+            val item = MediaItem.Builder().setUri(if (offline) Uri.fromFile(VideoDownloads.file(this, track)) else Uri.parse("migi://video/${track.id}"))
+                .setMimeType(track.mime)
             library.subtitle(track)?.let { (file, mime) ->
                 item.setSubtitleConfigurations(listOf(MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
                     .setId("migi-external-subtitle").setMimeType(mime).setLabel("Внешние субтитры")

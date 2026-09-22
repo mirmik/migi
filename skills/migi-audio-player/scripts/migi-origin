@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -88,7 +90,7 @@ def read_registry(path: Path) -> dict[str, dict]:
 
 
 def poll(client: MigiHTTPClient) -> dict | None:
-    with client.open("GET", "/v1/media/origin/requests") as response:
+    with client.open("GET", "/v1/media/origin/requests?ranges=1") as response:
         body = read_bounded(response)
         if response.status == 204:
             return None
@@ -111,6 +113,14 @@ def poll(client: MigiHTTPClient) -> dict | None:
         or not isinstance(job.get("mime"), str)
     ):
         raise MigiClientError("media origin request contains invalid metadata")
+    span = job.get("range")
+    if span is not None and (
+        not isinstance(span, dict) or span.get("version") != 1
+        or type(span.get("offset")) is not int or type(span.get("length")) is not int
+        or span["offset"] < 0 or span["length"] <= 0
+        or span["offset"] + span["length"] > job["size"]
+    ):
+        raise MigiClientError("invalid origin range")
     return job
 
 
@@ -159,16 +169,40 @@ def open_source(entry: dict, job: dict):
     return os.fdopen(descriptor, "rb")
 
 
+class LimitedSource:
+    def __init__(self, source, remaining):
+        self.source, self.remaining = source, remaining
+
+    def read(self, size=-1):
+        data = self.source.read(self.remaining if size < 0 else min(size, self.remaining))
+        self.remaining -= len(data)
+        return data
+
+
 def upload(client: MigiHTTPClient, job: dict, entry: dict) -> None:
     with open_source(entry, job) as source:
         headers = {
             "Content-Length": str(job["size"]),
             "Content-Type": job["mime"],
         }
+        body = source
+        if span := job.get("range"):
+            offset, length = span["offset"], span["length"]
+            source.seek(offset)
+            headers["Content-Length"] = str(length)
+            headers["Content-Range"] = f"bytes {offset}-{offset + length - 1}/{job['size']}"
+            if length <= 2 << 20:
+                body = source.read(length)
+                after = os.fstat(source.fileno())
+                if len(body) != length or after.st_mtime_ns != entry["modified_at_unix_nano"] or after.st_size != entry["size"]:
+                    raise OriginSourceError("media origin changed while reading range")
+                headers["X-Range-SHA256"] = hashlib.sha256(body).hexdigest()
+            else:
+                body = LimitedSource(source, length)
         with client.open(
             "PUT",
             f"/v1/media/origin/requests/{job['id']}",
-            body=source,
+            body=body,
             headers=headers,
         ) as response:
             body = read_bounded(response)
@@ -189,6 +223,15 @@ def report_failure(client: MigiHTTPClient, request_id: str) -> None:
 
 
 def serve(client: MigiHTTPClient, registry_path: Path, *, once: bool) -> int:
+    if once:
+        return serve_worker(client, registry_path, once=True)
+    # A full offline download must not monopolize the origin during a seek.
+    with ThreadPoolExecutor(max_workers=3) as workers:
+        futures = [workers.submit(serve_worker, client, registry_path, once=False) for _ in range(3)]
+        return futures[0].result()
+
+
+def serve_worker(client: MigiHTTPClient, registry_path: Path, *, once: bool) -> int:
     if not client.token:
         raise MigiClientError("migi-origin requires an authenticated agent configuration")
     delay = 1.0
@@ -211,7 +254,7 @@ def serve(client: MigiHTTPClient, registry_path: Path, *, once: bool) -> int:
                         return 1
             if once:
                 return 0
-        except MigiClientError as exc:
+        except (MigiClientError, OSError) as exc:
             print(f"migi-origin: {exc}", file=sys.stderr, flush=True)
             if once:
                 return 1

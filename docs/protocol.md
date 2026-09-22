@@ -340,8 +340,8 @@ Content-Length: 0
 
 The catalog entry itself remains until an explicit future catalog-removal
 operation; it does not inherit the direct-upload media TTL. Every device cache
-miss requires a live origin transfer. Byte ranges and shared fan-out between
-concurrent downloads are not implemented.
+miss requires a live origin transfer. Version-1 origin ranges are described below;
+shared fan-out between concurrent downloads is not implemented.
 
 An agent publishes one complete ordered queue after all uploads succeed:
 
@@ -498,11 +498,39 @@ valid offset produces 206, `Content-Range: bytes N-(size-1)/size`, the remaining
 Content-Length, and the **full object's** X-Content-SHA256. Invalid, suffix,
 closed and multipart ranges produce 416. An offset of zero returns the full
 200 response. Immutable media IDs/digests bind a partial file to its object.
-For remote objects, the server rereads and hashes the whole origin stream,
-discards the prefix, and relays the suffix. This retains compatibility with
-existing origin clients and saves phone bandwidth, but does not save origin
-bandwidth. Android hashes the existing prefix and received suffix, checks the
-full digest against the event manifest, then commits its private file.
+Updated origins poll `/v1/media/origin/requests?ranges=1`. A job may include
+`"range":{"version":1,"offset":N,"length":L}` alongside unchanged full-object
+metadata. The origin validates its registered file identity/size/mtime, seeks
+to N and uploads exactly L bytes with `Content-Range: bytes N-(N+L-1)/size`.
+The server rejects wrong ranges or lengths. For suffix resume, Android hashes
+the existing prefix and received suffix, checks the full event-manifest digest,
+then commits its private file. An older origin receives no range field and may
+upload the entire file; the server hashes/discards the prefix as before.
+
+### Streaming video chunks
+
+`GET /v1/media/{id}/chunks/{offset}?sha256={full-object-digest}` is protected by
+the same device/agent authentication as content. Offset must be nonnegative,
+inside the object and aligned to 2 MiB. A mismatched object digest returns 412;
+an invalid offset returns 416. The response is 200 with exactly
+`min(2 MiB, size-offset)` bytes, `X-Content-SHA256` for this **chunk**, and
+`X-Media-SHA256` for the full object. Partial downloads never use this endpoint.
+
+A remote chunk requires range-capable origin upload. The origin buffers at most
+2 MiB, checks the source did not change during the read, and sends `X-Range-SHA256`.
+The server verifies the entire chunk before exposing it; Android verifies it
+again before feeding Media3. At most eight chunk requests buffer concurrently
+on the server, with a 20-second request deadline. Old origins get a 503 for
+streaming, while full downloads remain compatible. Both bundled origins run
+three workers so full-file transfers do not monopolize the request queue.
+
+Chunk hashes authenticate delivery from the trusted origin over pinned TLS/QUIC;
+they are not a Merkle proof against the full-file digest. The registered origin
+and its unchanged-file checks remain trusted. Only complete offline downloads
+verify the entire object against the catalog digest. Android keeps at most
+16 blocks (32 MiB) per player, uses a private transient file for each native
+fetch, and cancels a fetch when the Media3 loading thread is interrupted. A seek
+uses container cues to request the needed aligned blocks, including EOF indexes.
 
 Android can additionally import a local ASS/SSA, SRT or VTT subtitle file up to
 4 MiB using the document picker. The bounded, atomically replaced private copy

@@ -168,6 +168,7 @@ func (s *mediaStore) agentRoutes(
 	mux.Handle("POST /v1/media", wrap(s.uploadHandler(agentName)))
 	mux.Handle("GET /v1/media/{mediaID}", wrap(http.HandlerFunc(s.metadataHandler)))
 	mux.Handle("GET /v1/media/{mediaID}/content", wrap(http.HandlerFunc(s.contentHandler)))
+	mux.Handle("GET /v1/media/{mediaID}/chunks/{offset}", wrap(http.HandlerFunc(s.chunkHandler)))
 	mux.Handle("POST /v1/playback/queue", wrap(s.queueHandler(agentName)))
 	s.savedPlaylistRoutes(mux, wrap, agentName)
 }
@@ -180,6 +181,7 @@ func (s *mediaStore) deviceRoutes(
 ) {
 	mux.Handle("GET /v1/media/{mediaID}", wrap(http.HandlerFunc(s.metadataHandler)))
 	mux.Handle("GET /v1/media/{mediaID}/content", wrap(http.HandlerFunc(s.contentHandler)))
+	mux.Handle("GET /v1/media/{mediaID}/chunks/{offset}", wrap(http.HandlerFunc(s.chunkHandler)))
 	s.savedPlaylistDeviceRoutes(mux, wrap)
 }
 

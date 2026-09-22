@@ -483,6 +483,52 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadMedia(
         .unwrap_or(std::ptr::null_mut())
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadMediaChunk(
+    mut env: JNIEnv,
+    _class: JClass,
+    endpoint: JString,
+    certificate_pin: JString,
+    credential: JString,
+    media_id: JString,
+    sha256: JString,
+    offset: jlong,
+    size: jlong,
+    file_descriptor: jint,
+) -> jstring {
+    let result = (|| -> Result<String, AnyError> {
+        let endpoint: String = env.get_string(&endpoint)?.into();
+        let certificate_pin: String = env.get_string(&certificate_pin)?.into();
+        let credential: String = env.get_string(&credential)?.into();
+        let media_id: String = env.get_string(&media_id)?.into();
+        let sha256: String = env.get_string(&sha256)?.into();
+        let expected_pin = parse_pin(&certificate_pin)?;
+        validate_token(&credential)?;
+        validate_media_id(&media_id)?;
+        const CHUNK: i64 = 2 << 20;
+        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || offset < 0 || offset >= size || offset % CHUNK != 0 || file_descriptor < 0 {
+            return Err(invalid("invalid media chunk"));
+        }
+        let duplicated = unsafe { dup(file_descriptor) };
+        if duplicated < 0 { return Err(io::Error::last_os_error().into()); }
+        let mut destination = unsafe { File::from_raw_fd(duplicated) };
+        let thread = env.call_static_method("java/lang/Thread", "currentThread", "()Ljava/lang/Thread;", &[])?.l()?;
+        download_request_cancellable(
+            &endpoint, &expected_pin, &credential,
+            &format!("/v1/media/{media_id}/chunks/{offset}?sha256={sha256}"),
+            &mut destination, std::cmp::min(CHUNK, size-offset) as u64,
+            &mut || env.call_method(&thread, "isInterrupted", "()Z", &[])
+                .and_then(|value| value.z()).unwrap_or(true),
+        )
+    })();
+    let response = match result {
+        Ok(body) => body,
+        Err(error) => format!("MIGI_ERROR:{error}"),
+    };
+    env.new_string(response).map(JString::into_raw).unwrap_or(std::ptr::null_mut())
+}
+
 fn run_client(
     env: &mut JNIEnv,
     callback: &JObject,
@@ -1041,10 +1087,23 @@ fn download_request(
     destination: &mut File,
     max_bytes: u64,
 ) -> Result<String, AnyError> {
+    download_request_cancellable(endpoint, expected_pin, credential, request_path, destination, max_bytes, &mut || false)
+}
+
+fn download_request_cancellable(
+    endpoint: &str,
+    expected_pin: &[u8; 32],
+    credential: &str,
+    request_path: &str,
+    destination: &mut File,
+    max_bytes: u64,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<String, AnyError> {
+    let is_chunk = request_path.contains("/chunks/");
     let (offset, mut digest) = prepare_download_prefix(
         destination,
         max_bytes,
-        request_path.starts_with("/v1/media/"),
+        request_path.starts_with("/v1/media/") && !is_chunk,
     )?;
     let url = Url::parse(endpoint)?;
     if url.scheme() != "https" {
@@ -1080,7 +1139,7 @@ fn download_request(
     let mut input = [0_u8; 65_535];
     let mut output = [0_u8; MAX_DATAGRAM_SIZE];
     let deadline = Instant::now()
-        + Duration::from_secs(if request_path.starts_with("/v1/media/") {
+        + Duration::from_secs(if is_chunk { 25 } else if request_path.starts_with("/v1/media/") {
             6 * 60 * 60
         } else {
             15 * 60
@@ -1088,6 +1147,7 @@ fn download_request(
 
     let result = (|| -> Result<String, AnyError> {
         loop {
+            if cancelled() { return Err(invalid("media request cancelled")); }
             if Instant::now() >= deadline {
                 return Err("artifact download timed out".into());
             }

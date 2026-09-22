@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -46,13 +47,20 @@ type originRegistryEntry struct {
 	ModifiedAtUnixNano int64  `json:"modified_at_unix_nano"`
 }
 
+type originFetchRange struct {
+	Version int   `json:"version"`
+	Offset  int64 `json:"offset"`
+	Length  int64 `json:"length"`
+}
+
 type originFetchRequest struct {
-	ID      string `json:"id"`
-	MediaID string `json:"media_id"`
-	Name    string `json:"name"`
-	MIME    string `json:"mime"`
-	Size    int64  `json:"size"`
-	SHA256  string `json:"sha256"`
+	Range   *originFetchRange `json:"range,omitempty"`
+	ID      string            `json:"id"`
+	MediaID string            `json:"media_id"`
+	Name    string            `json:"name"`
+	MIME    string            `json:"mime"`
+	Size    int64             `json:"size"`
+	SHA256  string            `json:"sha256"`
 }
 
 func resolveOriginRegistryPath(explicit string) (string, error) {
@@ -207,6 +215,17 @@ func loadOriginRegistryOptional(path string) (originRegistry, error) {
 }
 
 func serveMediaOrigin(client *playClient, base *url.URL, once bool) error {
+	if once {
+		return serveMediaOriginWorker(client, base, true)
+	}
+	results := make(chan error, 3)
+	for range 3 {
+		go func() { results <- serveMediaOriginWorker(client, base, false) }()
+	}
+	return <-results
+}
+
+func serveMediaOriginWorker(client *playClient, base *url.URL, once bool) error {
 	if client.token == "" {
 		return errors.New("origin requires an authenticated agent configuration")
 	}
@@ -256,6 +275,7 @@ func pollMediaOrigin(client *playClient, base *url.URL) (*originFetchRequest, er
 	if err != nil {
 		return nil, err
 	}
+	request.URL.RawQuery = "ranges=1"
 	response, err := client.http.Do(request)
 	if err != nil {
 		return nil, err
@@ -276,8 +296,11 @@ func pollMediaOrigin(client *playClient, base *url.URL) (*originFetchRequest, er
 		return nil, err
 	}
 	if !validMediaID(job.ID) || !validMediaID(job.MediaID) || job.Size <= 0 ||
-		len(job.SHA256) != 64 || !strings.HasPrefix(strings.ToLower(job.MIME), "audio/") && artworkMIME(filepath.Ext(job.Name)) == "" {
+		len(job.SHA256) != 64 || !strings.HasPrefix(strings.ToLower(job.MIME), "audio/") && !strings.HasPrefix(strings.ToLower(job.MIME), "video/") && artworkMIME(filepath.Ext(job.Name)) == "" {
 		return nil, errors.New("server returned an invalid media origin request")
+	}
+	if span := job.Range; span != nil && (span.Version != 1 || span.Offset < 0 || span.Offset >= job.Size || span.Length <= 0 || span.Length > job.Size-span.Offset) {
+		return nil, errors.New("invalid origin range")
 	}
 	return &job, nil
 }
@@ -305,15 +328,41 @@ func uploadOriginMedia(client *playClient, base *url.URL, job originFetchRequest
 		info.ModTime().UnixNano() != entry.ModifiedAtUnixNano {
 		return errOriginSourceChanged
 	}
+	var source io.Reader = file
+	length := job.Size
+	rangeDigest := ""
+	if span := job.Range; span != nil {
+		if span.Version != 1 || span.Offset < 0 || span.Offset >= job.Size || span.Length <= 0 || span.Length > job.Size-span.Offset {
+			return errors.New("invalid origin range")
+		}
+		length = span.Length
+		source = io.NewSectionReader(file, span.Offset, length)
+		if length <= 2<<20 {
+			data, err := io.ReadAll(source)
+			after, statErr := file.Stat()
+			if err != nil || statErr != nil || int64(len(data)) != length || !info.ModTime().Equal(after.ModTime()) || info.Size() != after.Size() {
+				return errOriginSourceChanged
+			}
+			digest := sha256.Sum256(data)
+			rangeDigest = hex.EncodeToString(digest[:])
+			source = bytes.NewReader(data)
+		}
+	}
 	request, err := client.request(
 		http.MethodPut,
 		endpoint(base, "/v1/media/origin/requests/"+job.ID),
-		file,
+		source,
 	)
 	if err != nil {
 		return err
 	}
-	request.ContentLength = job.Size
+	request.ContentLength = length
+	if span := job.Range; span != nil {
+		request.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", span.Offset, span.Offset+span.Length-1, job.Size))
+		if rangeDigest != "" {
+			request.Header.Set("X-Range-SHA256", rangeDigest)
+		}
+	}
 	request.Header.Set("Content-Type", job.MIME)
 	response, err := client.http.Do(request)
 	if err != nil {

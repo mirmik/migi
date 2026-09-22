@@ -46,7 +46,10 @@ inode, size, and modification time, then streams only that object. The server
 relays it to that one phone request with backpressure and checks length and
 SHA-256 while bytes pass; it does not retain an origin copy. The phone verifies
 the complete temporary download before committing its private cache. A
-different agent credential cannot claim the request.
+different agent credential cannot claim the request. Updated origins also serve
+version-1 byte ranges directly, avoiding prefix retransmission on resume. Video
+streaming verifies bounded 2 MiB blocks; complete downloads still verify the
+full object digest. See the video reference for the trust model and workflow.
 
 Origin catalog entries are persistent metadata and have no media TTL. Keep the
 origin process and indexed source available: every phone cache miss creates a

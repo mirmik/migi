@@ -75,9 +75,10 @@ media, searches the catalog, and saves or starts playlists; `migi-origin`
 serves indexed objects on demand.
 Video uses the same origin/catalog foundation with its own `video.queue.set`
 event and Android library. The bundled `migi-video` helper indexes naturally
-ordered seasons and saves collections silently. Phones download individual
-videos (up to 8 GiB), resume interrupted transfers, and watch verified local
-files with position memory, fullscreen and embedded track selection. Open
+ordered seasons and saves collections silently. Phones stream videos from a
+small buffer with remote seeking, or download individual videos (up to 8 GiB)
+for verified offline playback. Both modes remember position and offer fullscreen
+and embedded track selection, including Russian subtitles. Open
 **Music → Video**; keep the video screen open while downloading. See
 [the video workflow](docs/development.md#index-and-watch-server-side-videos).
 
