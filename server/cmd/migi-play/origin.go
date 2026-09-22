@@ -296,7 +296,7 @@ func pollMediaOrigin(client *playClient, base *url.URL) (*originFetchRequest, er
 		return nil, err
 	}
 	if !validMediaID(job.ID) || !validMediaID(job.MediaID) || job.Size <= 0 ||
-		len(job.SHA256) != 64 || !strings.HasPrefix(strings.ToLower(job.MIME), "audio/") && !strings.HasPrefix(strings.ToLower(job.MIME), "video/") && artworkMIME(filepath.Ext(job.Name)) == "" {
+		len(job.SHA256) != 64 || !strings.HasPrefix(strings.ToLower(job.MIME), "audio/") && !strings.HasPrefix(strings.ToLower(job.MIME), "video/") && artworkMIME(filepath.Ext(job.Name)) == "" && !isOriginSubtitleMIME(job.MIME) {
 		return nil, errors.New("server returned an invalid media origin request")
 	}
 	if span := job.Range; span != nil && (span.Version != 1 || span.Offset < 0 || span.Offset >= job.Size || span.Length <= 0 || span.Length > job.Size-span.Offset) {
@@ -399,4 +399,12 @@ func failOriginRequest(client *playClient, base *url.URL, requestID string) erro
 		return fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+func isOriginSubtitleMIME(mime string) bool {
+	switch mime {
+	case "text/x-ssa", "application/x-subrip", "text/vtt":
+		return true
+	}
+	return false
 }

@@ -326,8 +326,10 @@ class VideoActivity : Activity() {
         val bytes = VideoDownloads.bytes(this, track)
         val playLabel = if (library.position(track) > 0) "Продолжить просмотр" else "Смотреть"
         actions.add((playLabel + if (available) "" else " онлайн") to { play(track) })
-        if (!available && VideoDownloads.active == null) {
-            actions.add((if (bytes > 0) "Продолжить скачивание" else "Скачать для офлайна") to {
+        val subtitleCache = PlaybackMediaCache(this, "video-sidecars/${track.sha256}", 32L shl 20)
+        val missingSubtitles = track.subtitles.any { subtitleCache.cached(it) == null }
+        if ((!available || missingSubtitles) && VideoDownloads.active == null) {
+            actions.add((if (available) "Скачать субтитры для офлайна" else if (bytes > 0) "Продолжить скачивание" else "Скачать для офлайна") to {
                 VideoDownloads.start(this, track); showLibrary()
             })
         }
@@ -424,7 +426,7 @@ class VideoActivity : Activity() {
         setFullscreen(fullscreen)
         val builder = ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(15_000, 45_000, 3_000, 5_000).build())
-        if (!offline) builder.setMediaSourceFactory(DefaultMediaSourceFactory(VideoStreamDataSource.factory(this, track))
+        builder.setMediaSourceFactory(DefaultMediaSourceFactory(VideoStreamDataSource.factory(this, track))
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(10)))
         player = builder.build().also { active ->
             active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setPreferredTextLanguage("ru").build()
@@ -470,11 +472,18 @@ class VideoActivity : Activity() {
             })
             val item = MediaItem.Builder().setUri(if (offline) Uri.fromFile(VideoDownloads.file(this, track)) else Uri.parse("migi://video/${track.id}"))
                 .setMimeType(track.mime)
+            val subtitleItems = track.subtitles.map { subtitle ->
+                MediaItem.SubtitleConfiguration.Builder(Uri.parse("migi-subtitle://${subtitle.id}"))
+                    .setId("migi-sidecar-${subtitle.id}").setMimeType(subtitle.mime).setLabel(subtitle.label)
+                    .setLanguage(subtitle.language.ifEmpty { null })
+                    .setSelectionFlags(if (subtitle.default) C.SELECTION_FLAG_DEFAULT else 0).build()
+            }.toMutableList()
             library.subtitle(track)?.let { (file, mime) ->
-                item.setSubtitleConfigurations(listOf(MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
+                subtitleItems.add(MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(file))
                     .setId("migi-external-subtitle").setMimeType(mime).setLabel("Внешние субтитры")
-                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT).build()))
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT).build())
             }
+            item.setSubtitleConfigurations(subtitleItems)
             active.setMediaItem(item.build())
             active.seekTo(library.position(track)); active.prepare(); active.playWhenReady = autoplay
         }

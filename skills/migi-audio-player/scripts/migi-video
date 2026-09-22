@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from dataclasses import replace
 import importlib.machinery
 import importlib.util
 import re
@@ -44,15 +46,83 @@ def video_paths(operands: list[str]) -> list[Path]:
     return result
 
 
+SUBTITLE_MIME = {".ass": "text/x-ssa", ".ssa": "text/x-ssa", ".srt": "application/x-subrip", ".vtt": "text/vtt"}
+MAX_SUBTITLE_BYTES = 4 << 20
+
+
+def subtitle_inputs(paths, inline, manifest_path):
+    """Resolve every explicit path locally; no filesystem paths enter the API."""
+    links = {path: [] for path in paths}
+    if inline and len(paths) != 1:
+        raise media.MigiClientError("--subtitle requires exactly one video; use --subtitles-manifest for a season")
+    if inline:
+        links[paths[0]] = [{"file": file, "language": language} for language, file in inline]
+    base = Path.cwd()
+    if manifest_path:
+        manifest = Path(manifest_path).expanduser().resolve(strict=True)
+        if manifest.stat().st_size > 256 << 10:
+            raise media.MigiClientError("subtitle manifest exceeds 256 KiB")
+        records = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(records, list) or len(records) > 256:
+            raise media.MigiClientError("subtitle manifest must be an array of up to 256 video mappings")
+        base = manifest.parent
+        seen = set()
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {"video", "subtitles"} or not isinstance(record["video"], str):
+                raise media.MigiClientError("each mapping requires video and subtitles")
+            video = (base / record["video"]).resolve(strict=True)
+            if video not in links or video in seen:
+                raise media.MigiClientError("subtitle mapping must name one of the indexed videos exactly once")
+            seen.add(video)
+            if not isinstance(record["subtitles"], list):
+                raise media.MigiClientError("subtitles must be an array")
+            links[video] = record["subtitles"]
+    result = {}
+    for video, entries in links.items():
+        if len(entries) > 8:
+            raise media.MigiClientError("at most 8 subtitle files per video")
+        prepared, seen, defaults = [], set(), 0
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) - {"file", "label", "language", "default"} or not isinstance(entry.get("file"), str):
+                raise media.MigiClientError("subtitle requires file; optional label, language and default")
+            path = (base / Path(entry["file"]).expanduser()).resolve(strict=True)
+            language = entry.get("language", "")
+            label = entry.get("label", path.stem[:128])
+            default = entry.get("default", False)
+            if not isinstance(language, str) or len(language) > 35 or language and not re.fullmatch(r"[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*", language):
+                raise media.MigiClientError("invalid subtitle language tag")
+            if not isinstance(label, str) or not label.strip() or label != label.strip() or len(label) > 128 or any(ord(c) < 32 or ord(c) == 127 for c in label):
+                raise media.MigiClientError("invalid subtitle label")
+            if type(default) is not bool or path in seen:
+                raise media.MigiClientError("invalid default or duplicate subtitle file")
+            defaults += int(default)
+            if defaults > 1:
+                raise media.MigiClientError("only one default subtitle per video")
+            seen.add(path)
+            mime = SUBTITLE_MIME.get(path.suffix.lower())
+            if mime is None:
+                raise media.MigiClientError("subtitles must be ASS, SSA, SRT or VTT")
+            source = media.origin_media_input(str(path), mime_type=mime, title=label, maximum_bytes=MAX_SUBTITLE_BYTES)
+            prepared.append((source, {"label": label, "language": language, "default": default}))
+        result[video] = prepared
+    return result
+
+
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", "-config")
     parser.add_argument("--endpoint", "-endpoint")
     parser.add_argument("--device", "-device", default="")
     parser.add_argument("--name", "-name", default="")
+    parser.add_argument("--subtitle", nargs=2, action="append", default=[], metavar=("LANGUAGE", "FILE"), help="attach a subtitle to a single video; repeat for more languages")
+    parser.add_argument("--subtitles-manifest", help="local JSON mappings for a season; paths relative to this file")
     parser.add_argument("command", choices=("index", "list", "search", "queue", "save", "playlists", "start", "forget"))
     parser.add_argument("operands", nargs="*")
     args = parser.parse_args(argv)
+    if args.subtitle and args.subtitles_manifest:
+        raise media.MigiClientError("use --subtitle or --subtitles-manifest, not both")
+    if args.command != "index" and (args.subtitle or args.subtitles_manifest):
+        raise media.MigiClientError("subtitle options apply only to index")
     client = media.resolve_agent_client(endpoint=args.endpoint, config=args.config)
     if args.command == "index":
         if not client.token:
@@ -61,12 +131,22 @@ def run(argv: list[str] | None = None) -> int:
         name = args.name or (Path(args.operands[0]).expanduser().resolve().stem if len(args.operands) == 1 else paths[0].parent.name)
         if not name.strip() or name != name.strip() or len(name) > 128 or any(ord(c) < 32 or ord(c) == 127 for c in name):
             raise media.MigiClientError("collection name must be 1-128 characters without surrounding whitespace or controls")
+        subtitles = subtitle_inputs(paths, args.subtitle, args.subtitles_manifest)
         # Hash and validate every input before publishing catalog entries.
         inputs = [media.origin_media_input(str(path), mime_type=VIDEO_MIME[path.suffix.lower()],
             title=path.stem, maximum_bytes=MAX_VIDEO_BYTES) for path in paths]
+        subtitle_sources = {source.path: source for entries in subtitles.values() for source, _ in entries}
+        registered_subtitles = {}
+        sources = list(subtitle_sources.values())
+        for offset in range(0, len(sources), 128):
+            batch = sources[offset:offset + 128]
+            registered = media.register_origin_media(client, batch)
+            registered_subtitles.update((source.path, item["id"]) for source, item in zip(batch, registered, strict=True))
+        inputs = [replace(source, subtitles=tuple(dict(metadata, id=registered_subtitles[sub.path])
+            for sub, metadata in subtitles[path])) for path, source in zip(paths, inputs, strict=True)]
         objects = []
-        for offset in range(0, len(inputs), 128):
-            objects.extend(media.register_origin_media(client, inputs[offset:offset + 128]))
+        for offset in range(0, len(inputs), 32):
+            objects.extend(media.register_origin_media(client, inputs[offset:offset + 32]))
         for item in objects:
             media.print_object(item)
         media.save_playlist(client, [str(item["id"]) for item in objects], name=name)

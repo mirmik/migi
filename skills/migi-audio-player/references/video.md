@@ -14,8 +14,67 @@ These extensions identify containers, not a guarantee the phone decodes every
 codec. Embedded audio/subtitle tracks are selected in the phone player. The
 player also imports a local ASS/SSA, SRT or VTT file (up to 4 MiB) through
 "Звук и субтитры → Выбрать файл субтитров". It copies the file privately and
-remembers it for that video. Automatic sidecar delivery and transcoding are
-not implemented.
+remembers it for that video. Origin sidecar delivery is supported as described below. Transcoding is not implemented.
+
+## Index separate subtitle files
+
+Explicitly attach files; the indexer does not guess associations from filenames.
+For a single episode, repeat `--subtitle LANGUAGE FILE`:
+
+```text
+scripts/migi-video --config ORIGIN_CONFIG --name "Series · Season 1" \
+  --subtitle ru /srv/series/Subs/01.ru.ass \
+  --subtitle en /srv/series/Subs/01.en.srt index /srv/series/01.mkv
+```
+
+For a season, create a **local** JSON mapping and pass
+`--subtitles-manifest /srv/series/subtitles.json`. Paths in this file are relative
+to its directory (absolute paths are also accepted):
+
+```json
+[
+  {
+    "video": "01.mkv",
+    "subtitles": [
+      {"file": "SUB/01.ru.ass", "language": "ru", "label": "Русские", "default": true},
+      {"file": "SUB/01.en.srt", "language": "en", "label": "English"}
+    ]
+  },
+  {
+    "video": "02.mkv",
+    "subtitles": [{"file": "SUB/02.ru.ass", "language": "ru", "label": "Русские"}]
+  }
+]
+```
+
+```text
+scripts/migi-video --config ORIGIN_CONFIG --name "Series · Season 1" \
+  --subtitles-manifest /srv/series/subtitles.json index /srv/series
+```
+
+Every mapped video must be included in the index operands. Unmapped videos have
+no external tracks. Do not combine the two subtitle options. Supported files:
+ASS/SSA, SRT and VTT, nonempty, at most 4 MiB each, up to eight per video.
+`language` is an optional language tag (for example `ru`, `en`, `pt-BR`);
+`label` is optional and defaults to the subtitle filename stem. At most one
+track per video may have `default: true`. Choose associations explicitly from
+the actual episode names; do not attach one episode's dialogue to another.
+
+The client validates/hashes all inputs before registering anything. It registers
+subtitles first, then video objects referencing their opaque IDs, then saves the
+ordered video playlist. Only filenames and metadata leave the storage host;
+the JSON mapping and local registry remain private. The original video is not
+modified. Re-indexing creates a new video ID, so start the newly saved playlist
+to deliver changed subtitle links. Identical video bytes reuse the phone's
+existing verified offline copy by SHA-256.
+
+Android fetches and verifies declared subtitle files when preparing playback or
+selecting a track, preferring Russian when available. Downloading for offline
+fetches all attached subtitles as well. For an already downloaded video, use
+its **⋮ → Скачать субтитры для офлайна** action if any are missing. The cache
+persists offline and is removed with the downloaded video. A manually imported
+subtitle file still takes precedence. Old apps ignore these added references;
+install Migi 0.13.0 (64) or newer for automatic delivery.
 
 The same persistent origin registry and path privacy rules as music apply.
 Indexing is not delivery; keep the origin running whenever a phone needs a file.
@@ -40,9 +99,10 @@ Neither downloads the entire season. Only claim delivery of a queue after
 sending to all paired phones matches the request. Video uses `video.queue.set`
 and never replaces the music queue.
 
-On the phone open Music → Video, or tap the video notification. Choose a saved
-server collection or an episode sent by the agent, then choose **Смотреть онлайн**
-to start from a small buffer, or **Скачать для офлайна / Докачать** for a full copy.
+On the phone open Music → Video, or tap the video notification. Open a playlist,
+then tap an episode to play from a small buffer or its verified local copy.
+Use **⋮ → Скачать для офлайна / Продолжить скачивание** for a full copy.
+The top **Каталог** action adds a saved server collection.
 Seeking online fetches the required portion directly. Keep Migi open during downloads. Complete verified videos are stored
 privately for offline playback and stay until manually deleted. The player
 remembers position and completion, pauses when backgrounded, and offers embedded

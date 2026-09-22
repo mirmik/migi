@@ -23,10 +23,12 @@ internal object VideoDownloads {
         check(active != track.id) { "Дождитесь завершения загрузки" }
         check(!file(context, track).exists() || file(context, track).delete()) { "Не удалось удалить видео" }
         check(!partial(context, track).exists() || partial(context, track).delete()) { "Не удалось удалить неполную загрузку" }
+        File(context.filesDir, "video-sidecars/${track.sha256}").deleteRecursively()
     }
     @Synchronized fun clear(context: Context) {
         generation++
         directory(context).listFiles()?.forEach { it.delete() }
+        File(context.filesDir, "video-sidecars").deleteRecursively()
     }
     @Synchronized fun start(context: Context, track: PlaybackTrack) {
         if (active != null) return
@@ -41,6 +43,11 @@ internal object VideoDownloads {
         executor.execute {
             try {
                 require(endpoint.startsWith("https://") && pin.isNotEmpty() && credential.isNotEmpty()) { "Подключите Migi к серверу" }
+                val subtitles = PlaybackMediaCache(app, "video-sidecars/${track.sha256}", 32L shl 20)
+                for (subtitle in track.subtitles) {
+                    check(generation == expectedGeneration) { "Подключение изменилось" }
+                    subtitles.prepare(subtitle)
+                }
                 val target = file(app, track)
                 val part = partial(app, track)
                 if (target.exists()) {

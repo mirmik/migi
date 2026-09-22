@@ -22,4 +22,26 @@ class VideoQueuePolicyTest {
             assertThrows(IllegalArgumentException::class.java) { PlaybackQueueCodec.validate(queue(track), video = true) }
         }
     }
+    private val subtitle = PlaybackSubtitle("ef".repeat(16), "Русские", "ru", true,
+        "application/x-subrip", 4096, "01".repeat(32))
+    @Test fun acceptsMultipleVerifiedVideoSubtitles() {
+        val track = video.copy(subtitles = listOf(subtitle, subtitle.copy(id = "02".repeat(16), language = "en", default = false)))
+        assertEquals(track, PlaybackQueueCodec.validate(queue(track), video = true).items.single())
+    }
+    @Test fun rejectsInvalidSubtitleMetadataAndAudioAttachments() {
+        for (sub in listOf(subtitle.copy(id = "../file"), subtitle.copy(sha256 = "bad"),
+            subtitle.copy(size = (4L shl 20) + 1), subtitle.copy(size = 0),
+            subtitle.copy(mime = "text/html"), subtitle.copy(language = "../ru"), subtitle.copy(label = "bad\nlabel"))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                PlaybackQueueCodec.validate(queue(video.copy(subtitles = listOf(sub))), video = true)
+            }
+        }
+        for (subs in listOf(List(9) { subtitle }, listOf(subtitle, subtitle),
+            listOf(subtitle, subtitle.copy(id = "03".repeat(16))))) {
+            assertThrows(IllegalArgumentException::class.java) { PlaybackQueueCodec.validateSubtitles(subs) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            PlaybackQueueCodec.validate(queue(video.copy(mime = "audio/mp4", size = 128, subtitles = listOf(subtitle))))
+        }
+    }
 }

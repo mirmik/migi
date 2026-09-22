@@ -10,6 +10,12 @@ data class PlaybackTrack(
 	val mime: String,
 	val size: Long,
 	val sha256: String,
+	val subtitles: List<PlaybackSubtitle> = emptyList(),
+)
+
+data class PlaybackSubtitle(
+    val id: String, val label: String, val language: String, val default: Boolean,
+    val mime: String, val size: Long, val sha256: String,
 )
 
 data class PlaybackArtwork(
@@ -63,6 +69,8 @@ internal object PlaybackQueueCodec {
 			require(track.mime.startsWith(if (video) "video/" else "audio/") && track.mime.length <= 127) { "Track MIME type is invalid" }
 			require(track.size in 1..(if (video) MAX_VIDEO_BYTES else MAX_TRACK_BYTES)) { "Track size is invalid" }
 			require(SHA256.matches(track.sha256)) { "Track digest is invalid" }
+            require(video || track.subtitles.isEmpty()) { "Audio cannot carry video subtitles" }
+            validateSubtitles(track.subtitles)
 			totalBytes = Math.addExact(totalBytes, track.size)
 			require(totalBytes <= if (video) MAX_VIDEO_QUEUE_BYTES else MAX_QUEUE_BYTES) { "Playback queue is too large" }
 		}
@@ -75,15 +83,34 @@ internal object PlaybackQueueCodec {
 		return queue
 	}
 
-	private fun parseTrack(json: JSONObject): PlaybackTrack {
+	internal fun parseTrack(json: JSONObject): PlaybackTrack {
 		val id = json.getString("id")
 		val title = json.getString("title")
 		val artist = json.optString("artist")
 		val mime = json.getString("mime").lowercase()
 		val size = json.getLong("size")
 		val sha256 = json.getString("sha256").lowercase()
-		return PlaybackTrack(id, title, artist, mime, size, sha256)
+		val array = if (json.has("subtitles")) json.getJSONArray("subtitles") else null
+        require(array == null || array.length() <= 8) { "Too many subtitles" }
+        val subtitles = if (array == null) emptyList() else (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
+            PlaybackSubtitle(item.getString("id"), item.getString("label"), item.optString("language"),
+                item.optBoolean("default"), item.getString("mime"), item.getLong("size"), item.getString("sha256"))
+        }
+        validateSubtitles(subtitles)
+        return PlaybackTrack(id, title, artist, mime, size, sha256, subtitles)
 	}
+
+    internal fun validateSubtitles(subtitles: List<PlaybackSubtitle>) {
+        require(subtitles.size <= 8 && subtitles.map { it.id }.distinct().size == subtitles.size) { "Invalid subtitle count or duplicate ID" }
+        require(subtitles.count { it.default } <= 1) { "Multiple default subtitles" }
+        for (subtitle in subtitles) {
+            require(MEDIA_ID.matches(subtitle.id) && SHA256.matches(subtitle.sha256)) { "Invalid subtitle identity" }
+            require(validText(subtitle.label, 128)) { "Invalid subtitle label" }
+            require(subtitle.language.length <= 35 && (subtitle.language.isEmpty() || Regex("^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$").matches(subtitle.language))) { "Invalid subtitle language" }
+            require(subtitle.mime in setOf("text/x-ssa", "application/x-subrip", "text/vtt") && subtitle.size in 1..(4L shl 20)) { "Invalid subtitle format or size" }
+        }
+    }
 
 	private fun parseArtwork(json: JSONObject): PlaybackArtwork = PlaybackArtwork(
 		id = json.getString("id"),

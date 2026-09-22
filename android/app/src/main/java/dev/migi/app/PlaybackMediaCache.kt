@@ -9,9 +9,10 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import org.json.JSONObject
 
-internal class PlaybackMediaCache(private val context: Context) {
+internal class PlaybackMediaCache(private val context: Context,
+    directoryName: String = CACHE_DIRECTORY, private val maximumBytes: Long = MAX_CACHE_BYTES) {
 	private val preferences = context.getSharedPreferences(MainActivity.PREFERENCES, Context.MODE_PRIVATE)
-	private val directory = File(context.filesDir, CACHE_DIRECTORY).apply {
+	private val directory = File(context.filesDir, directoryName).apply {
 		check(mkdirs() || isDirectory) { "Failed to create playback media cache" }
 	}
 
@@ -28,6 +29,16 @@ internal class PlaybackMediaCache(private val context: Context) {
 		track.sha256,
 		"track",
 	)
+
+    @Synchronized
+    fun prepare(subtitle: PlaybackSubtitle): File = prepareAsset(
+        subtitle.id, subtitle.mime, subtitle.size, subtitle.sha256, "subtitle",
+    )
+
+    @Synchronized
+    fun cached(subtitle: PlaybackSubtitle): File? = destination(subtitle.sha256, subtitle.mime).takeIf {
+        it.isFile && it.length() == subtitle.size && sha256(it) == subtitle.sha256
+    }
 
 	/** Downloads playlist artwork through the same pinned and verified media path. */
 	@Synchronized
@@ -78,6 +89,7 @@ internal class PlaybackMediaCache(private val context: Context) {
 						"Downloaded $label digest differs from queue"
 					}
 			}
+			check(config() == config) { "Connection changed during media download" }
 			require(temporary.length() == size) { "Downloaded $label size differs from queue" }
 			try {
 				Files.move(
@@ -110,7 +122,7 @@ internal class PlaybackMediaCache(private val context: Context) {
 			.orEmpty()
 		var total = files.sumOf(File::length)
 		for (file in files.filter { it != protected }.sortedBy(File::lastModified)) {
-			if (total <= MAX_CACHE_BYTES) break
+			if (total <= maximumBytes) break
 			val bytes = file.length()
 			if (file.delete()) total -= bytes
 		}
@@ -149,6 +161,9 @@ internal class PlaybackMediaCache(private val context: Context) {
 		"audio/flac" -> ".flac"
 		"audio/mp4", "audio/aac", "audio/x-m4a" -> ".m4a"
 		"audio/wav", "audio/x-wav" -> ".wav"
+		"text/x-ssa" -> ".ass"
+		"application/x-subrip" -> ".srt"
+		"text/vtt" -> ".vtt"
 		"image/jpeg" -> ".jpg"
 		"image/png" -> ".png"
 		"image/webp" -> ".webp"

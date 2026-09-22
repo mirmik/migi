@@ -138,4 +138,7 @@ and preserves Play/Pause.
 
 Use the bundled `scripts/migi-video` for video; `.mp4` is video here and remains
 an audio input in the music helpers. Read [references/video.md](references/video.md)
-for indexing a season, queuing episodes, and download/player limitations.
+for indexing a season, explicitly attaching external subtitle files with
+`--subtitle LANGUAGE FILE` or a local `--subtitles-manifest`, queuing episodes,
+and download/player limitations. Subtitle files use media origins, never ordinary
+file exchange; paths stay on the storage host.

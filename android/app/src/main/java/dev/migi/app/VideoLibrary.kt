@@ -38,9 +38,7 @@ internal class VideoLibrary(context: Context) {
         val items = rawEntries()
         (0 until items.length()).map { index ->
             val item = items.getJSONObject(index)
-            VideoEntry(PlaybackTrack(item.getString("id"), item.getString("title"),
-                item.optString("artist"), item.getString("mime"), item.getLong("size"),
-                item.getString("sha256")), item.getString("collection"))
+            VideoEntry(PlaybackQueueCodec.parseTrack(item), item.getString("collection"))
         }
     }
     fun position(track: PlaybackTrack) = prefs.getLong("position-${track.sha256}", 0)

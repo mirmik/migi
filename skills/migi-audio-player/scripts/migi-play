@@ -194,6 +194,7 @@ class OriginMediaItem:
     device: int
     inode: int
     modified_at_unix_nano: int
+    subtitles: tuple = ()
 
     def manifest(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -206,6 +207,8 @@ class OriginMediaItem:
             result["title"] = self.title
         if self.artist:
             result["artist"] = self.artist
+        if self.subtitles:
+            result["subtitles"] = list(self.subtitles)
         return result
 
 

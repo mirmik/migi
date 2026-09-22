@@ -97,8 +97,11 @@ internal class VideoStreamDataSource(
         fun factory(context: Context, track: PlaybackTrack): DataSource.Factory {
             val app = context.applicationContext
             val cache = VideoChunkCache()
-            // DefaultDataSource also handles private external subtitle files.
-            return DefaultDataSource.Factory(app, DataSource.Factory { VideoStreamDataSource(app, track, cache) })
+            val subtitles = PlaybackMediaCache(app, "video-sidecars/${track.sha256}", 32L shl 20)
+            // DefaultDataSource handles offline video/manual subtitles; the base routes origin IDs.
+            return DefaultDataSource.Factory(app, DataSource.Factory {
+                VideoSubtitleDataSource(track, subtitles, VideoStreamDataSource(app, track, cache))
+            })
         }
     }
 }

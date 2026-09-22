@@ -51,16 +51,17 @@ var (
 )
 
 type mediaObject struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Title     string    `json:"title"`
-	Artist    string    `json:"artist,omitempty"`
-	MIME      string    `json:"mime"`
-	Size      int64     `json:"size"`
-	SHA256    string    `json:"sha256"`
-	Source    string    `json:"source"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	Subtitles []playbackSubtitleReference `json:"subtitles,omitempty"`
+	ID        string                      `json:"id"`
+	Name      string                      `json:"name"`
+	Title     string                      `json:"title"`
+	Artist    string                      `json:"artist,omitempty"`
+	MIME      string                      `json:"mime"`
+	Size      int64                       `json:"size"`
+	SHA256    string                      `json:"sha256"`
+	Source    string                      `json:"source"`
+	CreatedAt time.Time                   `json:"created_at"`
+	ExpiresAt time.Time                   `json:"expires_at,omitzero"`
 }
 
 // mediaStoredObject keeps server-private origin information in the sidecar.
@@ -78,12 +79,13 @@ type mediaRemoteOrigin struct {
 }
 
 type playbackMediaReference struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Artist string `json:"artist,omitempty"`
-	MIME   string `json:"mime"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
+	Subtitles []playbackSubtitleReference `json:"subtitles,omitempty"`
+	ID        string                      `json:"id"`
+	Title     string                      `json:"title"`
+	Artist    string                      `json:"artist,omitempty"`
+	MIME      string                      `json:"mime"`
+	Size      int64                       `json:"size"`
+	SHA256    string                      `json:"sha256"`
 }
 
 type playbackArtworkReference struct {
@@ -286,7 +288,7 @@ func (s *mediaStore) uploadHandler(agentName func(*http.Request) string) http.Ha
 		}
 		contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if err != nil || !isPlaybackMediaMIME(contentType) {
-			http.Error(w, "Content-Type must be audio/*, video/*, image/jpeg, image/png, or image/webp", http.StatusUnsupportedMediaType)
+			http.Error(w, "unsupported media Content-Type", http.StatusUnsupportedMediaType)
 			return
 		}
 		title, err := normalizeMediaText(r.Header.Get("X-Migi-Title"), false)
@@ -434,7 +436,7 @@ func (s *mediaStore) queueHandler(agentName func(*http.Request) string) http.Han
 			}
 			manifest.Items = append(manifest.Items, playbackMediaReference{
 				ID: object.ID, Title: object.Title, Artist: object.Artist,
-				MIME: object.MIME, Size: object.Size, SHA256: object.SHA256,
+				MIME: object.MIME, Size: object.Size, SHA256: object.SHA256, Subtitles: object.Subtitles,
 			})
 		}
 		body, err := json.Marshal(manifest)
@@ -759,7 +761,7 @@ func isArtworkMIME(value string) bool {
 }
 
 func isPlaybackMediaMIME(value string) bool {
-	return isPlayableMIME(value) || isArtworkMIME(value)
+	return isPlayableMIME(value) || isArtworkMIME(value) || isSubtitleMIME(value)
 }
 
 func normalizeMediaAgent(raw string) string {
@@ -781,6 +783,9 @@ func playbackByteLimit(mime string) int64 {
 	return maxPlaybackQueueBytes
 }
 func (s *mediaStore) objectLimit(mime string) int64 {
+	if isSubtitleMIME(mime) {
+		return min(s.maxBytes, maxSubtitleBytes)
+	}
 	if isVideoMIME(mime) {
 		return maxVideoBytes
 	}

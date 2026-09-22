@@ -291,6 +291,22 @@ The response is an array of ordinary persistent media catalog objects with
 newly assigned opaque IDs and no `expires_at`. It contains no paths. Canonical
 paths and filesystem fingerprints remain only in the origin's private registry.
 
+Video origin inputs may also contain `subtitles`, an array of up to eight
+`{"id":"<subtitle-media-id>","label":"Русские","language":"ru","default":true}`
+references. First register the subtitle objects with MIME `text/x-ssa` (ASS/SSA),
+`application/x-subrip` (SRT), or `text/vtt`, at most 4 MiB each. Each reference
+must belong to the same authenticated origin; labels are bounded to 128
+characters, language tags to 35 ASCII characters, IDs are unique, and at most
+one default is allowed. Audio/artwork/subtitle objects cannot attach subtitles.
+
+The server resolves `mime`, `size`, and `sha256` into each reference. These
+canonical references persist in video metadata and are copied into the
+`subtitles` array of each video queue item, including saved playlist replay.
+The version-1 queue schema stays backward compatible: older clients ignore the
+optional field. No local paths or origin credentials appear in the public
+references. Subtitles are immutable origin objects without TTL and use the
+ordinary pinned `/v1/media/{id}/content` delivery with full digest verification.
+
 An origin keeps polling with the same credential:
 
 ```http

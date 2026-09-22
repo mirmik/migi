@@ -368,7 +368,7 @@ func (s *mediaStore) savedPlaylistManifest(
 		}
 		manifest.Items = append(manifest.Items, playbackMediaReference{
 			ID: object.ID, Title: object.Title, Artist: object.Artist,
-			MIME: object.MIME, Size: object.Size, SHA256: object.SHA256,
+			MIME: object.MIME, Size: object.Size, SHA256: object.SHA256, Subtitles: object.Subtitles,
 		})
 	}
 	return manifest, nil

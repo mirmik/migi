@@ -38,12 +38,13 @@ var (
 )
 
 type originMediaInput struct {
-	Name   string `json:"name"`
-	Title  string `json:"title,omitempty"`
-	Artist string `json:"artist,omitempty"`
-	MIME   string `json:"mime"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
+	Subtitles []originSubtitleInput `json:"subtitles,omitempty"`
+	Name      string                `json:"name"`
+	Title     string                `json:"title,omitempty"`
+	Artist    string                `json:"artist,omitempty"`
+	MIME      string                `json:"mime"`
+	Size      int64                 `json:"size"`
+	SHA256    string                `json:"sha256"`
 }
 
 type mediaOriginStream struct {
@@ -184,7 +185,7 @@ func (s *mediaStore) registerRemoteMedia(input originMediaInput, agent events.Ag
 	}
 	contentType, _, err := mime.ParseMediaType(input.MIME)
 	if err != nil || !isPlaybackMediaMIME(contentType) {
-		return object, errors.New("mime must be audio/*, video/*, image/jpeg, image/png, or image/webp")
+		return object, errors.New("unsupported media MIME type")
 	}
 	if input.Size <= 0 || input.Size > s.objectLimit(contentType) || isArtworkMIME(contentType) && input.Size > maxPlaybackArtwork {
 		return object, errMediaTooLarge
@@ -206,6 +207,10 @@ func (s *mediaStore) registerRemoteMedia(input originMediaInput, agent events.Ag
 	if err != nil {
 		return object, errors.New("artist is invalid")
 	}
+	subtitles, err := s.resolveOriginSubtitles(input.Subtitles, contentType, agent.ID)
+	if err != nil {
+		return object, err
+	}
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
 		return object, err
@@ -213,7 +218,7 @@ func (s *mediaStore) registerRemoteMedia(input originMediaInput, agent events.Ag
 	now := time.Now().UTC()
 	object = mediaObject{
 		ID: hex.EncodeToString(idBytes), Name: name, Title: title, Artist: artist,
-		MIME: contentType, Size: input.Size, SHA256: input.SHA256,
+		MIME: contentType, Size: input.Size, SHA256: input.SHA256, Subtitles: subtitles,
 		Source: "agent:" + agent.Name + ":origin", CreatedAt: now,
 	}
 	record := mediaStoredObject{

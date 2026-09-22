@@ -189,7 +189,7 @@ class MigiFixtureHandler(BaseHTTPRequestHandler):
             for index, source in enumerate(payload["items"]):
                 result.append(
                     {
-                        "id": ids[index],
+                        "id": ids[index] if len(self.state["origin_media_manifests"]) == 1 else format(len(self.state["origin_media_manifests"]) * 1000 + index, "032x"),
                         "name": source["name"],
                         "title": source.get("title", Path(source["name"]).stem),
                         "artist": source.get("artist", ""),
@@ -592,6 +592,48 @@ class SkillClientTests(unittest.TestCase):
         self.assertEqual(len(self.state["playlist_saves"]), 1)
         self.assertEqual(len(json.loads(registry.read_text())["entries"]), 2)
         self.assertNotIn(str(folder), json.dumps(items))
+
+    def test_video_subtitle_manifest_registers_links_without_paths_or_delivery(self):
+        skill = self.copied_skill(AUDIO_SKILL)
+        video = load_script("portable_video_subtitles", skill / "scripts/migi-video")
+        transport = sys.modules["_migi_transport"]
+        client = transport.MigiHTTPClient(transport.urlsplit(self.endpoint), token="test-origin")
+        folder = self.root / "Season"
+        folder.mkdir()
+        (folder / "01.mkv").write_bytes(b"video")
+        (folder / "02.mkv").write_bytes(b"video2")
+        (folder / "01.ru.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nПривет\n")
+        (folder / "02.en.vtt").write_text("WEBVTT\n\n00:00.000 --> 00:01.000\nHi\n")
+        manifest = folder / "subtitles.json"
+        manifest.write_text(json.dumps([
+            {"video":"01.mkv", "subtitles":[{"file":"01.ru.srt", "language":"ru", "label":"Русские", "default":True}]},
+            {"video":"02.mkv", "subtitles":[{"file":"02.en.vtt", "language":"en", "label":"English"}]},
+        ]))
+        registry = self.root / "subtitles-registry.json"
+        with mock.patch.dict(os.environ, {"MIGI_ORIGIN_REGISTRY":str(registry)}), mock.patch.object(video.media,"resolve_agent_client",return_value=client), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(video.run(["--subtitles-manifest",str(manifest),"index",str(folder)]),0)
+        subs, videos = [request["items"] for request in self.state["origin_media_manifests"]]
+        self.assertEqual([s["mime"] for s in subs], ["application/x-subrip","text/vtt"])
+        self.assertEqual(videos[0]["subtitles"], [{"id":COVER_ID,"language":"ru","label":"Русские","default":True}])
+        self.assertEqual(videos[1]["subtitles"][0]["id"],FILE_ID)
+        self.assertNotIn(str(folder),json.dumps(self.state["origin_media_manifests"]))
+        self.assertEqual(len(json.loads(registry.read_text())["entries"]),4)
+        self.assertEqual(len(self.state["playlist_saves"][0]["media_ids"]),2)
+        self.assertFalse(self.state["queues"])
+
+    def test_video_subtitle_options_validate_before_registration(self):
+        skill = self.copied_skill(AUDIO_SKILL)
+        video = load_script("portable_video_subtitle_validation", skill / "scripts/migi-video")
+        movie = self.root / "01.mkv"; movie.write_bytes(b"video")
+        subtitle = self.root / "01.srt"; subtitle.write_text("subtitle")
+        entries = video.subtitle_inputs([movie.resolve()], [("ru",str(subtitle))], None)
+        self.assertEqual(entries[movie.resolve()][0][1]["language"],"ru")
+        for inline in [[("../ru",str(subtitle))], [("ru",str(movie))], [("ru",str(subtitle))]*2]:
+            with self.assertRaises(video.media.MigiClientError): video.subtitle_inputs([movie.resolve()],inline,None)
+        with self.assertRaises(video.media.MigiClientError): video.subtitle_inputs([movie.resolve(),movie.resolve()],[("ru",str(subtitle))],None)
+        with subtitle.open("wb") as file: file.truncate((4 << 20)+1)
+        with self.assertRaises(video.media.MigiClientError): video.subtitle_inputs([movie.resolve()],[("ru",str(subtitle))],None)
+        self.assertFalse(self.state["origin_media_manifests"])
 
     def test_video_rejects_large_input_before_registering_any_metadata(self) -> None:
         skill = self.copied_skill(AUDIO_SKILL)
