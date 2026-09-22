@@ -50,6 +50,8 @@ audio/subtitle selection and an optional external subtitle file. Online playback
 prefers Russian subtitles when available. It uses authenticated, certificate-pinned
 QUIC, 2 MiB verified blocks and a 32 MiB in-memory LRU cache per player. It retries
 transient failures while buffering; after repeated failures the error offers retry.
+The fullscreen button switches to landscape without recreating the player or
+losing its buffer; leaving fullscreen restores the previous orientation policy.
 Closing the player cancels its active request. Streaming does not mark a video
 as downloaded: offline playback still requires the fully verified file.
 

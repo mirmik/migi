@@ -3,6 +3,7 @@ package dev.migi.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.provider.OpenableColumns
 import android.content.SharedPreferences
 import android.net.Uri
@@ -11,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.View
 import android.window.OnBackInvokedDispatcher
 import android.widget.Button
@@ -43,6 +45,7 @@ class VideoActivity : Activity() {
     private val executor = Executors.newSingleThreadExecutor()
     private var pendingSubtitleID: String? = null
     private var fullscreen = false
+    private var orientationBeforeFullscreen = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var playerView: PlayerView? = null
     private var generation = 0
     private var lastActive: String? = null
@@ -83,6 +86,9 @@ class VideoActivity : Activity() {
         val restored = restoreID
         showLibrary()
         restoreID = restored
+        fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
+        orientationBeforeFullscreen = savedInstanceState?.getInt("previous-orientation",
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
     override fun onStart() {
         super.onStart()
@@ -93,6 +99,8 @@ class VideoActivity : Activity() {
     override fun onStop() { restoreID = current?.id; releasePlayer(); handler.removeCallbacks(tick); super.onStop() }
     override fun onSaveInstanceState(outState: Bundle) {
         savePosition(); outState.putString("video", current?.id ?: restoreID)
+        outState.putBoolean("fullscreen", fullscreen)
+        outState.putInt("previous-orientation", orientationBeforeFullscreen)
         outState.putString("subtitle-picker", pendingSubtitleID); super.onSaveInstanceState(outState)
     }
     override fun onDestroy() {
@@ -188,7 +196,6 @@ class VideoActivity : Activity() {
         }
     }
     private fun play(track: PlaybackTrack, autoplay: Boolean = true) {
-        setFullscreen(false)
         val offline = VideoDownloads.available(this, track)
         generation++; releasePlayer(); current = track
         progress.clear(); downloadStatus = null; root.removeAllViews()
@@ -220,6 +227,7 @@ class VideoActivity : Activity() {
                 }
             }.show()
         }
+        setFullscreen(fullscreen)
         val builder = ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(15_000, 45_000, 3_000, 5_000).build())
         if (!offline) builder.setMediaSourceFactory(DefaultMediaSourceFactory(VideoStreamDataSource.factory(this, track))
@@ -299,13 +307,24 @@ class VideoActivity : Activity() {
         }
     }
     private fun setFullscreen(enabled: Boolean) {
+        if (enabled && !fullscreen) orientationBeforeFullscreen = requestedOrientation
         fullscreen = enabled
+        // VideoActivity handles orientation changes in place, preserving the
+        // player, its buffer, selected tracks and play/pause state.
+        requestedOrientation = if (enabled) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else orientationBeforeFullscreen
+        playerView?.setFullscreenButtonState(enabled)
         for (index in 0 until root.childCount) {
             val child = root.getChildAt(index)
             if (child !== playerView) child.visibility = if (enabled) View.GONE else View.VISIBLE
         }
-        if (enabled) window.insetsController?.hide(WindowInsets.Type.systemBars())
-        else window.insetsController?.show(WindowInsets.Type.systemBars())
+        window.insetsController?.let { controller ->
+            controller.systemBarsBehavior = if (enabled)
+                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                else WindowInsetsController.BEHAVIOR_DEFAULT
+            if (enabled) controller.hide(WindowInsets.Type.systemBars())
+            else controller.show(WindowInsets.Type.systemBars())
+        }
     }
     private fun chooseTracks(type: Int) {
         val active = player ?: return
