@@ -100,6 +100,11 @@ class VideoActivity : Activity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // This activity is a bottom-navigation destination, not a pushed detail page.
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+            overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        }
         library = VideoLibrary(this)
         val previous = library.currentSession()
         restoreID = if (savedInstanceState == null) previous?.trackID else savedInstanceState.getString("video")
@@ -126,6 +131,11 @@ class VideoActivity : Activity() {
         fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
         orientationBeforeFullscreen = savedInstanceState?.getInt("previous-orientation",
             ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+    @Suppress("DEPRECATION")
+    override fun finish() {
+        super.finish()
+        if (android.os.Build.VERSION.SDK_INT < 34) overridePendingTransition(0, 0)
     }
     override fun onStart() {
         super.onStart()
@@ -274,7 +284,8 @@ class VideoActivity : Activity() {
             if (id != MigiNavigation.VIDEO) MigiNavigation.mainTab(id)?.let { tab ->
                 startActivity(Intent(this, MainActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    .putExtra(MainActivity.EXTRA_OPEN_TAB, tab))
+                    .putExtra(MainActivity.EXTRA_OPEN_TAB, tab),
+                    android.app.ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle())
                 finish()
             }
             true

@@ -389,28 +389,56 @@ class MainActivity : Activity() {
             musicPlayerPage = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             addView(musicPlayerPage, matchWidth())
             musicPlayerPage.apply {
-                val artworkSize = minOf(resources.displayMetrics.widthPixels - dp(40), dp(360))
-                playbackArtwork = PlaylistArtworkView(this@MainActivity).apply { showFallback("migi") }
-                addView(playbackArtwork, LinearLayout.LayoutParams(artworkSize, artworkSize).apply {
-                    gravity = Gravity.CENTER_HORIZONTAL
-                })
-                addGap(24)
-                playbackHeroLabel = sectionLabel(R.string.playlist_ready_label)
-                addView(playbackHeroLabel, matchWidth())
-                addGap(8)
-                playbackCurrent = TextView(this@MainActivity).apply {
-                    setText(R.string.playback_nothing_playing)
-                    applyMigiText(22f, weight = Typeface.BOLD)
-                    maxLines = 2
+                val hero = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
+                val heroText = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                playbackArtwork = PlaylistArtworkView(this@MainActivity).apply {
+                    showFallback("migi")
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+                    isFocusable = true
                 }
-                addView(playbackCurrent, matchWidth())
-                addGap(6)
-                playbackArtist = TextView(this@MainActivity).apply {
-                    setText(R.string.playback_unknown_artist)
-                    applyMigiText(16f, MigiPalette.muted)
-                    maxLines = 1
+                hero.addView(playbackArtwork)
+                hero.addView(heroText)
+                addView(hero, matchWidth())
+                heroText.apply {
+                    playbackHeroLabel = sectionLabel(R.string.playlist_ready_label)
+                    addView(playbackHeroLabel, matchWidth())
+                    addGap(8)
+                    playbackCurrent = TextView(this@MainActivity).apply {
+                        setText(R.string.playback_nothing_playing)
+                        applyMigiText(22f, weight = Typeface.BOLD)
+                        maxLines = 2
+                    }
+                    addView(playbackCurrent, matchWidth())
+                    addGap(6)
+                    playbackArtist = TextView(this@MainActivity).apply {
+                        setText(R.string.playback_unknown_artist)
+                        applyMigiText(16f, MigiPalette.muted)
+                        maxLines = 1
+                    }
+                    addView(playbackArtist, matchWidth())
                 }
-                addView(playbackArtist, matchWidth())
+                fun updateArtworkLayout() {
+                    val compact = preferences.getBoolean(KEY_COMPACT_ARTWORK, false)
+                    hero.orientation = if (compact) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+                    val size = if (compact) dp(96) else minOf(resources.displayMetrics.widthPixels - dp(40), dp(360))
+                    playbackArtwork.layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                        gravity = if (compact) Gravity.CENTER_VERTICAL else Gravity.CENTER_HORIZONTAL
+                    }
+                    playbackArtwork.cornerRadius = dp(if (compact) 20 else 28).toFloat()
+                    playbackArtwork.contentDescription = if (compact) "Увеличить обложку" else "Уменьшить обложку"
+                    playbackArtwork.tooltipText = playbackArtwork.contentDescription
+                    heroText.layoutParams = LinearLayout.LayoutParams(if (compact) 0 else -1, -2).apply {
+                        weight = if (compact) 1f else 0f
+                        marginStart = if (compact) dp(16) else 0
+                        topMargin = if (compact) 0 else dp(24)
+                    }
+                }
+                playbackArtwork.setOnClickListener {
+                    preferences.edit().putBoolean(KEY_COMPACT_ARTWORK,
+                        !preferences.getBoolean(KEY_COMPACT_ARTWORK, false)).apply()
+                    updateArtworkLayout()
+                }
+                updateArtworkLayout()
                 addGap(20)
                 playbackSeek = Slider(this@MainActivity).apply {
                     valueFrom = 0f
@@ -729,7 +757,8 @@ class MainActivity : Activity() {
         miniPlayer = buildMiniPlayer()
         bottomNavigation = MigiNavigation.create(this, NAV_HOME) { id ->
             if (id == MigiNavigation.VIDEO) {
-                startActivity(Intent(this, VideoActivity::class.java))
+                startActivity(Intent(this, VideoActivity::class.java),
+                    android.app.ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle())
                 false
             } else {
                 MigiNavigation.mainTab(id)?.let(::displayTab)
@@ -1899,6 +1928,7 @@ class MainActivity : Activity() {
         const val KEY_DND_OVERRIDE = "dnd_override"
         const val KEY_AUDIO_VOLUME = "audio_volume"
         const val KEY_CONNECTION_RECOVERY_ERROR = "connection_recovery_error"
+        private const val KEY_COMPACT_ARTWORK = "compact_artwork"
         const val KEY_PLAYBACK_HOT_SWAP = "playback_hot_swap"
         const val KEY_PLAYBACK_HOT_SWAP_EVENT_ID = "playback_hot_swap_event_id"
         const val KEY_PLAYBACK_HOT_SWAP_STATE = "playback_hot_swap_state"
