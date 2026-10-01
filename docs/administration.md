@@ -14,6 +14,8 @@ The panel is split into focused browser sections:
 - **Devices** owns pairing invitations, connection state and revocation.
 - **Credentials** manages agent and APK publisher identities.
 - **Files** owns the shared temporary inbox.
+- **Музыка** plays saved playlists and catalog tracks in the browser, with
+  search, artwork, a track queue, previous/next, volume and seeking.
 - **System** shows listeners, endpoints, certificate identity and uptime.
 
 All sections use relative navigation and form actions so the panel continues to
@@ -36,6 +38,32 @@ shows the source and expiry of every live object and serves downloads with the
 stored MIME type, exact length and SHA-256 header. Access inherits the panel's
 configured administration-listener security boundary.
 
+In the web inbox, clicking a JPEG, PNG, GIF, WebP, BMP or AVIF thumbnail opens
+an image over the file list. Click the image to toggle fit/actual size; close with
+**Close**, Escape or the backdrop. The original **Download** action remains
+available. SVG and other active documents are not served by the preview route.
+On Android, **View** downloads and verifies the image before opening it inside
+Migi; pinch or double tap to zoom and drag to move. Large images are decoded
+at a bounded resolution. Viewer downloads use the same 100 MiB file limit.
+
+The web inbox uses a responsive list with the file name, size and actions
+kept together. **Details** reveals the MIME type, source, upload time and
+expiry without adding wide columns. On narrow screens, the action buttons
+sit below the name.
+
+The file lists show clickable, lazily loaded thumbnails. The server generates
+JPEGs up to 320 pixels across for JPEG/PNG/GIF/WebP/BMP sources up to 16 million
+pixels; GIF thumbnails use the first frame. Unsupported or damaged sources
+keep a clickable placeholder (or **View** on Android). The server keeps at
+most 128 thumbnails / 8 MiB in memory and decodes one original at a time.
+Android downloads at most two visible thumbnails at once, verifies their
+digest over pinned QUIC and keeps a bounded memory and disk cache. Opening
+the viewer still downloads the original image.
+
+Optional Chromium acceptance (requires Playwright and its Chromium browser):
+`MIGI_BROWSER_PYTHON=/path/to/python go test ./internal/admin -run TestBrowserImagePreviewSmoke -v`
+from `server/`. The test uses an isolated file exchange fixture.
+
 Playback media is intentionally absent from **Shared files**. Agents manage the
 separate media store with `migi-play`; silent track and artwork uploads do not
 create inbox rows or `file.available` events. Catalog entries may instead be
@@ -45,6 +73,15 @@ through the server, to the requesting phone. Origin content is not stored on
 the server, so it needs neither an inbound route to storage nor a shared mount.
 Origin catalog entries and saved playlists are persistent metadata. A saved
 playlist pins only directly uploaded media that would otherwise expire.
+
+Open **Музыка** (`/admin/music/`) to listen on the computer. Playback uses the
+same catalog and origin connection as Android. Choosing music here does not
+publish a phone queue event. The queue and position are saved in this browser;
+returning to the page restores them paused. Keep the music tab open while
+listening. Browser-supported audio formats play directly, without transcoding;
+unavailable sources or unsupported formats show an error and allow retrying a
+track. The read-only `/admin/music/api/` routes inherit the admin listener's
+access boundary and support byte ranges for seeking, including origin media.
 
 ## Start it
 

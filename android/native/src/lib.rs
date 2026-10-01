@@ -435,6 +435,7 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadSharedFile(
     file_id: JString,
     file_descriptor: jint,
     max_bytes: jlong,
+    thumbnail: jni::sys::jboolean,
 ) -> jstring {
     let result = (|| -> Result<String, AnyError> {
         let endpoint: String = env.get_string(&endpoint)?.into();
@@ -458,7 +459,7 @@ pub extern "system" fn Java_dev_migi_app_NativeQuicClient_downloadSharedFile(
             &endpoint,
             &expected_pin,
             &credential,
-            &format!("/v1/files/{file_id}/content"),
+            &format!("/v1/files/{file_id}/{}", if thumbnail != 0 { "thumbnail" } else { "content" }),
             &mut destination,
             max_bytes as u64,
         )
@@ -1175,7 +1176,7 @@ fn download_request_cancellable(
     let mut input = [0_u8; 65_535];
     let mut output = [0_u8; MAX_DATAGRAM_SIZE];
     let deadline = Instant::now()
-        + Duration::from_secs(if is_chunk { 25 } else if request_path.starts_with("/v1/media/") {
+        + Duration::from_secs(if request_path.ends_with("/thumbnail") { 20 } else if is_chunk { 25 } else if request_path.starts_with("/v1/media/") {
             6 * 60 * 60
         } else {
             15 * 60

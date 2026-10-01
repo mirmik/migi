@@ -106,6 +106,7 @@ internal object NativeQuicClient {
         fileID: String,
         fileDescriptor: Int,
         maxBytes: Long,
+        thumbnail: Boolean = false,
     ): String
 
     external fun downloadMediaChunk(endpoint: String, certificatePin: String, credential: String,

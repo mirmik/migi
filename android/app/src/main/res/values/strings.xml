@@ -78,8 +78,8 @@
     <string name="playback_shuffle_off">Shuffle: off</string>
     <string name="playback_shuffle_on">Shuffle: on</string>
     <string name="playback_repeat_off">Repeat: off</string>
-    <string name="playback_repeat_all">Repeat: all</string>
-    <string name="playback_repeat_one">Repeat: one</string>
+    <string name="playback_repeat_all">Repeat: entire playlist</string>
+    <string name="playback_repeat_one">Repeat: current track</string>
     <string name="pager_empty">No pager message</string>
     <string name="files_title">Shared files</string>
     <string name="choose_file">Share a file</string>
@@ -94,6 +94,16 @@
     <string name="save_file">Save</string>
     <string name="close_html_viewer">Close</string>
     <string name="html_viewer_failed">Cannot open HTML: %1$s</string>
+    <string name="open_image_file">View</string>
+    <string name="file_thumbnail">Preview: %1$s</string>
+    <string name="file_thumbnail_summary">%1$s\n%2$s</string>
+    <string name="file_thumbnail_details">From %1$s · Expires %2$s</string>
+    <string name="opening_image_file">Downloading and verifying image…</string>
+    <string name="image_file_opened">Opened: %1$s</string>
+    <string name="image_viewer_loading">Loading image…</string>
+    <string name="image_viewer_failed">Cannot open image: %1$s</string>
+    <string name="image_viewer_hint">Pinch to zoom, drag to move, double tap to reset or zoom.</string>
+    <string name="close_image_viewer">Close</string>
     <string name="file_uploading">Uploading file over pinned QUIC…</string>
     <string name="file_downloading">Downloading and verifying file…</string>
     <string name="file_uploaded">Uploaded: %1$s</string>

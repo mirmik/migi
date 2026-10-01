@@ -1,0 +1,24 @@
+[hidden] { display: none !important; }
+.music-player { display: flex; align-items: center; gap: 24px; margin-bottom: 20px; }
+.music-cover { width: 160px; height: 160px; flex: 0 0 160px; border-radius: 12px; object-fit: cover; background: #253354; }
+#cover-placeholder { display: grid; place-items: center; color: #8eabff; font-size: 60px; }
+.music-now { min-width: 0; flex: 1; }
+.music-now h2 { margin: 8px 0; overflow-wrap: anywhere; }
+.music-now p { margin: 0 0 12px; }
+audio { display: block; width: 100%; }
+.music-controls { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.music-controls span { color: #aab5c6; font-size: 13px; }
+.music-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.music-columns > * { min-width: 0; }
+.music-tabs { display: flex; gap: 8px; margin-top: 16px; }
+.music-tabs button[aria-pressed="false"], .music-controls button { background: #202a3a; border-color: #3a4760; }
+.music-list { display: grid; gap: 6px; padding: 0; margin: 0; list-style: none; max-height: 60vh; overflow-y: auto; }
+.music-row { display: block; width: 100%; text-align: left; background: #171e2a; border: 1px solid transparent; padding: 12px; font-weight: 500; }
+.music-row strong, .music-row small { display: block; overflow-wrap: anywhere; }
+.music-row small { color: #aab5c6; margin-top: 5px; }
+.music-row[aria-current="true"] { border-color: #8eabff; background: #253354; }
+.music-error { padding: 14px 18px; border: 1px solid #8f4454; border-radius: 10px; background: #3b202b; margin-bottom: 18px; }
+.music-library input { min-width: 0; width: 100%; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 2px solid #8eabff; outline-offset: 2px; }
+@media (max-width: 760px) { .music-columns { grid-template-columns: 1fr; } .music-player { gap: 14px; flex-wrap: wrap; } .music-cover { width: 76px; height: 76px; flex-basis: 76px; } .music-now { flex-basis: 100%; } .music-list { max-height: 50vh; } }

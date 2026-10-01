@@ -26,6 +26,7 @@ import (
 
 	"github.com/mirmik/migi/server/internal/agentauth"
 	"github.com/mirmik/migi/server/internal/events"
+	"github.com/mirmik/migi/server/internal/filepreview"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
@@ -36,6 +37,7 @@ type Config struct {
 	AgentRequest           func(context.Context, string, string, any, any) (int, error)
 	Broker                 *events.Broker
 	Files                  FileExchange
+	Music                  http.Handler
 	PublicEndpoint         string
 	CertificateFingerprint string
 	PublicListen           string
@@ -61,6 +63,7 @@ type FileExchange interface {
 	ListSharedFiles(context.Context) ([]SharedFile, error)
 	ShareFile(context.Context, string, string, string, io.Reader, int64) (SharedFile, error)
 	OpenSharedFile(context.Context, string) (SharedFile, io.ReadCloser, error)
+	SharedFileThumbnail(context.Context, string) ([]byte, error)
 	MaxSharedFileBytes() int64
 }
 
@@ -169,6 +172,7 @@ func New(config Config) (*Handler, error) {
 		"formatDuration": formatDuration,
 		"formatBytes":    formatBytes,
 		"messagePreview": messagePreview,
+		"imageMIME":      sharedImageMIME,
 	}).ParseFS(content, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse admin templates: %w", err)
@@ -197,6 +201,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/devices/", h.devices)
 	mux.HandleFunc("GET /admin/agents/", h.agents)
 	mux.HandleFunc("GET /admin/files/", h.files)
+	mux.HandleFunc("GET /admin/music/{$}", h.musicPage)
+	if h.config.Music != nil {
+		mux.Handle("GET /admin/music/api/", h.config.Music)
+	}
 	mux.HandleFunc("GET /admin/system/", h.system)
 	mux.HandleFunc("GET /admin/chat/{$}", h.chatPage)
 	mux.HandleFunc("GET /admin/chat/state", h.chatAPI)
@@ -213,6 +221,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/publishers/revoke", h.revokePublisherToken)
 	mux.HandleFunc("POST /admin/files", h.uploadFile)
 	mux.HandleFunc("GET /admin/files/{fileID}/content", h.downloadFile)
+	mux.HandleFunc("GET /admin/files/{fileID}/preview", h.previewImage)
+	mux.HandleFunc("GET /admin/files/{fileID}/thumbnail", h.fileThumbnail)
 	mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/assets/", h.assets))
 	return h.securityHeaders(mux)
 }
@@ -332,6 +342,38 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {
+	h.serveSharedFile(w, r, false)
+}
+
+func (h *Handler) previewImage(w http.ResponseWriter, r *http.Request) {
+	h.serveSharedFile(w, r, true)
+}
+
+func (h *Handler) fileThumbnail(w http.ResponseWriter, r *http.Request) {
+	if h.config.Files == nil {
+		http.Error(w, "file exchange is disabled", http.StatusServiceUnavailable)
+		return
+	}
+	body, err := h.config.Files.SharedFileThumbnail(r.Context(), r.PathValue("fileID"))
+	if errors.Is(err, ErrFileNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, filepreview.ErrUnsupported) {
+		http.Error(w, "thumbnail unavailable", http.StatusUnsupportedMediaType)
+		return
+	}
+	if err != nil {
+		http.Error(w, "thumbnail unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	_, _ = w.Write(body)
+}
+
+func (h *Handler) serveSharedFile(w http.ResponseWriter, r *http.Request, preview bool) {
 	if h.config.Files == nil {
 		http.Error(w, "file exchange is disabled", http.StatusServiceUnavailable)
 		return
@@ -346,9 +388,19 @@ func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer content.Close()
-	w.Header().Set("Content-Type", file.MIME)
+	contentType, disposition := file.MIME, "attachment"
+	if preview {
+		contentType = sharedImageMIME(file)
+		if contentType == "" {
+			http.Error(w, "image preview is not supported for this file", http.StatusUnsupportedMediaType)
+			return
+		}
+		disposition = "inline"
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprint(file.Size))
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{
 		"filename": file.Name,
 	}))
 	w.Header().Set("X-Content-SHA256", file.SHA256)
@@ -738,7 +790,7 @@ func (h *Handler) validCSRF(provided string) bool {
 func (h *Handler) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; media-src 'self'; font-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")

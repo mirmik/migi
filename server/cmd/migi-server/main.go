@@ -231,6 +231,7 @@ func run() error {
 			AgentRequest:           agentRequest,
 			Broker:                 broker,
 			Files:                  transfers,
+			Music:                  media.browserRoutes(),
 			PublicEndpoint:         *publicEndpoint,
 			CertificateFingerprint: fingerprint,
 			PublicListen:           *listen,

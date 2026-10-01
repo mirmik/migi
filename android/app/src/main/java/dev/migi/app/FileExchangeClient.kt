@@ -123,6 +123,36 @@ internal class FileExchangeClient(private val context: Context) {
         )
     }
 
+    fun downloadImageForViewing(file: SharedFile): File {
+        require(file.isViewableImage()) { "Unsupported image format" }
+        // Keep recent files for viewers that are still open or being recreated.
+        val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+        File(context.cacheDir, ImageViewerPolicy.CACHE_DIRECTORY).listFiles()
+            ?.filter { it.name.startsWith(ImageViewerPolicy.FILE_PREFIX) && it.lastModified() < cutoff }
+            ?.forEach(File::delete)
+        return downloadVerified(
+            file = file,
+            directoryName = ImageViewerPolicy.CACHE_DIRECTORY,
+            prefix = ImageViewerPolicy.FILE_PREFIX,
+            suffix = ImageViewerPolicy.FILE_SUFFIX,
+            maxBytes = ImageViewerPolicy.MAX_IMAGE_BYTES,
+        )
+    }
+
+    fun downloadThumbnail(file: SharedFile, destination: File) {
+        require(file.isViewableImage()) { "Unsupported image format" }
+        val config = config()
+        ParcelFileDescriptor.open(destination, ParcelFileDescriptor.MODE_READ_WRITE or ParcelFileDescriptor.MODE_TRUNCATE).use { descriptor ->
+            val verified = JSONObject(checkResponse(NativeQuicClient.downloadSharedFile(
+                config.endpoint, config.pin, config.credential, file.id, descriptor.fd,
+                256L * 1024, thumbnail = true,
+            )))
+            // The native client verifies the derived JPEG against the response
+            // length and digest received over the pinned connection.
+            require(verified.getLong("bytes") == destination.length()) { "Thumbnail length mismatch" }
+        }
+    }
+
     private fun downloadVerified(
         file: SharedFile,
         directoryName: String,

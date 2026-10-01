@@ -74,6 +74,7 @@ class MainActivity : Activity() {
     private lateinit var playbackNext: ImageButton
     private lateinit var playbackShuffle: ImageButton
     private lateinit var playbackRepeat: ImageButton
+    private lateinit var playbackRepeatStatus: TextView
     private lateinit var playbackStopButton: ImageButton
     private lateinit var playbackArtwork: PlaylistArtworkView
     private lateinit var miniArtwork: PlaylistArtworkView
@@ -99,6 +100,8 @@ class MainActivity : Activity() {
     private var foregroundStarted = false
     private var playbackTrackRows: List<PlaybackTrackRow> = emptyList()
     private var pendingDownload: SharedFile? = null
+    private var fileThumbnails: FileThumbnailLoader? = null
+    private val fileRefreshGeneration = AtomicLong()
     private val releaseExecutor = Executors.newSingleThreadExecutor()
     private val releaseRefreshGeneration = AtomicLong()
     private val artworkExecutor = Executors.newSingleThreadExecutor()
@@ -218,6 +221,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        fileRefreshGeneration.incrementAndGet()
+        fileThumbnails?.close()
         videoPanel?.destroy()
         releaseExecutor.shutdownNow()
         artworkRefreshGeneration.incrementAndGet()
@@ -567,6 +572,12 @@ class MainActivity : Activity() {
                     addView(playbackStopButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(16) })
                 }
                 addView(playbackModes, matchWidth())
+                playbackRepeatStatus = TextView(this@MainActivity).apply {
+                    applyMigiText(13f, MigiPalette.muted)
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(4), 0, 0)
+                }
+                addView(playbackRepeatStatus, matchWidth())
                 playbackStatus = TextView(this@MainActivity).apply {
                     applyMigiText(13f, MigiPalette.muted)
                     gravity = Gravity.CENTER
@@ -1131,15 +1142,25 @@ class MainActivity : Activity() {
         miniPlayPause.isEnabled = sessionHasMedia
         miniPlayPause.alpha = if (sessionHasMedia) 1f else 0.38f
         setIconButtonActive(playbackShuffle, controller?.shuffleModeEnabled == true)
-        setIconButtonActive(playbackRepeat, hasMedia && controller?.repeatMode != Player.REPEAT_MODE_OFF)
+        val repeatMode = if (hasMedia) controller?.repeatMode ?: Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_OFF
+        setIconButtonActive(playbackRepeat, repeatMode != Player.REPEAT_MODE_OFF)
+        playbackRepeat.setImageResource(
+            if (repeatMode == Player.REPEAT_MODE_ONE) R.drawable.ic_repeat_one else R.drawable.ic_repeat,
+        )
         playbackShuffle.contentDescription = getString(
             if (controller?.shuffleModeEnabled == true) R.string.playback_shuffle_on else R.string.playback_shuffle_off,
         )
-        playbackRepeat.contentDescription = getString(when (controller?.repeatMode) {
+        val repeatDescription = getString(when (repeatMode) {
             Player.REPEAT_MODE_ALL -> R.string.playback_repeat_all
             Player.REPEAT_MODE_ONE -> R.string.playback_repeat_one
             else -> R.string.playback_repeat_off
         })
+        playbackRepeat.contentDescription = repeatDescription
+        playbackRepeat.tooltipText = repeatDescription
+        playbackRepeatStatus.text = repeatDescription
+        playbackRepeatStatus.setTextColor(
+            if (repeatMode == Player.REPEAT_MODE_OFF) MigiPalette.muted else MigiPalette.primary,
+        )
         val sessionMetadata = controller?.currentMediaItem?.mediaMetadata
         val metadata = sessionMetadata.takeIf { hasMedia }
         val title = metadata?.title?.toString()?.takeIf { it.isNotBlank() }
@@ -1490,6 +1511,8 @@ class MainActivity : Activity() {
     }
 
     private fun refreshFiles() {
+        val generation = fileRefreshGeneration.incrementAndGet()
+        fileThumbnails?.clear()
         fileList.removeAllViews()
         fileList.addView(TextView(this).apply {
             setText(R.string.files_loading)
@@ -1498,6 +1521,7 @@ class MainActivity : Activity() {
         thread(name = "migi-file-list") {
             val result = runCatching { FileExchangeClient(this).list() }
             runOnUiThread {
+                if (isDestroyed || generation != fileRefreshGeneration.get()) return@runOnUiThread
                 fileList.removeAllViews()
                 result.onFailure {
                     fileList.addView(emptyStateCard(getString(R.string.files_failed, it.message ?: "unknown error")))
@@ -1506,11 +1530,18 @@ class MainActivity : Activity() {
                         fileList.addView(emptyStateCard(getString(R.string.files_empty)))
                     }
                     for (file in files) {
+                        val image = file.isViewableImage()
+                        val thumbnail = if (image) ImageView(this).apply {
+                            scaleType = ImageView.ScaleType.FIT_CENTER
+                            background = roundedDrawable(MigiPalette.surfaceHigh, dp(12).toFloat())
+                            setPadding(dp(4), dp(4), dp(4), dp(4))
+                            contentDescription = getString(R.string.file_thumbnail, file.name)
+                        } else null
                         val content = LinearLayout(this).apply {
                             orientation = LinearLayout.VERTICAL
                             setPadding(dp(18), dp(17), dp(18), dp(18))
                         }
-                        content.addView(TextView(this).apply {
+                        val summary = TextView(this).apply {
                             text = getString(
                                 R.string.file_summary,
                                 file.name,
@@ -1521,32 +1552,65 @@ class MainActivity : Activity() {
                             applyMigiText(15f, weight = Typeface.BOLD)
                             setLineSpacing(0f, 1.15f)
                             setTextIsSelectable(true)
-                        })
+                            if (image) text = getString(R.string.file_thumbnail_summary, file.name, formatFileSize(file.size))
+                        }
+                        if (thumbnail != null) {
+                            content.addView(LinearLayout(this).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                addView(thumbnail, LinearLayout.LayoutParams(dp(100), dp(128)).apply { marginEnd = dp(14) })
+                                addView(summary, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                            }, matchWidth())
+                            val loader = fileThumbnails ?: FileThumbnailLoader(this, fileList).also { fileThumbnails = it }
+                            loader.bind(thumbnail, file)
+                            content.addGap(10)
+                            content.addView(TextView(this).apply {
+                                val expiry = java.time.format.DateTimeFormatter.ofLocalizedDateTime(
+                                    java.time.format.FormatStyle.SHORT,
+                                ).withZone(java.time.ZoneId.systemDefault()).format(file.expiresAt)
+                                text = getString(R.string.file_thumbnail_details, file.source, expiry)
+                                applyMigiText(12f, MigiPalette.muted)
+                            }, matchWidth())
+                        } else content.addView(summary)
                         content.addGap(14)
                         val actions = LinearLayout(this).apply {
                             orientation = LinearLayout.HORIZONTAL
                         }
-                        if (file.isViewableHTML()) {
-                            actions.addView(secondaryActionButton(R.string.open_html_file).apply {
+                        if (file.isViewableHTML() || image) {
+                            val openLabel = if (image) R.string.open_image_file else R.string.open_html_file
+                            val openingLabel = if (image) R.string.opening_image_file else R.string.opening_html_file
+                            actions.addView(secondaryActionButton(openLabel).apply {
+                                thumbnail?.setOnClickListener { if (isEnabled) performClick() }
                                 setOnClickListener {
                                     val button = this
                                     button.isEnabled = false
-                                    button.setText(R.string.opening_html_file)
-                                    updateStatus(R.string.opening_html_file)
-                                    thread(name = "migi-html-download") {
+                                    button.setText(openingLabel)
+                                    updateStatus(openingLabel)
+                                    thread(name = "migi-viewer-download") {
                                         val result = runCatching {
                                             FileExchangeClient(this@MainActivity)
-                                                .downloadForViewing(file)
+                                                .let { client ->
+                                                    if (image) client.downloadImageForViewing(file)
+                                                    else client.downloadForViewing(file)
+                                                }
                                         }
                                         runOnUiThread {
+                                            if (isFinishing || isDestroyed) {
+                                                result.getOrNull()?.delete()
+                                                return@runOnUiThread
+                                            }
                                             button.isEnabled = true
-                                            button.setText(R.string.open_html_file)
+                                            button.setText(openLabel)
                                             result.onSuccess { temporary ->
                                                 updateStatus(
-                                                    getString(R.string.html_file_opened, file.name),
+                                                    getString(if (image) R.string.image_file_opened else R.string.html_file_opened, file.name),
                                                 )
                                                 startActivity(
-                                                    HtmlViewerActivity.intent(
+                                                    if (image) ImageViewerActivity.intent(
+                                                        this@MainActivity,
+                                                        file.name,
+                                                        temporary,
+                                                    ) else HtmlViewerActivity.intent(
                                                         this@MainActivity,
                                                         file.name,
                                                         temporary,
@@ -1584,7 +1648,7 @@ class MainActivity : Activity() {
                                 )
                             }
                         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            if (file.isViewableHTML()) marginStart = dp(5)
+                            if (file.isViewableHTML() || image) marginStart = dp(5)
                         })
                         content.addView(actions, matchWidth())
                         val item = MaterialCardView(this).apply {

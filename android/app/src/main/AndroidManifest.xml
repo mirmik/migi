@@ -59,6 +59,10 @@
             android:name=".HtmlViewerActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ImageViewerActivity"
+            android:exported="false" />
+
         <service
             android:name=".ConnectionService"
             android:exported="false"

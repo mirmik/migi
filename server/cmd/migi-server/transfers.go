@@ -22,6 +22,7 @@ import (
 
 	"github.com/mirmik/migi/server/internal/admin"
 	"github.com/mirmik/migi/server/internal/events"
+	"github.com/mirmik/migi/server/internal/filepreview"
 )
 
 const (
@@ -46,6 +47,7 @@ type transfer struct {
 }
 
 type transferStore struct {
+	thumbnails filepreview.Cache
 	mu         sync.Mutex
 	broker     *events.Broker
 	root       string
@@ -134,6 +136,43 @@ func (s *transferStore) routes(mux *http.ServeMux, wrap func(http.Handler) http.
 	mux.Handle("POST /v1/files", wrap(s.uploadHandler(source)))
 	mux.Handle("GET /v1/files/{fileID}", wrap(http.HandlerFunc(s.metadataHandler)))
 	mux.Handle("GET /v1/files/{fileID}/content", wrap(http.HandlerFunc(s.contentHandler)))
+	mux.Handle("GET /v1/files/{fileID}/thumbnail", wrap(http.HandlerFunc(s.thumbnailHandler)))
+}
+
+func (s *transferStore) SharedFileThumbnail(ctx context.Context, id string) ([]byte, error) {
+	file, err := s.get(id, time.Now().UTC())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, admin.ErrFileNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Metadata/expiry is checked before every cache hit as well as every miss.
+	return s.thumbnails.Get(ctx, file.ID+":"+file.SHA256, func() (io.ReadCloser, error) {
+		return os.Open(s.blobPath(file.ID))
+	})
+}
+
+func (s *transferStore) thumbnailHandler(w http.ResponseWriter, r *http.Request) {
+	body, err := s.SharedFileThumbnail(r.Context(), r.PathValue("fileID"))
+	if errors.Is(err, admin.ErrFileNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, filepreview.ErrUnsupported) {
+		http.Error(w, "thumbnail unavailable", http.StatusUnsupportedMediaType)
+		return
+	}
+	if err != nil {
+		http.Error(w, "thumbnail unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+	w.Header().Set("X-Content-SHA256", fmt.Sprintf("%x", sha256.Sum256(body)))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(body)
 }
 
 func (s *transferStore) listHandler(w http.ResponseWriter, r *http.Request) {

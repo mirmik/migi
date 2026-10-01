@@ -1,17 +1,44 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Files · Migi</title><link rel="stylesheet" href="../assets/style.css"></head>
-<body>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Files · Migi</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/files.css"><script defer src="../assets/files.js"></script></head>
+<body class="files-page">
   <header><div><span class="eyebrow">Administration</span><h1>Shared files</h1></div><span class="healthy">{{len .Files}} available</span></header>
   {{template "admin-nav" "../"}}
   <main>
     {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
-    <section class="panel agents">
+    <section class="panel files-panel">
       {{if .FilesEnabled}}
-      <p>Upload a temporary file for paired phones and local agents. A committed upload emits a <code>file.available</code> event.</p>
-      <form method="post" action="../files" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>File<input type="file" name="file" required></label><button type="submit">Share file</button></form>
-      {{if .Files}}<div class="table-wrap"><table><thead><tr><th>Name</th><th>Size</th><th>Type</th><th>Source</th><th>Uploaded</th><th>Expires</th><th></th></tr></thead><tbody>{{range .Files}}<tr><td>{{.Name}}</td><td>{{formatBytes .Size}}</td><td><code>{{.MIME}}</code></td><td>{{.Source}}</td><td>{{formatTime .CreatedAt}}</td><td>{{formatTime .ExpiresAt}}</td><td><a class="button-link" href="../files/{{.ID}}/content">Download</a></td></tr>{{end}}</tbody></table></div>{{else}}<p>No shared files.</p>{{end}}
+      <p>Share a temporary file with paired phones and agents. Files expire automatically.</p>
+      <form class="file-upload" method="post" action="../files" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>File<input type="file" name="file" required></label><button type="submit">Share file</button></form>
+      {{if .Files}}
+      <ul class="file-list" aria-label="Shared files">
+        {{range .Files}}
+        <li class="file-row">
+          {{if imageMIME .}}
+          <a class="image-preview-link file-thumbnail" href="../files/{{.ID}}/preview" data-name="{{.Name}}" data-download="../files/{{.ID}}/content" aria-label="View {{.Name}}"><span aria-hidden="true">Image</span><img src="../files/{{.ID}}/thumbnail" loading="lazy" decoding="async" width="80" height="80" alt=""></a>
+          {{else}}<div class="file-icon" aria-hidden="true">File</div>{{end}}
+          <div class="file-info">
+            <div class="file-name">{{.Name}}</div>
+            <div class="file-size">{{formatBytes .Size}}</div>
+            <details class="file-details">
+              <summary>Details</summary>
+              <dl><dt>Type</dt><dd><code>{{.MIME}}</code></dd><dt>Source</dt><dd>{{.Source}}</dd><dt>Uploaded</dt><dd>{{formatTime .CreatedAt}}</dd><dt>Expires</dt><dd>{{formatTime .ExpiresAt}}</dd></dl>
+            </details>
+          </div>
+          <div class="file-actions">
+            <a class="button-link file-download" href="../files/{{.ID}}/content">Download</a>
+          </div>
+        </li>
+        {{end}}
+      </ul>
+      {{else}}<p>No shared files.</p>{{end}}
       {{else}}<p>File exchange is disabled.</p>{{end}}
     </section>
   </main><footer>Shared files are bounded and expire automatically.</footer>
+  <dialog id="image-viewer" aria-labelledby="image-title">
+    <div class="image-toolbar"><h2 id="image-title"></h2><a id="image-download" class="button-link">Download</a><button id="image-close" type="button" autofocus>Close</button></div>
+    <p id="image-status" role="status">Loading image…</p>
+    <div id="image-stage"></div>
+    <p class="muted">Click the image to switch between fit and actual size.</p>
+  </dialog>
 </body></html>

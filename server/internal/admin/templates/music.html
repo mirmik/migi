@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Музыка · Migi</title>
+  <link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/music.css">
+  {{if .}}<script src="../assets/music.js" defer></script>{{end}}
+</head>
+<body>
+  <header><div><span class="eyebrow">Migi · Медиатека</span><h1>Музыка</h1></div><span class="muted">На этом устройстве</span></header>
+  {{template "admin-nav" "../"}}
+  <main>
+    {{if .}}
+    <div id="music-error" class="music-error" role="alert" hidden></div>
+    <section class="panel music-player" aria-label="Плеер">
+      <div id="cover-placeholder" class="music-cover" aria-hidden="true">♫</div>
+      <img id="cover" class="music-cover" alt="Обложка плейлиста" hidden>
+      <div class="music-now">
+        <span id="queue-name" class="eyebrow">Выберите музыку</span>
+        <h2 id="track-title">Плейлист или трек из каталога</h2><p id="track-artist"></p>
+        <audio id="audio" controls preload="none" aria-label="Воспроизведение, громкость и перемотка"></audio>
+        <div class="music-controls"><button id="previous" disabled aria-label="Предыдущий трек">← Назад</button><button id="next" disabled aria-label="Следующий трек">Далее →</button><span id="playback-status" role="status"></span></div>
+      </div>
+    </section>
+    <div class="music-columns">
+      <section class="panel music-library">
+        <div class="section-heading"><h2>Медиатека</h2><button id="refresh" type="button">Обновить</button></div>
+        <label>Поиск<input id="search" type="search" placeholder="Название или исполнитель" maxlength="128"></label>
+        <div class="music-tabs" role="group" aria-label="Раздел медиатеки"><button id="show-playlists" aria-pressed="true">Плейлисты</button><button id="show-tracks" aria-pressed="false">Все треки</button></div>
+        <p id="library-status" role="status">Загрузка медиатеки…</p><div id="library-list" class="music-list"></div>
+      </section>
+      <section class="panel music-queue"><h2>Очередь</h2><p id="queue-status">Выберите плейлист или трек, чтобы начать.</p><ol id="queue-list" class="music-list"></ol></section>
+    </div>
+    <noscript><p>Для воспроизведения включите JavaScript.</p></noscript>
+    {{else}}<section class="panel"><p>Медиатека не подключена к этому серверу.</p></section>{{end}}
+  </main>
+  <footer>Музыка играет в этой вкладке. При возвращении очередь и позиция восстановятся; нажмите Play, чтобы продолжить.</footer>
+</body>
+</html>

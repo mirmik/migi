@@ -73,6 +73,9 @@ while that session remains active and atomically replace it without
 autoplaying from an idle state. The `migi-play` command indexes or uploads
 media, searches the catalog, and saves or starts playlists; `migi-origin`
 serves indexed objects on demand.
+The web panel's **Музыка** section plays the same music catalog and saved
+playlists in the browser, with search, an independent queue, seeking and saved
+position. Playback starts on user action and does not change the phone's queue.
 Video uses the same origin/catalog foundation with its own `video.queue.set`
 event and Android library. The bundled `migi-video` helper indexes naturally
 ordered seasons and saves collections silently. Phones stream videos from a

@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +17,66 @@ import (
 
 	"github.com/mirmik/migi/server/internal/agentauth"
 )
+
+func TestPublicThumbnailAuthenticationDigestAndExpiry(t *testing.T) {
+	broker := newTestBroker(t)
+	token := pairTestDevice(t, broker, "thumbnail-phone")
+	store, err := newTransferStore(broker, t.TempDir(), 1<<20, 4<<20, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	if err := png.Encode(&body, image.NewRGBA(image.Rect(0, 0, 1200, 1800))); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.ShareFile(t.Context(), "picture.png", "image/png", "test", bytes.NewReader(body.Bytes()), int64(body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := newPublicMuxWithStores(broker, nil, store, newPublicSecurity())
+	path := "/v1/files/" + file.ID + "/thumbnail"
+	for _, authorized := range []bool{false, true} {
+		request := httptest.NewRequest("GET", path, nil)
+		if authorized {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		routes.ServeHTTP(response, request)
+		if !authorized {
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthorized: %d", response.Code)
+			}
+			continue
+		}
+		if response.Code != http.StatusOK || response.Header().Get("X-Content-SHA256") != fmt.Sprintf("%x", sha256.Sum256(response.Body.Bytes())) {
+			t.Fatalf("thumbnail: %d %v", response.Code, response.Header())
+		}
+		config, _, err := image.DecodeConfig(bytes.NewReader(response.Body.Bytes()))
+		if err != nil || config.Width != 213 || config.Height != 320 {
+			t.Fatalf("dimensions: %+v %v", config, err)
+		}
+	}
+	// Even a cached thumbnail must disappear as soon as the original expires.
+	metadata, err := store.get(file.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata.ExpiresAt = time.Now().Add(-time.Second)
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.metadataPath(file.ID), encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", path, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expired cached thumbnail: %d", response.Code)
+	}
+}
 
 func TestLocalFileRoundTripPublishesEvent(t *testing.T) {
 	broker := newTestBroker(t)

@@ -17,12 +17,24 @@ import (
 	"time"
 
 	"github.com/mirmik/migi/server/internal/events"
+	"github.com/mirmik/migi/server/internal/filepreview"
 )
 
 type fakeFileExchange struct {
-	files   []SharedFile
-	content map[string][]byte
-	max     int64
+	thumbnails filepreview.Cache
+	files      []SharedFile
+	content    map[string][]byte
+	max        int64
+}
+
+func (f *fakeFileExchange) SharedFileThumbnail(ctx context.Context, id string) ([]byte, error) {
+	file, _, err := f.OpenSharedFile(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return f.thumbnails.Get(ctx, id+":"+file.SHA256, func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(f.content[id])), nil
+	})
 }
 
 func (f *fakeFileExchange) ListSharedFiles(context.Context) ([]SharedFile, error) {
