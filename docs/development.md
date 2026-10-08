@@ -303,6 +303,14 @@ object to that phone with backpressure, verifies it while it passes, and keeps
 no origin-backed content. A device cache miss therefore requires the origin
 process and source file to remain available.
 
+To verify that repeated album indexing reuses catalog IDs and leaves the local
+origin registry unchanged, run the bundled Python client against a temporary
+authenticated TLS server from `server/`:
+
+```bash
+MIGI_SKILL_PYTHON=python3 go test ./cmd/migi-server -run TestOriginAlbumIndexIsIdempotent -v
+```
+
 The phone receives one playlist notification. The **Music** tab also lists
 saved playlists from the server; tapping **Switch** queues that selection only
 for the authenticated phone. An idle player never autoplays the event: tap

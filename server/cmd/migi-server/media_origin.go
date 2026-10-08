@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -158,15 +159,10 @@ func (s *mediaStore) registerOriginHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	objects := make([]mediaObject, 0, len(request.Items))
-	for _, input := range request.Items {
-		object, err := s.registerRemoteMedia(input, agent)
-		if err != nil {
-			s.removeOriginMediaRecords(objects)
-			s.writeOriginRegistrationError(w, err)
-			return
-		}
-		objects = append(objects, object)
+	objects, err := s.registerRemoteMediaBatch(request.Items, agent)
+	if err != nil {
+		s.writeOriginRegistrationError(w, err)
+		return
 	}
 	for _, object := range objects {
 		slog.Info("remote media origin registered without uploading content",
@@ -178,6 +174,14 @@ func (s *mediaStore) registerOriginHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *mediaStore) registerRemoteMedia(input originMediaInput, agent events.AgentTokenInfo) (mediaObject, error) {
+	objects, err := s.registerRemoteMediaBatch([]originMediaInput{input}, agent)
+	if err != nil {
+		return mediaObject{}, err
+	}
+	return objects[0], nil
+}
+
+func (s *mediaStore) prepareRemoteMedia(input originMediaInput, agent events.AgentTokenInfo) (mediaObject, error) {
 	var object mediaObject
 	name, err := normalizeMediaName(input.Name)
 	if err != nil {
@@ -211,42 +215,81 @@ func (s *mediaStore) registerRemoteMedia(input originMediaInput, agent events.Ag
 	if err != nil {
 		return object, err
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		return object, err
-	}
-	now := time.Now().UTC()
 	object = mediaObject{
-		ID: hex.EncodeToString(idBytes), Name: name, Title: title, Artist: artist,
+		Name: name, Title: title, Artist: artist,
 		MIME: contentType, Size: input.Size, SHA256: input.SHA256, Subtitles: subtitles,
-		Source: "agent:" + agent.Name + ":origin", CreatedAt: now,
+		Source: "agent:" + agent.Name + ":origin",
 	}
-	record := mediaStoredObject{
-		mediaObject:  object,
-		RemoteOrigin: &mediaRemoteOrigin{AgentTokenID: agent.ID},
-	}
-	metadata, err := json.Marshal(record)
-	if err != nil {
-		return mediaObject{}, err
+	return object, nil
+}
+
+func (s *mediaStore) registerRemoteMediaBatch(inputs []originMediaInput, agent events.AgentTokenInfo) ([]mediaObject, error) {
+	objects := make([]mediaObject, len(inputs))
+	for i, input := range inputs {
+		object, err := s.prepareRemoteMedia(input, agent)
+		if err != nil {
+			return nil, err
+		}
+		objects[i] = object
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
 	records, err := s.listRecordsLocked(now, true)
 	if err != nil {
-		return mediaObject{}, err
+		return nil, err
 	}
-	if len(records) >= maxMediaCount {
-		return mediaObject{}, errMediaStorageFull
+	// Hold the catalog lock across lookup, creation and rollback so concurrent
+	// manifests cannot create duplicates or reuse records from a failed batch.
+	created := make([]mediaObject, 0, len(inputs))
+	committed := false
+	defer func() {
+		if !committed {
+			s.removeOriginMediaRecordsLocked(created)
+		}
+	}()
+	for i, object := range objects {
+		match := slices.IndexFunc(records, func(record mediaStoredObject) bool {
+			return record.RemoteOrigin != nil && record.RemoteOrigin.AgentTokenID == agent.ID &&
+				record.Name == object.Name && record.Title == object.Title && record.Artist == object.Artist &&
+				record.MIME == object.MIME && record.Size == object.Size && record.SHA256 == object.SHA256 &&
+				slices.Equal(record.Subtitles, object.Subtitles)
+		})
+		if match >= 0 {
+			objects[i] = records[match].mediaObject
+			continue
+		}
+		if len(records) >= maxMediaCount {
+			return nil, errMediaStorageFull
+		}
+		idBytes := make([]byte, 16)
+		if _, err := rand.Read(idBytes); err != nil {
+			return nil, err
+		}
+		object.ID = hex.EncodeToString(idBytes)
+		object.CreatedAt = now
+		record := mediaStoredObject{
+			mediaObject: object, RemoteOrigin: &mediaRemoteOrigin{AgentTokenID: agent.ID},
+		}
+		metadata, err := json.Marshal(record)
+		if err != nil {
+			return nil, err
+		}
+		metadataNew := s.metadataPath(object.ID) + ".new"
+		if err := os.WriteFile(metadataNew, metadata, 0o600); err != nil {
+			_ = os.Remove(metadataNew)
+			return nil, err
+		}
+		if err := os.Rename(metadataNew, s.metadataPath(object.ID)); err != nil {
+			_ = os.Remove(metadataNew)
+			return nil, err
+		}
+		objects[i] = object
+		created = append(created, object)
+		records = append(records, record)
 	}
-	metadataNew := s.metadataPath(object.ID) + ".new"
-	if err := os.WriteFile(metadataNew, metadata, 0o600); err != nil {
-		return mediaObject{}, err
-	}
-	if err := os.Rename(metadataNew, s.metadataPath(object.ID)); err != nil {
-		_ = os.Remove(metadataNew)
-		return mediaObject{}, err
-	}
-	return object, nil
+	committed = true
+	return objects, nil
 }
 
 func filepathExtension(name string) string {
@@ -583,9 +626,7 @@ func (s *mediaStore) notifyOriginChangedLocked() {
 	s.originChanged = make(chan struct{})
 }
 
-func (s *mediaStore) removeOriginMediaRecords(objects []mediaObject) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *mediaStore) removeOriginMediaRecordsLocked(objects []mediaObject) {
 	for _, object := range objects {
 		_ = os.Remove(s.metadataPath(object.ID))
 		_ = os.Remove(s.blobPath(object.ID))

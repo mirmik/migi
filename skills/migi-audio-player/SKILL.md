@@ -38,6 +38,13 @@ mode-0600 registry. `migi-album --index-only` finds supported tracks, sorts
 names naturally (`01`, `02`, …), finds `cover`, `folder`, or `front` artwork,
 and performs the same registration without publishing a queue.
 
+Re-indexing with the same origin credential, content, and media metadata reuses
+the existing server media IDs, so it adds no catalog or registry entries. The
+client refreshes the private path and filesystem fingerprint for those IDs.
+Changed content or metadata receives new IDs; different origin credentials
+remain separate. Existing duplicate catalog entries are preserved because
+playlists may still reference them.
+
 Keep `migi-origin` running after indexing. It makes an outbound authenticated
 long poll; no inbound port or server-side mount is required. When a phone first
 requests an indexed ID, the server asks the credential that registered it for
@@ -54,10 +61,10 @@ full object digest. See the video reference for the trust model and workflow.
 Origin catalog entries are persistent metadata and have no media TTL. Keep the
 origin process and indexed source available: every phone cache miss creates a
 new fetch request, including concurrent misses. Re-index changed files and use
-the new IDs; there is currently no catalog-delete command.
+the returned IDs; there is currently no catalog-delete command.
 
 Do not move or edit indexed files silently. Re-index changed files and update
-the playlist to the new IDs. Never copy the origin registry to the curator
+the playlist if the returned IDs changed. Never copy the origin registry to the curator
 machine or send hand-written path manifests: paths are private origin state.
 
 ## Search, save, and start playlists

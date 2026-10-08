@@ -287,9 +287,16 @@ Content-Type: application/json
 }
 ```
 
-The response is an array of ordinary persistent media catalog objects with
-newly assigned opaque IDs and no `expires_at`. It contains no paths. Canonical
-paths and filesystem fingerprints remain only in the origin's private registry.
+The `201 Created` response is an array of ordinary persistent media catalog
+objects in request order with opaque IDs and no `expires_at`. Registration is
+idempotent for the same authenticated origin credential, normalized name,
+title, artist, MIME, size, SHA-256, and resolved subtitle references: matching
+objects reuse their existing IDs and creation timestamps, including repeats
+within a batch and concurrent requests. Different origins or metadata receive
+separate IDs. A failed batch removes only records created by that batch;
+existing records remain available. Reusing IDs works even at the catalog count
+limit. It contains no paths. Canonical paths and filesystem fingerprints remain
+only in the origin's private registry.
 
 Video origin inputs may also contain `subtitles`, an array of up to eight
 `{"id":"<subtitle-media-id>","label":"Русские","language":"ru","default":true}`
