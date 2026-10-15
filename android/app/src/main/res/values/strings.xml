@@ -39,7 +39,7 @@
     <string name="playback_end_session">End session</string>
     <string name="mini_player_description">Open the music player</string>
     <string name="files_send_title">Send something</string>
-    <string name="files_send_body">Choose a file or a photo. Migi keeps the transfer private.</string>
+    <string name="files_send_body">Choose a file or select several photos to send together.</string>
     <string name="updates_empty_body">New applications and Migi updates will appear here.</string>
     <string name="settings_about">ABOUT</string>
     <string name="settings_connection">CONNECTION</string>
@@ -87,7 +87,7 @@
     <string name="files_empty">No shared files</string>
     <string name="files_failed">Cannot load files: %1$s</string>
     <string name="file_summary">%1$s — %2$s\nFrom %3$s; expires %4$s</string>
-    <string name="choose_photo">Share a photo</string>
+    <string name="choose_photo">Share photos</string>
     <string name="open_html_file">Open</string>
     <string name="opening_html_file">Downloading and verifying HTML…</string>
     <string name="html_file_opened">Opened: %1$s</string>
@@ -107,6 +107,9 @@
     <string name="file_uploading">Uploading file over pinned QUIC…</string>
     <string name="file_downloading">Downloading and verifying file…</string>
     <string name="file_uploaded">Uploaded: %1$s</string>
+    <string name="files_uploading">Uploading %1$d of %2$d…</string>
+    <string name="files_uploaded">Uploaded files: %1$d</string>
+    <string name="files_upload_failed">Uploaded %1$d of %2$d. Transfer failed: %3$s</string>
     <string name="file_downloaded">Saved: %1$s</string>
     <string name="file_transfer_failed">File transfer failed: %1$s</string>
     <string name="file_share_invalid">The shared item has no readable file</string>

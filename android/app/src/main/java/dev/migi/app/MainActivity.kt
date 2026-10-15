@@ -59,6 +59,7 @@ class MainActivity : Activity() {
     private lateinit var pagerMessage: TextView
     private lateinit var releaseList: LinearLayout
     private lateinit var fileList: LinearLayout
+    private lateinit var fileUploadStatus: TextView
     private lateinit var playbackSummary: TextView
     private lateinit var playbackTracks: LinearLayout
     private lateinit var savedPlaylistList: LinearLayout
@@ -654,7 +655,10 @@ class MainActivity : Activity() {
                         addView(secondaryActionButton(R.string.choose_photo, R.drawable.ic_photo).apply {
                             setOnClickListener {
                                 startActivityForResult(
-                                    Intent(MediaStore.ACTION_PICK_IMAGES).apply { type = "image/*" },
+                                    Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                                        type = "image/*"
+                                        putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, MediaStore.getPickImagesMaxLimit())
+                                    },
                                     REQUEST_CHOOSE_PHOTO,
                                 )
                             }
@@ -662,6 +666,13 @@ class MainActivity : Activity() {
                             marginStart = dp(6)
                         })
                     }, matchWidth())
+                    fileUploadStatus = TextView(this@MainActivity).apply {
+                        applyMigiText(14f, MigiPalette.muted)
+                        setPadding(0, dp(12), 0, 0)
+                        accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                        visibility = View.GONE
+                    }
+                    addView(fileUploadStatus, matchWidth())
                 }, matchWidth())
             }, matchWidth())
             addGap(26)
@@ -1490,17 +1501,17 @@ class MainActivity : Activity() {
     }
 
     private fun handleUploadPickerResult(resultCode: Int, data: Intent?) {
-        val uri = data?.data
-        when (PickerResultPolicy.classify(resultCode == RESULT_OK, uri != null)) {
+        val uris = sharedFileUris(data)
+        when (PickerResultPolicy.classify(resultCode == RESULT_OK, uris.isNotEmpty())) {
             PickerResultPolicy.Outcome.CANCELLED -> {
-                updateStatus(R.string.file_selection_cancelled)
+                updateFileUploadStatus(getString(R.string.file_selection_cancelled))
                 return
             }
             PickerResultPolicy.Outcome.MISSING_URI -> {
-                updateStatus(R.string.file_share_invalid)
+                updateFileUploadStatus(getString(R.string.file_share_invalid))
                 return
             }
-            PickerResultPolicy.Outcome.SELECTED -> uploadSharedFile(requireNotNull(uri))
+            PickerResultPolicy.Outcome.SELECTED -> uploadSharedFiles(uris)
         }
     }
 
@@ -1663,27 +1674,67 @@ class MainActivity : Activity() {
     }
 
     private fun handleSharedFileIntent(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_SEND) return
-        val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: run {
-            updateStatus(R.string.file_share_invalid)
+        if (intent?.action != Intent.ACTION_SEND && intent?.action != Intent.ACTION_SEND_MULTIPLE) return
+        val uris = sharedFileUris(intent)
+        if (uris.isEmpty()) {
+            updateFileUploadStatus(getString(R.string.file_share_invalid))
             return
         }
         setIntent(Intent(this, MainActivity::class.java))
-        uploadSharedFile(uri)
+        uploadSharedFiles(uris)
     }
 
-    private fun uploadSharedFile(uri: Uri) {
-        updateStatus(R.string.file_uploading)
-        thread(name = "migi-file-upload") {
-            val result = runCatching { FileExchangeClient(this).upload(uri) }
-            runOnUiThread {
-                updateStatus(result.fold(
-                    onSuccess = { getString(R.string.file_uploaded, it.name) },
-                    onFailure = { getString(R.string.file_transfer_failed, it.message ?: "unknown error") },
-                ))
-                if (result.isSuccess) refreshFiles()
+    private fun sharedFileUris(intent: Intent?): List<Uri> {
+        val items = buildList {
+            intent?.clipData?.let { clips ->
+                for (index in 0 until clips.itemCount) add(clips.getItemAt(index).uri)
+            }
+            when (intent?.action) {
+                Intent.ACTION_SEND -> add(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+                Intent.ACTION_SEND_MULTIPLE -> addAll(
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: emptyList(),
+                )
             }
         }
+        return PickerResultPolicy.selectedItems(intent?.data, items)
+    }
+
+    private fun uploadSharedFiles(uris: List<Uri>) {
+        updateFileUploadStatus(getString(R.string.file_uploading))
+        thread(name = "migi-file-upload") {
+            val client = FileExchangeClient(applicationContext)
+            var uploaded = 0
+            var firstError: String? = null
+            for ((index, uri) in uris.withIndex()) {
+                if (uris.size > 1) runOnUiThread {
+                    updateFileUploadStatus(getString(R.string.files_uploading, index + 1, uris.size))
+                }
+                val result = runCatching { client.upload(uri) }
+                if (result.isSuccess) uploaded++
+                else if (firstError == null) firstError = result.exceptionOrNull()?.message ?: "unknown error"
+                if (uris.size == 1) runOnUiThread {
+                    updateFileUploadStatus(result.fold(
+                        onSuccess = { getString(R.string.file_uploaded, it.name) },
+                        onFailure = { getString(R.string.file_transfer_failed, it.message ?: "unknown error") },
+                    ))
+                }
+            }
+            val completed = uploaded
+            val error = firstError
+            runOnUiThread {
+                if (uris.size > 1) updateFileUploadStatus(
+                    if (error == null) getString(R.string.files_uploaded, completed)
+                    else getString(R.string.files_upload_failed, completed, uris.size, error),
+                )
+                if (completed > 0) refreshFiles()
+            }
+        }
+    }
+
+    private fun updateFileUploadStatus(message: CharSequence) {
+        updateStatus(message)
+        fileUploadStatus.text = message
+        fileUploadStatus.visibility = View.VISIBLE
     }
 
     private fun formatFileSize(bytes: Long): String = when {
@@ -2070,6 +2121,10 @@ class MainActivity : Activity() {
 }
 
 internal object PickerResultPolicy {
+    // ClipData is authoritative for multi-selection; data can repeat its first URI.
+    fun <T> selectedItems(single: T?, multiple: List<T?>): List<T> =
+        (multiple + single).filterNotNull().distinct()
+
     enum class Outcome {
         CANCELLED,
         MISSING_URI,
