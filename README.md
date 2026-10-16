@@ -48,8 +48,13 @@ agents use the loopback-only `migi-file` command, and the administration panel
 can upload, list, and download the same objects. File bodies stay outside the
 event journal, while `file.available` events announce committed objects.
 Codex agents can install the repository-owned `migi-file-exchange`,
-`migi-android-publisher`, and `migi-audio-player` skills with
+`migi-android-publisher`, `migi-audio-player`, and `migi-notebook` skills with
 `./scripts/install-migi-file-exchange-skill`.
+To add just the notebook skill alongside existing installations, run
+`./scripts/install-migi-file-exchange-skill migi-notebook`. The installer copies
+self-contained directories into `~/.agents/skills` and refuses existing paths.
+The [notebook skill](skills/migi-notebook/SKILL.md) teaches agents to recall and
+maintain durable facts using MCP or its bundled Python client.
 
 Agent-curated audio is deliberately kept out of that inbox. A separate private
 media catalog accepts silent audio and optional playlist-artwork uploads. A
@@ -98,6 +103,12 @@ server-bundled KaTeX while the ordinary event stream sends a bounded preview to
 paired phones.
 
 See [docs/development.md](docs/development.md) for build commands.
+
+External agents can share durable facts and verified procedures through the
+server notebook, with revision checks, search, history, an MCP adapter and a
+web editor. See [docs/notebook.md](docs/notebook.md) for setup and the API;
+[docs/agent-notebook.md](docs/agent-notebook.md) preserves the original design
+starting points.
 
 Structured agent notes with LaTeX formulas can be sent to the phone and Even G2.
 See [Reading documents](docs/reading-documents.md) for the API, portable helper,

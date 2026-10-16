@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="csrf-token" content="{{.CSRFToken}}"><title>Блокнот · Migi</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/notebook.css"><script src="../assets/notebook.js" defer></script></head>
+<body>
+<header><div><span class="eyebrow">Общие знания</span><h1>Блокнот</h1></div></header>
+{{template "admin-nav" "../"}}
+<main>
+<p id="notice" role="status" aria-live="polite"></p>
+<div class="notebook-grid">
+<section class="panel">
+<h2>Записи</h2>
+<form id="search-form">
+<label>Поиск<input id="query" type="search" placeholder="принтер* или /opt/slicer"></label>
+<label>Режим<select id="mode"><option value="text">Слова</option><option value="literal">Буквальная строка</option></select></label>
+<label>Префикс ключа<input id="prefix" placeholder="workshop/"></label>
+<label>Теги через запятую<input id="filter-tags"></label>
+<label><input id="trash" type="checkbox"> Корзина</label>
+<button type="submit">Найти</button><button id="new" type="button">Новая запись</button>
+</form>
+<ul id="results" class="notebook-results"></ul><button id="more" type="button" hidden>Ещё</button>
+</section>
+<section class="panel">
+<h2 id="editor-title">Новая запись</h2>
+<form id="editor">
+<label>Постоянный ключ<input id="key" required maxlength="256" placeholder="workshop/3d-printer" spellcheck="false"></label>
+<label>Заголовок<input id="title" required maxlength="1024"></label>
+<label>Теги через запятую<input id="tags"></label>
+<label>Текст или Markdown<textarea id="body" rows="18" placeholder="Факты, точные команды, источники и даты проверок"></textarea></label>
+<p id="metadata"></p>
+<button id="save" type="submit">Сохранить</button><button id="reload" type="button" hidden>Перечитать</button><button id="delete" type="button" class="danger" hidden>В корзину</button><button id="history" type="button" hidden>История</button>
+</form>
+<div id="history-panel" hidden><h3>История</h3><p>Хранятся последние 50 версий. Восстановление создаёт новую версию.</p><ul id="revisions"></ul><pre id="revision-preview"></pre><button id="restore" type="button" hidden>Восстановить эту версию</button></div>
+</section>
+</div>
+<section class="panel"><h2>Доступ агентов</h2><p>Запись включает чтение. Новые и ранее созданные токены доступа не имеют, пока он не включён здесь.</p>
+{{range .Grants}}<form method="post" action="permissions" class="notebook-grant"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="token_id" value="{{.ID}}"><strong>{{.Name}}</strong><label><input type="checkbox" name="read" {{if .Read}}checked{{end}}> Чтение</label><label><input type="checkbox" name="write" {{if .Write}}checked{{end}}> Запись</label><button type="submit">Применить</button></form>{{else}}<p>Создайте токен в разделе Credentials.</p>{{end}}
+</section>
+<section class="panel"><h2>Перенос и резервная копия</h2><p>Экспорт включает записи, корзину и сохранённую историю. Доступ агентов настраивается отдельно. Восстановление возможно только в пустой блокнот.</p><button id="export" type="button">Скачать JSON</button><label>Файл для восстановления<input id="import-file" type="file" accept="application/json,.json"></label><button id="import" type="button">Восстановить из файла</button></section>
+</main>
+</body></html>

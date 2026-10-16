@@ -1,6 +1,6 @@
 module github.com/mirmik/migi/server
 
-go 1.26.8
+go 1.26.9
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.48
@@ -8,12 +8,12 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/yuin/goldmark v1.8.5
 	golang.org/x/image v0.46.0
-	golang.org/x/net v0.57.0
+	golang.org/x/net v0.60.0
 )
 
 require (
 	github.com/quic-go/qpack v0.6.0 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

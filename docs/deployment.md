@@ -44,6 +44,38 @@ Startup fails if either verifier is missing or unusable. `apksigner` and
 `aapt2` are read through the otherwise read-only home tree, while only the Migi
 state directory remains writable.
 
+### Notebook rollout on Aurora, 2026-10-16
+
+The existing user service was updated with the shared notebook. Its local LAN
+view is `http://192.168.0.61:8788/admin/notebook/`; agent operations use the
+existing authenticated HTTPS listener on port 8790. The notebook database is
+`~/.local/state/migi/migi.db.notebook.sqlite`. Grant notebook access to selected
+agent tokens in the notebook page; existing tokens received no automatic grant.
+See [notebook.md](notebook.md) for the API and MCP adapter setup.
+
+The deployed server was built with Go 1.26.9, `golang.org/x/net` v0.60.0 and
+`golang.org/x/crypto` v0.57.0 after the pre-deployment vulnerability check found
+issues in the previous pins. Full race tests, vet, source/binary govulncheck and
+the isolated browser/MCP recovery scenario passed. Live checks covered the
+running binary hash, notebook UI/assets/API, denied unauthorized agent access,
+the existing admin/health endpoints and HTTP/3 with the unchanged certificate.
+
+Server SHA-256:
+`f99350e3c445697f7a6e53caa8c2d2bdc20778d25fb96900c15d503deed38153`.
+The private rollback directory is
+`~/.local/state/migi/deploy-backups/notebook-20261016T130412Z/`. It contains
+`migi-server.previous`, an online SQLite backup of `migi.db`, the effective unit,
+a source snapshot and `manifest.json` with hashes. No notebook database existed
+before this rollout.
+
+If binary rollback is needed, atomically install `migi-server.previous` at the
+existing executable path and restart the user service. Preserve live databases;
+restoring the event backup would discard events accepted since the backup.
+The old server ignores the separate notebook database. The old process hit the
+already tracked shutdown deadline during this rollout (Kanboard #2768); the
+new process started successfully. Deployment is tracked in #3153 and the
+toolchain/dependency correction in #3155.
+
 ## System service
 
 This repository contains a deployment kit for a future Linux server. It is

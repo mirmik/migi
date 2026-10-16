@@ -27,6 +27,7 @@ import (
 	"github.com/mirmik/migi/server/internal/agentauth"
 	"github.com/mirmik/migi/server/internal/events"
 	"github.com/mirmik/migi/server/internal/filepreview"
+	"github.com/mirmik/migi/server/internal/notebook"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
@@ -34,6 +35,7 @@ import (
 var content embed.FS
 
 type Config struct {
+	Notebook               *notebook.Store
 	AgentRequest           func(context.Context, string, string, any, any) (int, error)
 	Broker                 *events.Broker
 	Files                  FileExchange
@@ -196,6 +198,7 @@ func (h *Handler) Routes() http.Handler {
 		http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
 	})
 	mux.HandleFunc("GET /admin/", h.dashboard)
+	h.notebookRoutes(mux)
 	mux.HandleFunc("GET /admin/messages/", h.agentMessages)
 	mux.HandleFunc("GET /admin/messages/{messageID}", h.agentMessage)
 	mux.HandleFunc("GET /admin/devices/", h.devices)

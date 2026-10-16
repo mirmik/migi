@@ -14,6 +14,7 @@ import (
 
 	"github.com/mirmik/migi/server/internal/agentauth"
 	"github.com/mirmik/migi/server/internal/events"
+	"github.com/mirmik/migi/server/internal/notebook"
 )
 
 const agentMaxConcurrentRequests = 32
@@ -67,8 +68,15 @@ func newAgentMuxWithAllStores(
 	transfers *transferStore,
 	media *mediaStore,
 	security *agentSecurity,
+	notebooks ...*notebook.Store,
 ) http.Handler {
 	mux := http.NewServeMux()
+	if len(notebooks) > 0 && notebooks[0] != nil {
+		mux.Handle("POST /v1/notebook/{operation}", security.rateLimit("notebook", security.publishRequests, authenticateAgent(broker, security, notebooks[0].Handler(func(r *http.Request) notebook.Actor {
+			a, _ := r.Context().Value(agentContextKey{}).(events.AgentTokenInfo)
+			return notebook.Actor{ID: a.ID}
+		}))))
+	}
 	mux.Handle("GET /healthz", security.rateLimit("health", security.healthChecks, healthHandler(broker)))
 	mux.Handle("POST /v1/agent-events", security.rateLimit(
 		"publish",

@@ -27,6 +27,7 @@ REPOSITORY = ROOT.parent
 FILE_SKILL = ROOT / "migi-file-exchange"
 AUDIO_SKILL = ROOT / "migi-audio-player"
 PUBLISHER_SKILL = ROOT / "migi-android-publisher"
+NOTEBOOK_SKILL = ROOT / "migi-notebook"
 FILE_ID = "0123456789abcdef0123456789abcdef"
 SECOND_ID = "fedcba9876543210fedcba9876543210"
 COVER_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -807,10 +808,11 @@ class SkillPackageTests(unittest.TestCase):
     def test_every_skill_bundles_the_same_transport(self) -> None:
         copies = [
             (skill / "scripts/_migi_transport.py").read_bytes()
-            for skill in (FILE_SKILL, AUDIO_SKILL, PUBLISHER_SKILL)
+            for skill in (FILE_SKILL, AUDIO_SKILL, PUBLISHER_SKILL, NOTEBOOK_SKILL)
         ]
         self.assertEqual(copies[0], copies[1])
         self.assertEqual(copies[1], copies[2])
+        self.assertEqual(copies[2], copies[3])
 
     def test_transport_checks_certificate_before_bearer_token(self) -> None:
         transport = load_script(
@@ -877,7 +879,7 @@ class SkillPackageTests(unittest.TestCase):
 
     def test_scripts_have_no_checkout_or_installed_binary_fallback(self) -> None:
         forbidden = ("go run", "server/bin", "command -v migi-", "MIGI_FILE_BIN", "MIGI_PLAY_BIN")
-        for skill in (FILE_SKILL, AUDIO_SKILL, PUBLISHER_SKILL):
+        for skill in (FILE_SKILL, AUDIO_SKILL, PUBLISHER_SKILL, NOTEBOOK_SKILL):
             for path in (skill / "scripts").iterdir():
                 if path.is_file():
                     text = path.read_text(encoding="utf-8")
@@ -904,6 +906,7 @@ class SkillPackageTests(unittest.TestCase):
                 "migi-file-exchange",
                 "migi-audio-player",
                 "migi-android-publisher",
+                "migi-notebook",
             ):
                 installed = target / name
                 self.assertTrue((installed / "SKILL.md").is_file())

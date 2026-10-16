@@ -5,9 +5,27 @@ migi_installer_path=$(readlink -f "$0")
 migi_repo_root=$(cd "$(dirname "$migi_installer_path")/.." && pwd -P)
 migi_skill_parent="${MIGI_SKILL_HOME:-$HOME/.agents/skills}"
 
-mkdir -p "$migi_skill_parent"
+if [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+	echo "Usage: $0 [migi-file-exchange|migi-android-publisher|migi-audio-player|migi-notebook ...]"
+	echo "Without arguments, install all four skills. Existing paths are never replaced."
+	exit 0
+fi
 
-for migi_skill_name in migi-file-exchange migi-android-publisher migi-audio-player; do
+if [ "$#" -eq 0 ]; then
+	set -- migi-file-exchange migi-android-publisher migi-audio-player migi-notebook
+fi
+
+# Validate the entire selection before installing anything.
+migi_skill_seen=" "
+for migi_skill_name do
+	case "$migi_skill_name" in
+		migi-file-exchange|migi-android-publisher|migi-audio-player|migi-notebook) ;;
+		*) echo "Unknown Migi skill: $migi_skill_name" >&2; exit 1 ;;
+	esac
+	case "$migi_skill_seen" in
+		*" $migi_skill_name "*) echo "Duplicate Migi skill: $migi_skill_name" >&2; exit 1 ;;
+	esac
+	migi_skill_seen="$migi_skill_seen$migi_skill_name "
 	migi_skill_source="$migi_repo_root/skills/$migi_skill_name"
 	migi_skill_target="$migi_skill_parent/$migi_skill_name"
 
@@ -16,10 +34,16 @@ for migi_skill_name in migi-file-exchange migi-android-publisher migi-audio-play
 		exit 1
 	fi
 
-	if [ -e "$migi_skill_target" ]; then
+	if [ -e "$migi_skill_target" ] || [ -L "$migi_skill_target" ]; then
 		echo "Refusing to replace an existing path: $migi_skill_target" >&2
 		exit 1
 	fi
+done
+
+mkdir -p "$migi_skill_parent"
+for migi_skill_name do
+	migi_skill_source="$migi_repo_root/skills/$migi_skill_name"
+	migi_skill_target="$migi_skill_parent/$migi_skill_name"
 
 	migi_skill_stage=$(mktemp -d "$migi_skill_parent/.migi-skill-$migi_skill_name.XXXXXX")
 	if ! cp -R "$migi_skill_source/." "$migi_skill_stage/"; then

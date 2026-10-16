@@ -25,6 +25,7 @@ import (
 	"github.com/mirmik/migi/server/internal/admin"
 	"github.com/mirmik/migi/server/internal/apkinspect"
 	"github.com/mirmik/migi/server/internal/events"
+	"github.com/mirmik/migi/server/internal/notebook"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/qlog"
@@ -57,6 +58,7 @@ func run() error {
 	publicEndpoint := flag.String("public-endpoint", "", "default public https://host[:port] for pairing invitations")
 	agentEndpoint := flag.String("agent-endpoint", "", "public https://host[:port] advertised to agent hooks")
 	databasePath := flag.String("db", "migi.db", "SQLite event journal path")
+	notebookPath := flag.String("notebook-db", "", "notebook SQLite path; default is <db>.notebook.sqlite")
 	artifactDirectory := flag.String("artifact-dir", artifactDirectoryDefault, "immutable APK artifact directory")
 	artifactMaxBytes := flag.Int64("artifact-max-bytes", defaultMaxAPKBytes, "maximum bytes per uploaded APK")
 	artifactTotalBytes := flag.Int64("artifact-total-bytes", defaultMaxArtifactBytes, "maximum total artifact bytes before publication stops")
@@ -85,6 +87,14 @@ func run() error {
 	}
 	broker := events.NewBroker(journal)
 	defer broker.Close()
+	if *notebookPath == "" {
+		*notebookPath = *databasePath + ".notebook.sqlite"
+	}
+	notes, err := notebook.Open(*notebookPath)
+	if err != nil {
+		return fmt.Errorf("configure notebook: %w", err)
+	}
+	defer notes.Close()
 	transfers, err := newTransferStore(
 		broker, *transferDirectory, *transferMaxBytes, *transferTotalBytes, *transferTTL,
 	)
@@ -211,7 +221,7 @@ func run() error {
 	if *agentListen != "" {
 		agentServer = &http.Server{
 			Addr:              *agentListen,
-			Handler:           newAgentMuxWithAllStores(broker, releases, transfers, media, newAgentSecurity()),
+			Handler:           newAgentMuxWithAllStores(broker, releases, transfers, media, newAgentSecurity(), notes),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       30 * time.Second,
 			MaxHeaderBytes:    16 << 10,
@@ -230,6 +240,7 @@ func run() error {
 		adminHandler, err := admin.New(admin.Config{
 			AgentRequest:           agentRequest,
 			Broker:                 broker,
+			Notebook:               notes,
 			Files:                  transfers,
 			Music:                  media.browserRoutes(),
 			PublicEndpoint:         *publicEndpoint,

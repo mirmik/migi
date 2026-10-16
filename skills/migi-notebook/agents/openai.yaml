@@ -1,0 +1,4 @@
+interface:
+  display_name: "Migi Notebook"
+  short_description: "Recall and maintain shared knowledge across agents"
+  default_prompt: "Use $migi-notebook to find relevant saved facts and update them with verified findings."

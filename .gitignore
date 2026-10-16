@@ -19,3 +19,7 @@ server/dev-certs/
 *.db-wal
 .codex/
 __pycache__
+
+*.notebook.sqlite
+*.notebook.sqlite-wal
+*.notebook.sqlite-shm
