@@ -85,6 +85,7 @@ class MainActivity : Activity() {
     private lateinit var miniPlayPause: ImageButton
     private lateinit var connectionDot: View
     private lateinit var bottomNavigation: BottomNavigationView
+    private lateinit var screenRoot: LinearLayout
     private lateinit var batteryButton: Button
     private lateinit var musicPlayerPage: LinearLayout
     private lateinit var musicPlaylistsPage: LinearLayout
@@ -812,7 +813,7 @@ class MainActivity : Activity() {
                 MigiNavigation.mainTab(item.itemId)?.let(::displayTab)
             }
         }
-        val root = LinearLayout(this).apply {
+        screenRoot = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(MigiPalette.background)
             addView(
@@ -826,8 +827,8 @@ class MainActivity : Activity() {
             })
             addView(bottomNavigation, matchWidth())
         }
-        root.applyMigiSystemInsets()
-        setContentView(root)
+        screenRoot.applyMigiSystemInsets()
+        setContentView(screenRoot)
         showTab(selectedTab)
     }
 
@@ -847,6 +848,8 @@ class MainActivity : Activity() {
             if (videoPanel == null) {
                 val panel = VideoPanel(this) { fullscreen ->
                     videoFullscreen = fullscreen
+                    // The root paints the inset padding around the camera cutout.
+                    screenRoot.setBackgroundColor(if (fullscreen) Color.BLACK else MigiPalette.background)
                     bottomNavigation.visibility = if (fullscreen) View.GONE else View.VISIBLE
                     refreshPlaybackControls()
                 }
