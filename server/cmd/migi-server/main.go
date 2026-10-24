@@ -242,7 +242,7 @@ func run() error {
 			Broker:                 broker,
 			Notebook:               notes,
 			Files:                  transfers,
-			Music:                  media.browserRoutes(),
+			Media:                  media.browserRoutes(),
 			PublicEndpoint:         *publicEndpoint,
 			CertificateFingerprint: fingerprint,
 			PublicListen:           *listen,

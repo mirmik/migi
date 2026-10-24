@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Видео · Migi</title>
+  <link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/media-player.css">
+  {{if .}}<script src="../assets/media-player.js" defer></script>{{end}}
+</head>
+<body>
+  <header><div><span class="eyebrow">Migi · Медиатека</span><h1>Видео</h1></div><span class="muted">На этом устройстве</span></header>
+  {{template "admin-nav" "../"}}
+  <main>
+    {{if .}}
+    <div id="video-error" class="music-error" role="alert" hidden></div>
+    <section class="panel video-player" aria-label="Плеер">
+      <div class="music-now">
+        <span id="queue-name" class="eyebrow">Выберите видео</span>
+        <h2 id="track-title">Коллекция или видео из каталога</h2><p id="track-artist"></p>
+        <video id="video" controls playsinline preload="none" aria-label="Воспроизведение видео, громкость, перемотка и полный экран"></video>
+        <div class="music-controls"><button id="previous" disabled aria-label="Предыдущее видео">← Назад</button><button id="next" disabled aria-label="Следующее видео">Далее →</button><span id="playback-status" role="status"></span></div>
+      </div>
+    </section>
+    <div class="music-columns">
+      <section class="panel music-library">
+        <div class="section-heading"><h2>Медиатека</h2><button id="refresh" type="button">Обновить</button></div>
+        <label>Поиск<input id="search" type="search" placeholder="Название видео или коллекции" maxlength="128"></label>
+        <div class="music-tabs" role="group" aria-label="Раздел медиатеки"><button id="show-playlists" aria-pressed="true">Коллекции</button><button id="show-tracks" aria-pressed="false">Все видео</button></div>
+        <p id="library-status" role="status">Загрузка медиатеки…</p><div id="library-list" class="music-list"></div>
+      </section>
+      <section class="panel music-queue"><h2>Очередь</h2><p id="queue-status">Выберите коллекцию или видео, чтобы начать.</p><ol id="queue-list" class="music-list"></ol></section>
+    </div>
+    <noscript><p>Для воспроизведения включите JavaScript.</p></noscript>
+    {{else}}<section class="panel"><p>Медиатека не подключена к этому серверу.</p></section>{{end}}
+  </main>
+  <footer>Видео воспроизводится в этой вкладке. Очередь и позиция сохраняются; нажмите Play, чтобы продолжить. Поддержка формата зависит от браузера.</footer>
+</body>
+</html>

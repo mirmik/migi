@@ -17,10 +17,25 @@ import (
 // credentials are exposed to the browser.
 func (s *mediaStore) browserRoutes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /admin/music/api/library", s.browserLibrary)
-	mux.HandleFunc("GET /admin/music/api/playlists/{playlistID}", s.browserPlaylist)
-	mux.HandleFunc("GET /admin/music/api/media/{mediaID}", s.browserContent)
+	for _, kind := range []string{"music", "video"} {
+		mount := func(path string, handler http.HandlerFunc) {
+			mux.HandleFunc("GET /admin/"+kind+"/api/"+path, func(w http.ResponseWriter, r *http.Request) {
+				r.SetPathValue("kind", kind)
+				handler(w, r)
+			})
+		}
+		mount("library", s.browserLibrary)
+		mount("playlists/{playlistID}", s.browserPlaylist)
+		mount("media/{mediaID}", s.browserContent)
+	}
 	return mux
+}
+
+func browserPlayableMIME(r *http.Request, mime string) bool {
+	if r.PathValue("kind") == "video" {
+		return isVideoMIME(mime)
+	}
+	return isAudioMIME(mime)
 }
 
 func (s *mediaStore) browserLibrary(w http.ResponseWriter, r *http.Request) {
@@ -35,17 +50,21 @@ func (s *mediaStore) browserLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tracks := make([]mediaObject, 0)
-	audioIDs := make(map[string]bool)
+	playableIDs := make(map[string]bool)
 	for _, object := range objects {
-		if isAudioMIME(object.MIME) {
+		if browserPlayableMIME(r, object.MIME) {
 			tracks = append(tracks, object)
-			audioIDs[object.ID] = true
+			playableIDs[object.ID] = true
 		}
+	}
+	kind := "audio"
+	if r.PathValue("kind") == "video" {
+		kind = "video"
 	}
 	summaries := make([]savedPlaylistSummary, 0)
 	for _, playlist := range playlists {
-		if len(playlist.MediaIDs) > 0 && audioIDs[playlist.MediaIDs[0]] {
-			summaries = append(summaries, savedPlaylistSummary{Kind: "audio", ID: playlist.ID, Name: playlist.Name, TrackCount: len(playlist.MediaIDs), UpdatedAt: playlist.UpdatedAt})
+		if len(playlist.MediaIDs) > 0 && playableIDs[playlist.MediaIDs[0]] {
+			summaries = append(summaries, savedPlaylistSummary{Kind: kind, ID: playlist.ID, Name: playlist.Name, TrackCount: len(playlist.MediaIDs), UpdatedAt: playlist.UpdatedAt})
 		}
 	}
 	writeJSON(w, 200, struct {
@@ -66,12 +85,12 @@ func (s *mediaStore) browserPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	manifest, err := s.savedPlaylistManifest(r.Context(), playlist, "")
 	if err != nil {
-		http.Error(w, "Некоторые треки плейлиста больше недоступны", 409)
+		http.Error(w, "Некоторые файлы коллекции больше недоступны", 409)
 		return
 	}
 	for _, item := range manifest.Items {
-		if !isAudioMIME(item.MIME) {
-			http.Error(w, "Это не музыкальный плейлист", 415)
+		if !browserPlayableMIME(r, item.MIME) {
+			http.Error(w, "Коллекция из другого раздела медиатеки", 415)
 			return
 		}
 	}
@@ -131,7 +150,7 @@ func (s *mediaStore) browserContent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Не удалось прочитать медиа", 500)
 		return
 	}
-	if !isAudioMIME(record.MIME) && !isArtworkMIME(record.MIME) {
+	if !browserPlayableMIME(r, record.MIME) && !isArtworkMIME(record.MIME) {
 		http.Error(w, "Неподдерживаемый тип медиа", 415)
 		return
 	}
@@ -207,7 +226,7 @@ func (s *mediaStore) browserContent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.completeOriginRequest(request, err)
-	// Once streaming began an HTTP error body would corrupt the audio. Abort the
+	// Once streaming began an HTTP error body would corrupt the media. Abort the
 	// response so the browser can report a failed load instead of silent truncation.
 	if err != nil {
 		panic(http.ErrAbortHandler)

@@ -81,6 +81,12 @@ serves indexed objects on demand.
 The web panel's **Музыка** section plays the same music catalog and saved
 playlists in the browser, with search, an independent queue, seeking and saved
 position. Playback starts on user action and does not change the phone's queue.
+The web panel also has a **Видео** section with saved video collections, search,
+native video controls (including fullscreen and seeking), an episode queue and
+position restore. It streams local and origin video without changing the phone
+queue. Audio and video keep separate browser state. Playback formats depend on
+the browser; the server does not transcode unsupported codecs or containers.
+
 Video uses the same origin/catalog foundation with its own `video.queue.set`
 event and Android library. The bundled `migi-video` helper indexes naturally
 ordered seasons and saves collections silently. Phones stream videos from a

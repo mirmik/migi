@@ -120,6 +120,38 @@ code pages are prohibited. The remaining namespace, filesystem, privilege,
 resource, syscall, and address-family restrictions stay enabled. Do not point
 the verifier options at publisher-controlled executables.
 
+### Web video rollout on Aurora, 2026-10-24
+
+The user service now includes `/admin/video/` at
+`http://192.168.0.61:8788/admin/video/`, using the existing media catalog and
+origin relay. Live checks found 40 videos in 3 collections; the music catalog
+remained available with 1109 tracks in 16 playlists. Chromium verified both
+pages, their catalogs and native controls, mobile width, and video HEAD
+responses without downloading content. Isolated Chromium fixtures verified
+actual local/origin audio and video playback, seeking, fullscreen, queue
+navigation, automatic next item, position restore and recoverable errors.
+
+Pre-deployment `govulncheck` found reachable GO-2026-6809 in Go 1.26.9.
+The minimum toolchain is now Go 1.26.10. Race tests, vet, source and binary
+vulnerability scans, and systemd kit verification passed with the fixed
+build. Both vulnerability scans reported no reachable vulnerabilities.
+
+Server SHA-256:
+`6810e72e4206ab4202bb62fc531c7c91293ebf36ed7c59d17517b358ecb6cb27`.
+The private rollback directory is
+`~/.local/state/migi/deploy-backups/web-video-20261024T075110Z/`. It contains
+`migi-server.previous`, `migi-server.new`, online SQLite backups of `migi.db`
+and `migi.db.notebook.sqlite`, the effective unit and `manifest.json` with
+binary hashes. The running process hash matched the new build, the ingest
+`/healthz` returned `{"status":"ok"}`, and the user service was active.
+For binary rollback, atomically restore `migi-server.previous` and restart the
+user service; preserve live databases to retain events accepted after rollout.
+
+The previous process again hit the tracked shutdown deadline (Kanboard #2768)
+and exited with status 1 after 10 seconds. The replacement process started
+successfully; the paired phone reconnected its QUIC stream one second later
+and acknowledged a new event. The new process had no automatic restarts.
+
 ## Validate and build locally
 
 Run the repository-owned checks before preparing deployment artifacts:

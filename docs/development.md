@@ -6,7 +6,7 @@ Observed on 2026-07-21:
 
 - OpenJDK 21 is installed;
 - system Go 1.26.0 is installed; the server module requires the patched Go
-  1.26.9 toolchain, which the default `GOTOOLCHAIN=auto` setting downloads;
+  1.26.10 toolchain, which the default `GOTOOLCHAIN=auto` setting downloads;
 - Android command-line tools and `adb` are installed;
 - Android platform 36 is installed;
 - Android build-tools 35.0.0 and 36.0.0 are installed;
@@ -397,7 +397,7 @@ compiler; the current workstation already has GCC and SQLite development files.
 
 ### Server security verification
 
-The server requires Go 1.26.9 or newer. Run the complete verification below
+The server requires Go 1.26.10 or newer. Run the complete verification below
 after changing the toolchain or dependencies and before deploying a new binary:
 
 ```bash

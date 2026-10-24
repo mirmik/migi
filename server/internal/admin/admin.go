@@ -39,7 +39,7 @@ type Config struct {
 	AgentRequest           func(context.Context, string, string, any, any) (int, error)
 	Broker                 *events.Broker
 	Files                  FileExchange
-	Music                  http.Handler
+	Media                  http.Handler
 	PublicEndpoint         string
 	CertificateFingerprint string
 	PublicListen           string
@@ -205,8 +205,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/agents/", h.agents)
 	mux.HandleFunc("GET /admin/files/", h.files)
 	mux.HandleFunc("GET /admin/music/{$}", h.musicPage)
-	if h.config.Music != nil {
-		mux.Handle("GET /admin/music/api/", h.config.Music)
+	mux.HandleFunc("GET /admin/video/{$}", h.videoPage)
+	if h.config.Media != nil {
+		mux.Handle("GET /admin/music/api/", h.config.Media)
+		mux.Handle("GET /admin/video/api/", h.config.Media)
 	}
 	mux.HandleFunc("GET /admin/system/", h.system)
 	mux.HandleFunc("GET /admin/chat/{$}", h.chatPage)
