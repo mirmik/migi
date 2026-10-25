@@ -209,7 +209,7 @@ func TestBrowserRangeValidation(t *testing.T) {
 
 // Opt-in actual browser playback, driven against an isolated real admin server.
 // MIGI_BROWSER_PYTHON=/path/to/playwright/venv/bin/python go test ./cmd/migi-server -run 'TestBrowser(Music|Video)Smoke' -v
-// The video fixture also requires ffmpeg with the libvpx encoder.
+// The video fixture also requires ffmpeg with the libvpx and libopus encoders.
 func TestBrowserMusicSmoke(t *testing.T) { browserMediaSmoke(t, "music") }
 func TestBrowserVideoSmoke(t *testing.T) { browserMediaSmoke(t, "video") }
 
@@ -221,10 +221,17 @@ func browserMediaSmoke(t *testing.T, kind string) {
 	}
 	s := browserTestStore(t)
 	content := browserTestWAV()
+	var withoutSubtitles []byte
 	mime := "audio/wav"
 	if kind == "video" {
-		fixture := t.TempDir() + "/fixture.webm"
-		cmd := exec.CommandContext(t.Context(), "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10:duration=8", "-c:v", "libvpx", "-b:v", "60k", "-an", fixture)
+		dir := t.TempDir()
+		fixture := dir + "/fixture.webm"
+		for _, sub := range []struct{ name, text string }{{"ru", "Проверка субтитров"}, {"en", "Subtitle check"}} {
+			if err := os.WriteFile(dir+"/"+sub.name+".vtt", []byte("WEBVTT\n\n00:00.000 --> 00:07.900\n"+sub.text+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.CommandContext(t.Context(), "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10:duration=8", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-i", dir+"/ru.vtt", "-i", dir+"/en.vtt", "-map", "0:v", "-map", "1:a", "-map", "2:s", "-map", "3:s", "-c:v", "libvpx", "-b:v", "60k", "-c:a", "libopus", "-b:a", "48k", "-c:s", "webvtt", "-metadata:s:s:0", "language=rus", "-metadata:s:s:1", "language=eng", fixture)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("video fixture: %v %s", err, output)
 		}
@@ -234,15 +241,42 @@ func browserMediaSmoke(t *testing.T, kind string) {
 			t.Fatal(err)
 		}
 		mime = "video/webm"
+		plain := dir + "/plain.webm"
+		strip := exec.CommandContext(t.Context(), "ffmpeg", "-v", "error", "-i", fixture, "-map", "0:v", "-map", "0:a", "-c", "copy", plain)
+		if out, err := strip.CombinedOutput(); err != nil {
+			t.Fatalf("plain fixture: %v %s", err, out)
+		}
+		withoutSubtitles, err = os.ReadFile(plain)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	first := browserTestObject(t, s, "Local track", mime, string(content))
-	second := browserTestObject(t, s, "Second track", mime, string(content))
+	secondContent := content
+	if withoutSubtitles != nil {
+		secondContent = withoutSubtitles
+	}
+	second := browserTestObject(t, s, "Second track", mime, string(secondContent))
 	browserTestPlaylist(t, s, strings.Repeat("a", 32), "Local album", first, second)
 	agent := events.AgentTokenInfo{ID: strings.Repeat("b", 18), Name: "origin"}
-	remote, err := s.registerRemoteMedia(originMediaInput{Name: "Remote track.wav", Title: "Remote track", MIME: mime, Size: int64(len(content)), SHA256: fmt.Sprintf("%x", sha256.Sum256(content))}, agent)
+	originContent := make(map[string][]byte)
+	var subtitleRefs []originSubtitleInput
+	if kind == "video" {
+		for _, sub := range []struct{ language, label, text string }{{"ru", "Русские", "Удалённые субтитры"}, {"en", "English", "Remote subtitles"}} {
+			data := []byte("1\n00:00:00,000 --> 00:00:07,900\n" + sub.text + "\n")
+			object, err := s.registerRemoteMedia(originMediaInput{Name: sub.language + ".srt", MIME: "application/x-subrip", Size: int64(len(data)), SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}, agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originContent[object.ID] = data
+			subtitleRefs = append(subtitleRefs, originSubtitleInput{ID: object.ID, Label: sub.label, Language: sub.language})
+		}
+	}
+	remote, err := s.registerRemoteMedia(originMediaInput{Name: "Remote track.wav", Title: "Remote track", MIME: mime, Size: int64(len(content)), SHA256: fmt.Sprintf("%x", sha256.Sum256(content)), Subtitles: subtitleRefs}, agent)
 	if err != nil {
 		t.Fatal(err)
 	}
+	originContent[remote.ID] = content
 	browserTestPlaylist(t, s, strings.Repeat("b", 32), "Remote album", remote)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -254,11 +288,15 @@ func browserMediaSmoke(t *testing.T, kind string) {
 			if !ok {
 				return
 			}
-			part := content[job.Range.Offset : job.Range.Offset+job.Range.Length]
+			object, err := s.get(job.MediaID, time.Now())
+			if err != nil {
+				return
+			}
+			part := originContent[job.MediaID][job.Range.Offset : job.Range.Offset+job.Range.Length]
 			request := httptest.NewRequest("PUT", "/origin", bytes.NewReader(part)).WithContext(context.WithValue(ctx, agentContextKey{}, agent))
 			request.SetPathValue("requestID", job.ID)
-			request.Header.Set("Content-Type", remote.MIME)
-			request.Header.Set("Content-Range", job.Range.contentRange(remote.Size))
+			request.Header.Set("Content-Type", object.MIME)
+			request.Header.Set("Content-Range", job.Range.contentRange(object.Size))
 			request.Header.Set("X-Range-SHA256", fmt.Sprintf("%x", sha256.Sum256(part)))
 			s.uploadOriginHandler(httptest.NewRecorder(), request)
 		}

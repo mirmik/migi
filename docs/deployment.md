@@ -152,6 +152,91 @@ and exited with status 1 after 10 seconds. The replacement process started
 successfully; the paired phone reconnected its QUIC stream one second later
 and acknowledged a new event. The new process had no automatic restarts.
 
+### Web subtitles rollout on Aurora, 2026-10-25
+
+The video page now has a subtitle language/off selector. The service uses
+`ffprobe` and `ffmpeg` from its PATH to extract text tracks from uploaded files
+and convert declared origin subtitle files to WebVTT. Processes run one at a
+time, with a 30-second deadline and a 4 MiB output limit. Remote movies are not
+downloaded to discover embedded tracks; attach separate subtitles at the origin.
+
+Live Firefox verified Russian dialogue on the compatible Cyberpunk 04 and 05
+copies, switching to English/off/back, seeking and restoring the language after
+reload. Isolated Chromium and Firefox checks cover embedded and origin tracks,
+language persistence, subtitle retry, videos without subtitles and music.
+Race tests, vet, source/binary vulnerability checks and the systemd kit check
+passed. The vulnerability checks reported no reachable vulnerabilities.
+
+Server SHA-256:
+`058c6738fc4d16b001ae7349cb518d6b6f72d09c2c9fe7de02451fb42f0383c0`.
+Rollback files are in
+`~/.local/state/migi/deploy-backups/web-subtitles-20261025T172424Z/`:
+the previous executable, online backups of both databases, effective unit,
+source snapshot and hash manifest. Restore only the executable for rollback;
+the change has no database migration. The service remained active without
+automatic restarts, and the paired phone reconnected after the restart.
+The previous process again reached the known shutdown deadline (#2768).
+
+### Web audio selection rollout on Aurora, 2026-10-25
+
+The video page now offers an audio language selector for nonfragmented MP4/MOV,
+including range-capable origin files. Selecting audio changes the served MP4
+track headers while preserving media samples, offsets, byte ranges and file
+size; no converted movie copy is stored. Language preference persists across
+episodes/reload, and switching preserves watch position and Play/Pause.
+
+Live Firefox verified Japanese/English switching on both compatible Cyberpunk
+04–05 copies at 120 seconds, paused and playing, with Russian subtitles still
+visible. Reload restored the English track and watch position. Header probes
+confirmed that each selected English view contains one English audio stream.
+Isolated Firefox/Chromium tests distinguish actual decoded 440/880 Hz tracks,
+and API tests compare unchanged video and selected audio packet hashes for
+local and origin views. Race tests, vet, source/binary vulnerability checks and
+systemd kit verification passed; no reachable vulnerabilities were found.
+
+Server SHA-256:
+`0f1bede2edf9679e09ebcbd0015d6d11afe8d4c44e2ec2cb9ebc85a155a82c29`.
+Rollback directory:
+`~/.local/state/migi/deploy-backups/web-audio-20261025T184055Z/`.
+It contains the previous executable, online backups of both databases, effective
+unit, source snapshot and hash manifest. Restore only the executable for
+rollback; there is no database migration. The service was active with zero
+automatic restarts after rollout. Android already has separate audio/subtitle
+selection in **Звук и субтитры** beside the video title; no APK change was needed.
+
+### Automatic browser audio compatibility on Aurora, 2026-10-25
+
+The original H.264/E-AC-3 Cyberpunk MKVs now prepare automatically for Firefox
+under their existing catalog IDs. The first playback waits for a cached MP4;
+video is copied, incompatible audio becomes AAC, and embedded text subtitles
+are retained. This version does not start playing before preparation completes.
+The cache is private, limited to 8 GiB, with one worker, four jobs, a 30-minute
+deadline and cancellation after 45 seconds without polling. Preparation requires
+the page CSRF token. There is no database migration or change to phone queues.
+
+Real original episodes 04 and 05 prepared in about 47 and 28 seconds. Live
+Firefox verified Japanese/English selection, Russian dialogue, pause/seek,
+reload/watch position and immediate reuse of ready cache entries. The two
+derived files occupy about 2 GiB. The service stayed active with zero automatic
+restarts and a measured peak around 193 MiB, below its 256 MiB hard limit.
+
+Source/binary vulnerability checks reported no reachable vulnerabilities.
+Server race tests, vet, systemd kit checks and Firefox/Chromium playback tests
+passed, including local/origin conversion, unchanged video packet hashes,
+retained languages/subtitles, cache persistence/eviction, cancellation/retry,
+CSRF and refusal to expose incomplete output. The existing direct playback
+tests for music, WebM and MP4 passed as well.
+
+Server SHA-256:
+`b42c2718f2854658740e506a8190b6ffde758128115d2ab9031686b7728bfd3b`.
+Rollback directory:
+`~/.local/state/migi/deploy-backups/web-compatible-20261025T193018Z/`.
+It holds the previous executable, online backups of both databases, effective
+unit, source snapshot and hash manifest. Restore only the executable for
+rollback; preserve current databases. Derived cache files can remain in
+`migi-media/.browser-compatible` and are ignored by the previous server.
+Streaming before the conversion finishes is tracked separately in #3476.
+
 ## Validate and build locally
 
 Run the repository-owned checks before preparing deployment artifacts:

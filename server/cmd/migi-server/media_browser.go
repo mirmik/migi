@@ -27,6 +27,13 @@ func (s *mediaStore) browserRoutes() http.Handler {
 		mount("library", s.browserLibrary)
 		mount("playlists/{playlistID}", s.browserPlaylist)
 		mount("media/{mediaID}", s.browserContent)
+		if kind == "video" {
+			mount("media/{mediaID}/prepare", s.browserPrepare)
+			mux.HandleFunc("POST /admin/video/api/media/{mediaID}/prepare", func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("kind", "video"); s.browserPrepare(w, r) })
+			mount("media/{mediaID}/audio", s.browserAudio)
+			mount("media/{mediaID}/subtitles", s.browserSubtitles)
+			mount("media/{mediaID}/subtitles/{subtitleID}", s.browserSubtitles)
+		}
 	}
 	return mux
 }
@@ -141,7 +148,7 @@ func browserRange(value string, size int64) (offset, length int64, err error) {
 }
 
 func (s *mediaStore) browserContent(w http.ResponseWriter, r *http.Request) {
-	record, err := s.getRecord(r.PathValue("mediaID"), time.Now().UTC())
+	record, err := s.browserRecord(r)
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -155,17 +162,50 @@ func (s *mediaStore) browserContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := `"` + record.SHA256 + `"`
+	audio, err := requestedAudio(r)
+	if err != nil {
+		http.Error(w, "Некорректная звуковая дорожка", 400)
+		return
+	}
+	var patches []audioBytePatch
+	if audio != "" {
+		if r.PathValue("kind") != "video" || !browserAudioMIME(record.MIME) {
+			http.Error(w, "Выбор звука доступен для MP4/MOV", 415)
+			return
+		}
+		if r.Method != http.MethodHead {
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			tracks, loadErr := s.browserAudioTracks(ctx, record)
+			cancel()
+			if loadErr != nil {
+				http.Error(w, "Не удалось подготовить звуковую дорожку", 503)
+				return
+			}
+			patches, err = audioPatches(tracks, audio)
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		etag = `"` + record.SHA256 + "-audio-" + audio + `"`
+		w.Header().Set("X-Migi-Audio-Track", audio)
+	}
 	w.Header().Set("Content-Type", record.MIME)
 	w.Header().Set("Content-Disposition", "inline")
 	w.Header().Set("ETag", etag)
 	if record.RemoteOrigin == nil {
-		file, err := os.Open(s.blobPath(record.ID))
+		file, err := os.Open(s.browserPath(record))
 		if err != nil {
 			http.Error(w, "Медиафайл недоступен", 404)
 			return
 		}
 		defer file.Close()
-		http.ServeContent(w, r, record.Name, record.CreatedAt, file)
+		if len(patches) == 0 {
+			http.ServeContent(w, r, record.Name, record.CreatedAt, file)
+		} else {
+			reader := io.NewSectionReader(audioPatchedReader{reader: file, patches: patches}, 0, record.Size)
+			http.ServeContent(w, r, record.Name, record.CreatedAt, reader)
+		}
 		return
 	}
 	rangeValue := r.Header.Get("Range")
@@ -215,6 +255,9 @@ func (s *mediaStore) browserContent(w http.ResponseWriter, r *http.Request) {
 		output = flushingWriter{Writer: w, Flush: flusher.Flush}
 	}
 	hash := sha256.New()
+	if len(patches) > 0 {
+		output = &audioPatchedWriter{writer: output, patches: patches, offset: offset}
+	}
 	_, err = io.CopyN(io.MultiWriter(output, hash), stream.Body, length)
 	if err == nil {
 		expected := stream.Digest

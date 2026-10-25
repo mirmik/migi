@@ -2,21 +2,31 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRFToken}}">
   <title>Видео · Migi</title>
   <link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="../assets/media-player.css">
-  {{if .}}<script src="../assets/media-player.js" defer></script>{{end}}
+  {{if .Enabled}}<script src="../assets/media-player.js" defer></script>{{end}}
 </head>
 <body>
   <header><div><span class="eyebrow">Migi · Медиатека</span><h1>Видео</h1></div><span class="muted">На этом устройстве</span></header>
   {{template "admin-nav" "../"}}
   <main>
-    {{if .}}
+    {{if .Enabled}}
     <div id="video-error" class="music-error" role="alert" hidden></div>
     <section class="panel video-player" aria-label="Плеер">
       <div class="music-now">
         <span id="queue-name" class="eyebrow">Выберите видео</span>
         <h2 id="track-title">Коллекция или видео из каталога</h2><p id="track-artist"></p>
         <video id="video" controls playsinline preload="none" aria-label="Воспроизведение видео, громкость, перемотка и полный экран"></video>
+        <div class="video-preparation" id="video-preparation" hidden><span id="preparation-status" role="status"></span><progress id="preparation-progress" max="100"></progress><button id="preparation-retry" type="button" hidden>Повторить подготовку</button></div>
+        <div class="video-subtitles">
+          <label for="audio-tracks">Звук</label><select id="audio-tracks" disabled><option value="">Выберите видео</option></select>
+          <span id="audio-track-status" role="status"></span><button id="audio-track-retry" type="button" hidden>Повторить загрузку звуковых дорожек</button>
+        </div>
+        <div class="video-subtitles">
+          <label for="subtitles">Субтитры</label><select id="subtitles" disabled><option value="">Выберите видео</option></select>
+          <span id="subtitle-status" role="status"></span><button id="subtitle-retry" type="button" hidden>Повторить загрузку субтитров</button>
+        </div>
         <div class="music-controls"><button id="previous" disabled aria-label="Предыдущее видео">← Назад</button><button id="next" disabled aria-label="Следующее видео">Далее →</button><span id="playback-status" role="status"></span></div>
       </div>
     </section>

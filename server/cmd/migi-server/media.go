@@ -70,6 +70,7 @@ type mediaObject struct {
 // event.
 type mediaStoredObject struct {
 	mediaObject
+	browserPath  string
 	RemoteOrigin *mediaRemoteOrigin `json:"remote_origin,omitempty"`
 	Pinned       bool               `json:"pinned,omitempty"`
 }
@@ -114,6 +115,10 @@ type mediaStore struct {
 	totalBytes int64
 	ttl        time.Duration
 	playlistMu sync.Mutex
+	audioMu    sync.Mutex
+	audioCache map[string][]browserAudioTrack
+	compatMu   sync.Mutex
+	compatJobs map[string]*browserCompatJob
 
 	originMu      sync.Mutex
 	originByID    map[string]*mediaOriginRequest

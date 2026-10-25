@@ -28,6 +28,223 @@
   const mediaURL = id => `api/media/${encodeURIComponent(id)}`;
   const error = message => { const box = $(isVideo ? 'video-error' : 'music-error'); box.textContent = message; box.hidden = !message; };
   const status = message => { $('playback-status').textContent = message; };
+  let compatible = false, preparationVersion = -1, preparationReady = -1, preparationRequest = null, preparationPromise = null;
+  function playbackURL(suffix = '', audioID = '') {
+    const query = new URLSearchParams();
+    if (compatible) query.set('compatible', '1');
+    if (audioID) query.set('audio', audioID);
+    return mediaURL(queue[index].id) + suffix + (query.size ? `?${query}` : '');
+  }
+  function resetPreparation() {
+    if (!isVideo) return;
+    if (preparationRequest) preparationRequest.abort();
+    compatible = false; preparationVersion = -1; preparationReady = -1; preparationPromise = null;
+    $('video-preparation').hidden = true;
+  }
+  function preparePlayback(version) {
+    if (preparationVersion === version) return preparationPromise;
+    preparationVersion = version;
+    const controller = new AbortController(); preparationRequest = controller;
+    const base = `${mediaURL(queue[index].id)}/prepare`;
+    const codecs = {'mp4a': 'mp4a.40.2', 'ec-3': 'ec-3', 'ac-3': 'ac-3', 'Opus': 'opus', '.mp3': 'mp3'};
+    const supported = Object.keys(codecs).filter(codec => player.canPlayType(`audio/mp4; codecs="${codecs[codec]}"`));
+    const begin = () => fetch(base, {method: 'POST', signal: controller.signal, headers: {
+      'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+    }, body: JSON.stringify({supported_audio: supported})});
+    preparationPromise = (async () => {
+      try {
+        let response = await begin();
+        while (version === sourceVersion) {
+          if (!response.ok) throw new Error(response.status === 403 ? 'Обновите страницу и повторите запуск видео.' : 'Не удалось подготовить видео. Повторите запуск.');
+          const result = await response.json();
+          if (version !== sourceVersion) return false;
+          if (result.state === 'ready' || result.state === 'direct') {
+            compatible = result.state === 'ready';
+            if (compatible) {
+              const time = resumeTime || player.currentTime || 0;
+              player.pause(); resumeTime = time;
+              player.src = playbackURL(); player.load();
+              resetSubtitles();
+            }
+            preparationReady = version; $('video-preparation').hidden = true;
+            return true;
+          }
+          if (result.state === 'error') throw new Error(result.message);
+          $('video-preparation').hidden = false; $('preparation-retry').hidden = true;
+          $('preparation-status').textContent = result.state === 'processing' ? 'Подготовка звука для браузера…' : 'Ожидание подготовки видео…';
+          $('preparation-progress').hidden = false;
+          if (result.progress) $('preparation-progress').value = result.progress;
+          else $('preparation-progress').removeAttribute('value');
+          await new Promise((resolve, reject) => {
+            const aborted = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+            const timer = setTimeout(() => { controller.signal.removeEventListener('abort', aborted); resolve(); }, 900);
+            if (controller.signal.aborted) aborted();
+            else controller.signal.addEventListener('abort', aborted, {once: true});
+          });
+          response = result.state === 'busy' || result.state === 'idle' ? await begin() : await fetch(base, {signal: controller.signal, cache: 'no-store'});
+        }
+      } catch (e) {
+        if (version !== sourceVersion || e.name === 'AbortError') return false;
+        $('video-preparation').hidden = false; $('preparation-progress').hidden = true;
+        $('preparation-status').textContent = e.message; $('preparation-retry').hidden = false;
+        status('Подготовка видео не завершена');
+      }
+      return false;
+    })();
+    return preparationPromise;
+  }
+  async function startVideo(version) {
+    if (!await preparePlayback(version) || version !== sourceVersion) return;
+    await prepareAudio(version); requestPlay(version);
+  }
+  let audioRequest = null, audioVersion = -1, audioReady = null, audioTracks = [], currentAudio = '';
+  let audioPreference = {language: '', label: '', ordinal: 0};
+  if (isVideo) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(`${storageKey}.audio`));
+      if (saved && typeof saved.language === 'string' && typeof saved.label === 'string') audioPreference = saved;
+    } catch (_) { /* Automatic selection when storage is unavailable. */ }
+  }
+  function audioStatus(message, retry = false) {
+    $('audio-track-status').textContent = message;
+    $('audio-track-retry').hidden = !retry;
+  }
+  function resetAudio() {
+    if (!isVideo) return;
+    if (audioRequest) audioRequest.abort();
+    audioRequest = null; audioVersion = -1; audioReady = null; audioTracks = []; currentAudio = '';
+    $('audio-tracks').replaceChildren(new Option('Нажмите Play для загрузки', ''));
+    $('audio-tracks').disabled = true; audioStatus('');
+  }
+  function requestPlay(version) {
+    if (version !== sourceVersion) return;
+    player.play().catch(e => {
+      if (version !== sourceVersion || e.name === 'AbortError') return;
+      if (e.name === 'NotAllowedError') status('Нажмите Play, чтобы начать');
+      else error(labels.playError);
+    });
+  }
+  function chooseAudio(remember = false) {
+    const selected = audioTracks.find(track => track.id === $('audio-tracks').value);
+    if (remember) {
+      audioPreference = selected ? {
+        language: selected.language || '', label: selected.label,
+        ordinal: audioTracks.filter(track => track.language === selected.language && track.label === selected.label).findIndex(track => track.id === selected.id)
+      } : {language: '', label: '', ordinal: 0};
+      try { localStorage.setItem(`${storageKey}.audio`, JSON.stringify(audioPreference)); } catch (_) { /* Storage is optional. */ }
+    }
+    const id = selected ? selected.id : '';
+    if (id === currentAudio) return;
+    const playing = !player.paused && !player.ended;
+    const time = resumeTime || player.currentTime || 0;
+    player.pause(); resumeTime = time; currentAudio = id;
+    player.src = playbackURL('', id);
+    player.preload = time > 0 ? 'metadata' : 'none';
+    player.load(); save();
+    if (subtitleVersion === sourceVersion) chooseSubtitle();
+    if (playing) requestPlay(sourceVersion);
+  }
+  function prepareAudio(version) {
+    if (audioVersion === version) return audioReady;
+    audioVersion = version;
+    const controller = new AbortController(); audioRequest = controller;
+    audioStatus('Поиск звуковых дорожек…');
+    audioReady = (async () => {
+      try {
+        const response = await fetch(playbackURL('/audio'), {signal: controller.signal, cache: 'no-store'});
+        if (!response.ok) throw new Error('audio unavailable');
+        const info = await response.json();
+        if (version !== sourceVersion) return;
+        audioTracks = info.tracks;
+        const options = audioTracks.map((track, i) => new Option(`${track.label}${audioTracks.some((other, j) => j < i && other.label === track.label) ? ` (${i + 1})` : ''}`, track.id));
+        $('audio-tracks').replaceChildren(new Option('Автоматически', ''), ...options);
+        $('audio-tracks').disabled = !audioTracks.length;
+        const matches = audioTracks.filter(track => track.language === audioPreference.language && track.label === audioPreference.label);
+        const preferred = matches[Number.isInteger(audioPreference.ordinal) ? audioPreference.ordinal : 0]
+          || (audioPreference.language && audioTracks.find(track => track.language === audioPreference.language));
+        $('audio-tracks').value = preferred ? preferred.id : '';
+        chooseAudio();
+        audioStatus(info.supported ? '' : 'Для выбора звука используйте версию MP4.');
+      } catch (e) {
+        if (version !== sourceVersion || e.name === 'AbortError') return;
+        audioStatus('Не удалось проверить звуковые дорожки.', true);
+      }
+    })();
+    return audioReady;
+  }
+  let subtitleRequest = null, subtitleVersion = -1, subtitleTracks = [], activeSubtitle = null;
+  let subtitlePreference = {enabled: true, language: 'ru'};
+  if (isVideo) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(`${storageKey}.subtitles`));
+      if (saved && typeof saved.enabled === 'boolean' && typeof saved.language === 'string') subtitlePreference = saved;
+    } catch (_) { /* Use Russian subtitles by default. */ }
+  }
+  function subtitleStatus(message, retry = false) {
+    $('subtitle-status').textContent = message;
+    $('subtitle-retry').hidden = !retry;
+  }
+  function removeSubtitle() {
+    if (activeSubtitle) {
+      activeSubtitle.track.mode = 'disabled';
+      activeSubtitle.remove(); activeSubtitle = null;
+    }
+  }
+  function resetSubtitles() {
+    if (!isVideo) return;
+    if (subtitleRequest) subtitleRequest.abort();
+    subtitleRequest = null; subtitleVersion = -1; subtitleTracks = [];
+    removeSubtitle();
+    $('subtitles').replaceChildren(new Option('Нажмите Play для загрузки', ''));
+    $('subtitles').disabled = true; subtitleStatus('');
+  }
+  function chooseSubtitle(remember = false) {
+    const selected = subtitleTracks.find(track => track.id === $('subtitles').value);
+    removeSubtitle(); subtitleStatus('');
+    if (remember) {
+      subtitlePreference = selected ? {enabled: true, language: selected.language || '', label: selected.label} : {...subtitlePreference, enabled: false};
+      try { localStorage.setItem(`${storageKey}.subtitles`, JSON.stringify(subtitlePreference)); } catch (_) { /* Storage is optional. */ }
+    }
+    if (!selected) return;
+    const version = sourceVersion;
+    const track = document.createElement('track');
+    track.kind = 'subtitles'; track.label = selected.label;
+    track.srclang = selected.language || 'und'; track.default = true;
+    track.src = playbackURL(`/subtitles/${encodeURIComponent(selected.id)}`);
+    track.onload = () => { if (version === sourceVersion && activeSubtitle === track) subtitleStatus(''); };
+    track.onerror = () => { if (version === sourceVersion && activeSubtitle === track) subtitleStatus('Не удалось загрузить субтитры.', true); };
+    activeSubtitle = track; subtitleStatus('Загрузка субтитров…');
+    player.append(track); track.track.mode = 'showing';
+  }
+  async function loadSubtitles() {
+    if (!isVideo || index < 0 || subtitleVersion === sourceVersion || preparationReady !== sourceVersion) return;
+    const version = sourceVersion;
+    subtitleVersion = version;
+    const controller = new AbortController(); subtitleRequest = controller;
+    subtitleStatus('Поиск субтитров…');
+    try {
+      const response = await fetch(playbackURL('/subtitles'), {signal: controller.signal, cache: 'no-store'});
+      if (!response.ok) throw new Error('subtitles unavailable');
+      const tracks = await response.json();
+      if (version !== sourceVersion) return;
+      subtitleTracks = tracks;
+      const options = tracks.map((track, i) => new Option(`${track.label}${tracks.some((other, j) => j < i && other.label === track.label) ? ` (${i + 1})` : ''}`, track.id));
+      $('subtitles').replaceChildren(new Option(tracks.length ? 'Выключены' : 'Нет доступных субтитров', ''), ...options);
+      $('subtitles').disabled = !tracks.length;
+      if (subtitlePreference.enabled) {
+        const preferred = tracks.find(track => track.language === subtitlePreference.language && track.label === subtitlePreference.label)
+          || tracks.find(track => track.language === subtitlePreference.language)
+          || tracks.find(track => track.language === 'ru') || tracks.find(track => track.default) || tracks[0];
+        $('subtitles').value = preferred ? preferred.id : '';
+      }
+      chooseSubtitle();
+    } catch (e) {
+      if (version !== sourceVersion || e.name === 'AbortError') return;
+      $('subtitles').replaceChildren(new Option('Субтитры недоступны', ''));
+      $('subtitles').disabled = true;
+      subtitleStatus('Не удалось проверить субтитры.', true);
+    }
+  }
 
   async function getJSON(url) {
     const response = await fetch(url, {cache: 'no-store'});
@@ -84,6 +301,9 @@
   function loadTrack(selected, autoplay, time = 0) {
     if (selected < 0 || selected >= queue.length) return;
     const version = ++sourceVersion;
+    resetPreparation();
+    resetAudio();
+    resetSubtitles();
     player.pause(); index = selected; resumeTime = time;
     error('');
     $('track-title').textContent = queue[index].title;
@@ -94,11 +314,10 @@
     player.preload = time > 0 ? 'metadata' : 'none';
     player.load(); renderQueue(); save();
     status(autoplay ? 'Загрузка…' : 'Нажмите Play, чтобы продолжить');
-    if (autoplay) player.play().catch(e => {
-      if (version !== sourceVersion || e.name === 'AbortError') return;
-      if (e.name === 'NotAllowedError') status('Нажмите Play, чтобы начать');
-      else error(labels.playError);
-    });
+    if (autoplay) {
+      if (isVideo) startVideo(version);
+      else requestPlay(version);
+    }
   }
   async function selectPlaylist(playlist) {
     const token = ++selection;
@@ -139,6 +358,34 @@
   if (!isVideo) {
     $('cover').addEventListener('load', () => { $('cover').hidden = false; $('cover-placeholder').hidden = true; });
     $('cover').addEventListener('error', () => { $('cover').hidden = true; $('cover-placeholder').hidden = false; });
+  } else {
+    $('preparation-retry').onclick = () => { preparationVersion = -1; startVideo(sourceVersion); };
+    $('audio-tracks').onchange = () => chooseAudio(true);
+    $('audio-track-retry').onclick = () => { audioVersion = -1; prepareAudio(sourceVersion); };
+    player.addEventListener('play', () => {
+      if (preparationReady === sourceVersion && audioVersion === sourceVersion) return;
+      const version = sourceVersion;
+      player.pause(); startVideo(version);
+    });
+    $('subtitles').onchange = () => chooseSubtitle(true);
+    $('subtitle-retry').onclick = () => {
+      if (subtitleTracks.length) chooseSubtitle();
+      else { subtitleVersion = -1; loadSubtitles(); }
+    };
+    player.addEventListener('play', loadSubtitles);
+    player.textTracks.addEventListener('change', () => {
+      if (!activeSubtitle || activeSubtitle.readyState !== 2) return;
+      const enabled = activeSubtitle.track.mode === 'showing';
+      if (enabled && !$('subtitles').value) {
+        const selected = subtitleTracks.find(track => new URL(activeSubtitle.src).pathname.endsWith(`/subtitles/${encodeURIComponent(track.id)}`));
+        if (selected) { $('subtitles').value = selected.id; subtitlePreference = {enabled: true, language: selected.language || '', label: selected.label}; }
+        try { localStorage.setItem(`${storageKey}.subtitles`, JSON.stringify(subtitlePreference)); } catch (_) { /* Storage is optional. */ }
+      }
+      if (!enabled && $('subtitles').value) {
+        $('subtitles').value = ''; subtitlePreference.enabled = false;
+        try { localStorage.setItem(`${storageKey}.subtitles`, JSON.stringify(subtitlePreference)); } catch (_) { /* Storage is optional. */ }
+      }
+    });
   }
   $('show-playlists').onclick = () => { tab = 'playlists'; renderLibrary(); };
   $('show-tracks').onclick = () => { tab = 'tracks'; renderLibrary(); };

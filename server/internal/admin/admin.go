@@ -209,6 +209,13 @@ func (h *Handler) Routes() http.Handler {
 	if h.config.Media != nil {
 		mux.Handle("GET /admin/music/api/", h.config.Media)
 		mux.Handle("GET /admin/video/api/", h.config.Media)
+		mux.HandleFunc("POST /admin/video/api/media/{mediaID}/prepare", func(w http.ResponseWriter, r *http.Request) {
+			if !h.validCSRF(r.Header.Get("X-CSRF-Token")) {
+				http.Error(w, "Обновите страницу: недействительный CSRF token", http.StatusForbidden)
+				return
+			}
+			h.config.Media.ServeHTTP(w, r)
+		})
 	}
 	mux.HandleFunc("GET /admin/system/", h.system)
 	mux.HandleFunc("GET /admin/chat/{$}", h.chatPage)

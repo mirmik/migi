@@ -83,6 +83,59 @@ unavailable sources or unsupported formats show an error and allow retrying a
 track. The read-only `/admin/music/api/` routes inherit the admin listener's
 access boundary and support byte ranges for seeking, including origin media.
 
+Open **Видео** (`/admin/video/`) for video collections. Native WebM and supported
+MP4 audio play directly. Other containers and MP4 audio unsupported by the
+browser are automatically prepared as a compatible MP4: H.264 video packets
+are copied unchanged, incompatible audio is converted to stereo AAC 192 kbit/s,
+existing AAC is copied, and embedded text subtitles are retained. This covers
+the Cyberpunk H.264/E-AC-3 MKVs which otherwise played silently in Firefox.
+The first play shows preparation progress and waits for the complete MP4;
+later plays reuse it under the original catalog ID. This first version does
+not start playback while conversion is still running and does not transcode
+unsupported video codecs. Originals and Android playback are unchanged.
+
+The private `.browser-compatible` directory inside the media store holds at
+most 8 GiB of derived video, keyed by source digest and conversion profile.
+Only one preparation process runs at a time, up to four jobs can wait/run,
+jobs time out after 30 minutes and are cancelled after 45 seconds without a
+status poll. Cache eviction skips files accessed within 30 minutes; a full
+leased cache reports a retryable error. Interrupted temporary files are cleaned
+on failure or after an hour. `ffmpeg`/`ffprobe` must be on the service PATH.
+Preparation POSTs require the video page's CSRF token; status GETs are read-only.
+Origin data is relayed through a short-lived random loopback URL with byte-range
+support; no raw source movie is retained on the server. Completed output is
+checked before an atomic cache commit. Partial files cannot be played.
+
+The **Субтитры** selector below the video offers available languages and
+**Выключены**. Russian is preferred initially; language and the off setting
+persist across episodes and reloads, independently of the music player.
+Text subtitles embedded in server-uploaded MP4/MKV/WebM files are discovered
+with `ffprobe` and extracted as WebVTT with `ffmpeg`. Both tools must be on the
+server service's `PATH`. Origin videos use their declared separate ASS/SSA,
+SRT or WebVTT objects; automatically prepared remote movies can also expose
+their retained embedded tracks through the compatible file. Without preparing
+a compatible movie, embedded origin tracks need separate origin attachments.
+Listing declared sidecars does not download the movie.
+Bitmap subtitles and full ASS styling are not supported by this WebVTT path.
+Conversion is limited to one process at a time, a 30-second deadline and 4 MiB
+of output. Failed subtitles have their own retry button and do not stop video.
+
+The **Звук** selector offers **Автоматически** and individual audio languages
+for ordinary MP4/MOV files, including origin files served by an updated
+range-capable origin. It remembers the chosen language separately from subtitles
+and preserves position and Play/Pause when switching. The server exposes only
+the selected audio track in a virtual MP4 view: unused audio track boxes become
+same-size `free` boxes, while media samples, file size and sample offsets stay
+unchanged. Byte ranges and seeking work without transcoding or making a second
+copy of the movie. Header parsing is limited to 8 MiB and 128 top-level boxes;
+at most 32 small metadata entries are cached. Prepared MP4s also offer this
+selector regardless of the original container. Direct fragmented MP4 is excluded.
+
+Android already has **Звук и субтитры** beside the video title, with separate
+**Звуковая дорожка** and **Субтитры** lists. Supported embedded tracks and attached
+subtitles can be selected there; subtitles can also be switched off. Android
+uses ExoPlayer track selection and does not require the browser MP4 view.
+
 ## Start it
 
 ```bash
