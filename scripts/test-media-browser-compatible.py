@@ -1,5 +1,6 @@
 """Original H.264/E-AC-3 MKV -> automatic cached browser playback."""
 import argparse
+from media_browser_controls import select_setting
 import os
 from playwright.sync_api import sync_playwright, expect
 
@@ -14,7 +15,7 @@ with sync_playwright() as p:
     errors=[]
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(args.url)
-    page.select_option('#playback-speed', value='1.75')
+    select_setting(page, '#playback-speed', value='1.75')
     page.get_by_role('button',name='Original album').click()
     page.wait_for_function('()=>{const v=document.querySelector("video");return v.currentSrc.includes("compatible=1") && v.currentTime>0.1;}',timeout=40000)
     page.wait_for_function('()=>{const v=document.querySelector("video");return v.mozHasAudio===true || v.webkitAudioDecodedByteCount>0;}')
@@ -22,17 +23,17 @@ with sync_playwright() as p:
     assert page.locator('video').evaluate('v => v.playbackRate === 1.75')
     expect(page.locator('#audio-tracks option')).to_have_count(3)
     page.wait_for_function('()=>document.querySelector("video track")?.track.activeCues?.[0]?.text === "Проверка субтитров"')
-    page.select_option('#audio-tracks',label='Английский')
+    select_setting(page, '#audio-tracks',label='Английский')
     page.wait_for_function('()=>{const v=document.querySelector("video");return v.currentSrc.includes("audio=track-3") && v.currentTime>0.1 && !v.paused;}')
     page.locator('video').evaluate('v=>{v.pause();v.currentTime=3;}')
     page.wait_for_function('()=>document.querySelector("video").currentTime>=3 && !document.querySelector("video").seeking')
-    page.select_option('#audio-tracks',label='Японский')
+    select_setting(page, '#audio-tracks',label='Японский')
     page.wait_for_function('()=>{const v=document.querySelector("video");return v.readyState>=2 && !v.seeking && v.currentSrc.includes("audio=track-2");}')
     assert page.locator('video').evaluate('v=>v.paused && Math.abs(v.currentTime-3)<0.2')
     assert page.locator('video').evaluate('v=>v.playbackRate===1.75')
-    page.select_option('#subtitles',label='English')
+    select_setting(page, '#subtitles',label='English')
     page.wait_for_function('()=>document.querySelector("video track")?.track.activeCues?.[0]?.text === "Subtitle check"')
-    page.select_option('#subtitles',value='')
+    select_setting(page, '#subtitles',value='')
     expect(page.locator('video track')).to_have_count(0)
     # Re-selecting the original catalog entry must reuse the prepared view.
     page.locator('#queue-list button').click()

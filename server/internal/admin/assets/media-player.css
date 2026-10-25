@@ -33,3 +33,32 @@ button:focus-visible, input:focus-visible { outline: 2px solid #8eabff; outline-
 .video-subtitles span { color: #aab5c6; font-size: 13px; }
 .video-preparation { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .video-preparation progress { width: 180px; max-width: 100%; }
+
+.video-stage { position: relative; background: #000; border-radius: 10px; overflow: hidden; }
+.video-stage video { border-radius: 0; }
+.video-toolbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: 28px 12px 8px; color: #fff; background: linear-gradient(transparent, rgb(0 0 0 / .9)); transition: opacity .2s; }
+.video-stage.controls-hidden .video-toolbar { opacity: 0; pointer-events: none; }
+.video-stage.controls-hidden { cursor: none; }
+.video-buttons { display: flex; align-items: center; gap: 4px; }
+.video-stage button { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; padding: 8px; color: #fff; background: transparent; border: 0; border-radius: 8px; }
+.video-stage button:hover, .video-stage button[aria-expanded="true"] { background: rgb(255 255 255 / .15); }
+.video-stage button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.video-time { flex: 1; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.video-stage input[type="range"] { padding: 0; border: 0; background: transparent; accent-color: #8eabff; cursor: pointer; }
+.video-seek { display: block; width: 100%; height: 20px; margin: 0; }
+.video-volume { width: 76px; height: 20px; margin: 0 8px 0 0; }
+.video-settings { position: absolute; z-index: 3; right: 12px; bottom: 88px; width: 340px; max-width: calc(100% - 24px); max-height: calc(100% - 100px); overflow: auto; padding: 12px; border: 1px solid #3a4760; border-radius: 12px; background: rgb(15 21 31 / .97); box-shadow: 0 6px 30px rgb(0 0 0 / .4); color: #fff; }
+.video-settings-heading { display: flex; justify-content: space-between; align-items: center; }
+.video-settings-heading button { width: 32px; height: 32px; flex-basis: 32px; font-size: 26px; padding: 0; }
+.video-settings .playback-speed, .video-settings .video-subtitles { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; margin-top: 8px; }
+.video-settings label { color: #d8dfec; font-size: 13px; }
+.video-settings select { width: 100%; padding: 8px; margin: 0; }
+.video-settings span:empty { display: none; }
+.video-settings span, .video-settings button:not(#video-settings-close) { grid-column: 1 / -1; }
+.video-settings button:not(#video-settings-close) { width: auto; height: auto; min-height: 36px; text-align: left; font-size: 12px; background: #253354; }
+.video-stage:fullscreen { width: 100%; height: 100%; border-radius: 0; display: flex; align-items: center; justify-content: center; }
+.video-stage:fullscreen video { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; object-fit: contain; }
+.video-stage:fullscreen .video-toolbar { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.video-stage:fullscreen .video-settings { max-height: min(70vh, 440px); }
+@media (max-width: 600px) { .video-volume { display: none; } .video-toolbar { padding-left: 6px; padding-right: 6px; } .video-settings { left: 6px; right: 6px; bottom: 6px; width: auto; max-width: none; max-height: calc(100% - 12px); padding: 8px; } .video-settings-heading button { height: 28px; } .video-settings .playback-speed, .video-settings .video-subtitles { gap: 4px; margin-top: 4px; } .video-settings select { padding: 6px; } }
+@media (prefers-reduced-motion: reduce) { .video-toolbar { transition: none; } }

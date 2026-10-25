@@ -106,7 +106,13 @@ Origin data is relayed through a short-lived random loopback URL with byte-range
 support; no raw source movie is retained on the server. Completed output is
 checked before an atomic cache commit. Partial files cannot be played.
 
-The **Субтитры** selector below the video offers available languages and
+The in-video **Настройки плеера** gear opens **Скорость**, **Звук** and
+**Субтитры**, including in fullscreen. The playback bar also offers Play/Pause,
+seeking, volume and fullscreen, with keyboard shortcuts Space/K, arrows, M and F.
+It fades during playback and stays visible while settings or keyboard focus are
+active. Narrow screens use the same scrollable settings panel.
+
+The **Субтитры** selector offers available languages and
 **Выключены**. Russian is preferred initially; language and the off setting
 persist across episodes and reloads, independently of the music player.
 Text subtitles embedded in server-uploaded MP4/MKV/WebM files are discovered
@@ -131,8 +137,9 @@ copy of the movie. Header parsing is limited to 8 MiB and 128 top-level boxes;
 at most 32 small metadata entries are cached. Prepared MP4s also offer this
 selector regardless of the original container. Direct fragmented MP4 is excluded.
 
-Android already has **Звук и субтитры** beside the video title, with separate
-**Звуковая дорожка** and **Субтитры** lists. Supported embedded tracks and attached
+Android opens **Настройки плеера** from the gear inside the video controls,
+including fullscreen, with speed, **Звуковая дорожка**, **Субтитры** and external
+subtitle file import/removal. Supported embedded tracks and attached
 subtitles can be selected there; subtitles can also be switched off. Android
 uses ExoPlayer track selection and does not require the browser MP4 view.
 
@@ -140,9 +147,8 @@ Both browser players offer **Скорость** from 0.25× to 3×, including 1.
 1.5× and 2×. Speed preserves audio pitch and does not change the current
 position or Play/Pause. Video and music remember their speeds independently;
 the value survives reload, queue navigation, audio-track changes and compatible
-video preparation. Android video has a **Скорость** button under the title and
-also remembers the chosen rate across episodes and app restarts. Changes from
-the native fullscreen player speed menu are remembered as well.
+video preparation. Android video offers **Скорость** in the same settings gear
+and remembers the chosen rate across episodes and app restarts.
 
 ## Start it
 

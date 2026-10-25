@@ -86,7 +86,6 @@ internal class VideoPanel(
     private var refreshingCatalog = false
     private val playbackSpeeds = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
     private val playbackPreferences by lazy { getSharedPreferences("video-playback", MODE_PRIVATE) }
-    private var speedButton: MaterialButton? = null
     private fun savedPlaybackSpeed(): Float = playbackPreferences.getFloat("speed", 1f)
         .takeIf { it.isFinite() && it in 0.25f..3f } ?: 1f
     private fun speedLabel(speed: Float) = "${java.math.BigDecimal(speed.toString()).stripTrailingZeros().toPlainString().replace('.', ',')}×"
@@ -608,30 +607,7 @@ internal class VideoPanel(
             text = track.title; applyMigiText(22f, weight = Typeface.BOLD)
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        titleRow.addView(iconButton(R.drawable.ic_fullscreen, "Полный экран") { setFullscreen(true) },
-            LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
-        titleRow.addView(iconButton(R.drawable.ic_subtitles, "Звук и субтитры") {
-            val options = mutableListOf("Звуковая дорожка", "Субтитры", "Выбрать файл субтитров")
-            if (library.subtitle(track) != null) options.add("Убрать внешний файл субтитров")
-            dialog().setItems(options.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> chooseTracks(C.TRACK_TYPE_AUDIO)
-                    1 -> chooseTracks(C.TRACK_TYPE_TEXT)
-                    2 -> {
-                        pendingSubtitleID = track.id
-                        savePosition()
-                        activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                            type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
-                        }, 41)
-                    }
-                    3 -> { savePosition(); library.removeSubtitle(track); play(track, false) }
-                }
-            }.show()
-        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         details.addView(titleRow, width())
-        speedButton = button(details, "Скорость: ${speedLabel(savedPlaybackSpeed())}") { chooseSpeed() }.apply {
-            contentDescription = "Скорость воспроизведения"
-        }
         gap(details, 8)
         val status = text(details, description(track), 13f, MigiPalette.muted)
         val actions = LinearLayout(this)
@@ -679,7 +655,6 @@ internal class VideoPanel(
                     val speed = playbackParameters.speed
                     if (speed.isFinite() && speed in 0.25f..3f) {
                         playbackPreferences.edit().putFloat("speed", speed).apply()
-                        speedButton?.text = "Скорость: ${speedLabel(speed)}"
                     }
                 }
                 override fun onTracksChanged(tracks: Tracks) {
@@ -771,6 +746,10 @@ internal class VideoPanel(
     private fun stylePlayer(view: PlayerView) {
         view.setShowPreviousButton(false); view.setShowNextButton(false)
         view.setControllerAnimationEnabled(false)
+        view.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.apply {
+            contentDescription = "Настройки плеера"
+            setOnClickListener { showPlaybackSettings() }
+        }
         val play = view.findViewById<ImageButton>(androidx.media3.ui.R.id.exo_play_pause)
         play?.apply {
             background = rippleDrawable(this@VideoPanel, MigiPalette.primary, 32)
@@ -805,6 +784,27 @@ internal class VideoPanel(
             if (enabled) controller.hide(WindowInsets.Type.systemBars())
             else controller.show(WindowInsets.Type.systemBars())
         }
+    }
+    private fun showPlaybackSettings() {
+        val track = current ?: return
+        val speed = player?.playbackParameters?.speed ?: savedPlaybackSpeed()
+        val options = mutableListOf("Скорость: ${speedLabel(speed)}", "Звуковая дорожка", "Субтитры", "Выбрать файл субтитров")
+        if (library.subtitle(track) != null) options.add("Убрать внешний файл субтитров")
+        dialog().setTitle("Настройки плеера").setItems(options.toTypedArray()) { _, which ->
+            when (which) {
+                0 -> chooseSpeed()
+                1 -> chooseTracks(C.TRACK_TYPE_AUDIO)
+                2 -> chooseTracks(C.TRACK_TYPE_TEXT)
+                3 -> {
+                    pendingSubtitleID = track.id
+                    savePosition()
+                    activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
+                    }, 41)
+                }
+                4 -> { savePosition(); library.removeSubtitle(track); play(track, false) }
+            }
+        }.show()
     }
     private fun chooseTracks(type: Int) {
         val active = player ?: return

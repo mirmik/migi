@@ -1,5 +1,6 @@
 """Real audio/video playback checks for the isolated Go browser fixtures."""
 import argparse
+from media_browser_controls import select_setting
 import os
 import tempfile
 from pathlib import Path
@@ -35,7 +36,7 @@ with sync_playwright() as p:
     page.locator(media).evaluate('v => {v.pause(); v.currentTime = 1;}')
     page.wait_for_function(f'() => !document.querySelector("{media}").seeking')
     for speed in ['0.25', '3', '2']:
-        page.select_option('#playback-speed', value=speed)
+        select_setting(page, '#playback-speed', value=speed)
         assert page.locator(media).evaluate('(v, speed) => v.paused && v.playbackRate === Number(speed) && v.preservesPitch && Math.abs(v.currentTime - 1) < 0.1', speed)
     page.locator(media).evaluate('v => v.play()')
     page.wait_for_function(f'() => document.querySelector("{media}").currentTime > 1.1')
@@ -49,12 +50,12 @@ with sync_playwright() as p:
         assert page.evaluate('document.querySelector("video").videoWidth') == 160
         expect(page.locator('#subtitles')).to_be_enabled()
         page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Проверка субтитров"')
-        page.select_option('#subtitles', label='English')
+        select_setting(page, '#subtitles', label='English')
         page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Subtitle check"')
-        page.select_option('#subtitles', value='')
+        select_setting(page, '#subtitles', value='')
         assert page.locator('video track').count() == 0
-        page.select_option('#subtitles', label='English')
-        page.evaluate('document.querySelector("video").requestFullscreen()')
+        select_setting(page, '#subtitles', label='English')
+        page.evaluate('document.querySelector("#video-stage").requestFullscreen()')
         page.wait_for_function('() => document.fullscreenElement !== null')
         page.evaluate('document.exitFullscreen()')
     # Native media controls drive these same browser playback operations.
@@ -73,7 +74,7 @@ with sync_playwright() as p:
     assert page.locator(media).evaluate('v => v.playbackRate === 2')
     if media == 'video':
         page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Subtitle check"')
-        page.select_option('#subtitles', value='')
+        select_setting(page, '#subtitles', value='')
     page.wait_for_function(f'() => document.querySelector("{media}").readyState >= 2')
     page.evaluate(f'document.querySelector("{media}").currentTime = 7.7')
     expect(page.locator('#track-title')).to_have_text('Second track', timeout=10000)
@@ -94,10 +95,10 @@ with sync_playwright() as p:
     if media == 'video':
         expect(page.locator('#subtitles')).to_be_enabled()
         assert page.locator('video track').count() == 0  # Off survives reload and a new collection.
-        page.select_option('#subtitles', label='English')
+        select_setting(page, '#subtitles', label='English')
         page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Remote subtitles"')
         page.route('**/subtitles/sidecar-*', lambda route: route.fulfill(status=503, body='offline'))
-        page.select_option('#subtitles', label='Русские')
+        select_setting(page, '#subtitles', label='Русские')
         expect(page.locator('#subtitle-retry')).to_be_visible()
         expect(page.locator(error_id)).to_be_hidden()
         page.unroute('**/subtitles/sidecar-*')

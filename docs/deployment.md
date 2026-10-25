@@ -253,6 +253,32 @@ Rollback directory:
 `~/.local/state/migi/deploy-backups/playback-speed-20261025T210157Z/`.
 Restore the previous executable for rollback; no database migration is involved.
 
+### In-video playback settings on Aurora, 2026-10-26 MSK
+
+The video controls now include one settings gear for speed, audio and subtitles.
+Fullscreen expands the video stage with its controls and menu. The bar supports
+Play/Pause, seeking, mute/volume, keyboard shortcuts and automatic hiding;
+automatic bottom captions move above it while visible. Narrow screens keep all
+three settings in a compact scrollable overlay. Existing saved preferences are
+preserved. Android uses its PlayerView settings gear for speed, embedded tracks
+and external subtitle import/removal, including fullscreen, in 0.16.10 (77).
+
+Firefox and Chromium fixtures checked mouse/touch and keyboard controls,
+fullscreen, mobile layout, captions, auto-hide and paused position preservation.
+Existing music, video, audio language and automatic compatibility tests passed.
+Live Firefox checked the original Cyberpunk episodes 04 and 05: fullscreen gear,
+1.5× speed, English audio, Russian captions, paused position and reload. Go race
+tests, vet, source/binary vulnerability checks and the systemd kit passed. Android
+unit tests and signed release assembly/verification passed; no physical Android
+UI test was performed for this change.
+
+Server SHA-256:
+`ca750921fcc8d7af8a10c759bdb8509b1b2c702339f6422dca508818aff254a4`.
+Rollback directory:
+`~/.local/state/migi/deploy-backups/player-controls-20261025T211347Z/`.
+The service was active with zero automatic restarts after rollout. Restore the
+previous executable for rollback; preserve current databases.
+
 ## Validate and build locally
 
 Run the repository-owned checks before preparing deployment artifacts:

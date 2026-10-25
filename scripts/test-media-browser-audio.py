@@ -1,5 +1,6 @@
 """Verify decoded 440/880 Hz tracks, position, pause, subtitles and preferences."""
 import argparse
+from media_browser_controls import select_setting
 import os
 from playwright.sync_api import sync_playwright, expect
 
@@ -39,13 +40,13 @@ with sync_playwright() as p:
     def ready():
         page.wait_for_function('() => {const v = document.querySelector("video");return v.readyState >= 2 && !v.seeking;}')
     peak(440)
-    page.select_option('#playback-speed', value='1.5')
+    select_setting(page, '#playback-speed', value='1.5')
     assert page.locator('video').evaluate('v => v.playbackRate === 1.5 && v.preservesPitch')
-    page.select_option('#subtitles', label='English')
+    select_setting(page, '#subtitles', label='English')
     page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Subtitle check"')
     page.locator('video').evaluate('v => {v.pause();v.currentTime = 3;}')
     ready()
-    page.select_option('#audio-tracks', label='Английский')
+    select_setting(page, '#audio-tracks', label='Английский')
     ready()
     assert page.locator('video').evaluate('v => v.paused && Math.abs(v.currentTime - 3) < 0.2 && v.currentSrc.includes("audio=track-3")')
     page.locator('video').evaluate('v => v.play()')
@@ -53,11 +54,11 @@ with sync_playwright() as p:
     assert page.locator('video').evaluate('v => v.playbackRate === 1.5')
     page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Subtitle check"')
     position = page.locator('video').evaluate('v => v.currentTime')
-    page.select_option('#audio-tracks', label='Японский')
+    select_setting(page, '#audio-tracks', label='Японский')
     peak(440)
     assert page.locator('video').evaluate('(v,t) => !v.paused && v.currentTime >= t - 0.2', position)
-    page.select_option('#subtitles', value='')
-    page.select_option('#audio-tracks', label='Английский')
+    select_setting(page, '#subtitles', value='')
+    select_setting(page, '#audio-tracks', label='Английский')
     peak(880)
     assert page.locator('video track').count() == 0
     page.locator('#next').click()
@@ -81,7 +82,7 @@ with sync_playwright() as p:
     page.locator('video').evaluate('v => {v.play().catch(e => {if (e.name !== "AbortError") throw e;});}')
     page.wait_for_function('() => document.querySelector("video").currentSrc.includes("audio=track-3") && document.querySelector("video").currentTime >= 1.9')
     expect(page.locator('#audio-tracks')).to_have_value('track-3')
-    page.select_option('#audio-tracks', value='')
+    select_setting(page, '#audio-tracks', value='')
     ready()
     assert page.locator('video').evaluate('v => !v.currentSrc.includes("audio=")')
     expect(page.locator('#video-error')).to_be_hidden()

@@ -175,7 +175,11 @@ func TestMP4AudioRejectsMalformedMetadata(t *testing.T) {
 	}
 }
 
-func TestBrowserVideoAudioSmoke(t *testing.T) {
+func TestBrowserVideoAudioSmoke(t *testing.T) { browserAudioSmoke(t, "test-media-browser-audio.py") }
+func TestBrowserPlayerControlsSmoke(t *testing.T) {
+	browserAudioSmoke(t, "test-media-browser-controls.py")
+}
+func browserAudioSmoke(t *testing.T, script string) {
 	python := os.Getenv("MIGI_BROWSER_PYTHON")
 	if python == "" {
 		t.Skip("set MIGI_BROWSER_PYTHON for real audio switching")
@@ -194,7 +198,7 @@ func TestBrowserVideoAudioSmoke(t *testing.T) {
 	browserTestOrigin(t, s, agent, map[string][]byte{remote.ID: content})
 	server := httptest.NewServer(browserTestHandler(t, s))
 	defer server.Close()
-	command := exec.CommandContext(t.Context(), python, "../../../scripts/test-media-browser-audio.py", "--url", server.URL+"/admin/video/")
+	command := exec.CommandContext(t.Context(), python, "../../../scripts/"+script, "--url", server.URL+"/admin/video/")
 	out, err := command.CombinedOutput()
 	t.Log(string(out))
 	if err != nil {
