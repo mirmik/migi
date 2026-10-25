@@ -237,6 +237,22 @@ rollback; preserve current databases. Derived cache files can remain in
 `migi-media/.browser-compatible` and are ignored by the previous server.
 Streaming before the conversion finishes is tracked separately in #3476.
 
+### Playback speeds on Aurora, 2026-10-26 MSK
+
+Video and music now offer 0.25×–3× playback with pitch preservation and separate
+saved preferences. Live Firefox checked an actual 1.5× media/wall-clock ratio,
+paused changes, seek position, audio switching, subtitles and reload. Chromium
+and Firefox fixtures also cover episode changes and compatible preparation at
+the selected rate. Race tests, vet, source/binary vulnerability scans and the
+systemd kit check passed. Android video adds the same saved speed control in
+version 0.16.9 (76); debug unit tests and the signed release build passed.
+
+Server SHA-256:
+`ade900dd83c840aa6742f27caea42e58fe1dbcd09c893fb4a001c89130515750`.
+Rollback directory:
+`~/.local/state/migi/deploy-backups/playback-speed-20261025T210157Z/`.
+Restore the previous executable for rollback; no database migration is involved.
+
 ## Validate and build locally
 
 Run the repository-owned checks before preparing deployment artifacts:

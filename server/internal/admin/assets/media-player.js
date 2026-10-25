@@ -4,6 +4,31 @@
   const player = $('audio') || $('video');
   const isVideo = player.tagName === 'VIDEO';
   const storageKey = isVideo ? 'migi.video.v1' : 'migi.music.v1';
+  const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  const validSpeed = value => Number.isFinite(value) && value >= 0.25 && value <= 3;
+  let playbackSpeed = 1;
+  try { const saved = Number(localStorage.getItem(`${storageKey}.speed`)); if (validSpeed(saved)) playbackSpeed = saved; } catch (_) { /* Storage is optional. */ }
+  $('playback-speed').replaceChildren(...speeds.map(speed => new Option(`${speed.toLocaleString('ru-RU')}×${speed === 1 ? ' (обычная)' : ''}`, String(speed))));
+  function applySpeed() {
+    if (player.defaultPlaybackRate !== playbackSpeed) player.defaultPlaybackRate = playbackSpeed;
+    if (player.playbackRate !== playbackSpeed) player.playbackRate = playbackSpeed;
+    player.preservesPitch = true;
+    if (!Array.from($('playback-speed').options).some(option => Number(option.value) === playbackSpeed)) {
+      $('playback-speed').add(new Option(`${playbackSpeed.toLocaleString('ru-RU')}×`, String(playbackSpeed)));
+    }
+    $('playback-speed').value = String(playbackSpeed);
+  }
+  function rememberSpeed() {
+    try { localStorage.setItem(`${storageKey}.speed`, String(playbackSpeed)); } catch (_) { /* Playback works without storage. */ }
+  }
+  $('playback-speed').onchange = () => {
+    const selected = Number($('playback-speed').value);
+    if (validSpeed(selected)) { playbackSpeed = selected; applySpeed(); rememberSpeed(); }
+  };
+  player.addEventListener('ratechange', () => {
+    if (validSpeed(player.playbackRate)) { playbackSpeed = player.playbackRate; applySpeed(); rememberSpeed(); }
+  });
+  applySpeed();
   const labels = isVideo ? {
     all: 'Все видео', count: 'Видео', collections: 'Коллекций', items: 'Видео',
     empty: 'Пока пусто. Добавьте видео через агента.',
@@ -118,6 +143,7 @@
   }
   function requestPlay(version) {
     if (version !== sourceVersion) return;
+    applySpeed();
     player.play().catch(e => {
       if (version !== sourceVersion || e.name === 'AbortError') return;
       if (e.name === 'NotAllowedError') status('Нажмите Play, чтобы начать');
@@ -394,6 +420,7 @@
   $('previous').onclick = () => { selection++; loadTrack(index - 1, true); };
   $('next').onclick = () => { selection++; loadTrack(index + 1, true); };
   player.addEventListener('loadedmetadata', () => {
+    applySpeed();
     if (resumeTime > 0) {
       player.currentTime = Number.isFinite(player.duration) ? Math.min(resumeTime, Math.max(0, player.duration - 0.1)) : resumeTime;
       resumeTime = 0;

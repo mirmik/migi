@@ -8,6 +8,8 @@
 audio { display: block; width: 100%; }
 .music-controls { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .music-controls span { color: #aab5c6; font-size: 13px; }
+.playback-speed { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.playback-speed label { margin: 0; }
 .music-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .music-columns > * { min-width: 0; }
 .music-tabs { display: flex; gap: 8px; margin-top: 16px; }

@@ -32,6 +32,19 @@ with sync_playwright() as p:
     expect(page.locator('#track-title')).to_have_text('Local track')
     # Playback must decode audio, not just advance a silent video fixture.
     page.wait_for_function(f'() => {{const v = document.querySelector("{media}"); return v.webkitAudioDecodedByteCount > 0 || v.mozHasAudio === true;}}')
+    page.locator(media).evaluate('v => {v.pause(); v.currentTime = 1;}')
+    page.wait_for_function(f'() => !document.querySelector("{media}").seeking')
+    for speed in ['0.25', '3', '2']:
+        page.select_option('#playback-speed', value=speed)
+        assert page.locator(media).evaluate('(v, speed) => v.paused && v.playbackRate === Number(speed) && v.preservesPitch && Math.abs(v.currentTime - 1) < 0.1', speed)
+    page.locator(media).evaluate('v => v.play()')
+    page.wait_for_function(f'() => document.querySelector("{media}").currentTime > 1.1')
+    actual_rate = page.locator(media).evaluate('''async v => {
+      const start = v.currentTime, wall = performance.now();
+      await new Promise(resolve => setTimeout(resolve, 600));
+      return (v.currentTime - start) / ((performance.now() - wall) / 1000);
+    }''')
+    assert 1.4 < actual_rate < 2.6, f'2x playback actually advanced at {actual_rate}'
     if media == 'video':
         assert page.evaluate('document.querySelector("video").videoWidth') == 160
         expect(page.locator('#subtitles')).to_be_enabled()
@@ -57,6 +70,7 @@ with sync_playwright() as p:
         assert page.locator('video track').count() == 0
     page.locator('#previous').click()
     expect(page.locator('#track-title')).to_have_text('Local track')
+    assert page.locator(media).evaluate('v => v.playbackRate === 2')
     if media == 'video':
         page.wait_for_function('() => document.querySelector("video track")?.track.activeCues?.[0]?.text === "Subtitle check"')
         page.select_option('#subtitles', value='')
@@ -70,6 +84,8 @@ with sync_playwright() as p:
     expect(page.locator('#track-title')).to_have_text('Second track')
     page.wait_for_function(f'() => document.querySelector("{media}").currentTime >= 1.9')
     assert page.evaluate(f'document.querySelector("{media}").paused')
+    expect(page.locator('#playback-speed')).to_have_value('2')
+    assert page.locator(media).evaluate('v => v.playbackRate === 2')
     # Remote media goes through the actual origin request/upload relay.
     page.get_by_role('button', name='Remote album').click()
     expect(page.locator('#track-title')).to_have_text('Remote track')

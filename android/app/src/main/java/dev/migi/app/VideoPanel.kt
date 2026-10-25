@@ -31,6 +31,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
@@ -83,6 +84,21 @@ internal class VideoPanel(
     private var catalogButton: MaterialButton? = null
     private var phoneOnly = false
     private var refreshingCatalog = false
+    private val playbackSpeeds = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f)
+    private val playbackPreferences by lazy { getSharedPreferences("video-playback", MODE_PRIVATE) }
+    private var speedButton: MaterialButton? = null
+    private fun savedPlaybackSpeed(): Float = playbackPreferences.getFloat("speed", 1f)
+        .takeIf { it.isFinite() && it in 0.25f..3f } ?: 1f
+    private fun speedLabel(speed: Float) = "${java.math.BigDecimal(speed.toString()).stripTrailingZeros().toPlainString().replace('.', ',')}×"
+    private fun chooseSpeed() {
+        val active = player ?: return
+        val selected = playbackSpeeds.indexOfFirst { it == active.playbackParameters.speed }
+        dialog().setTitle("Скорость воспроизведения")
+            .setSingleChoiceItems(playbackSpeeds.map { speedLabel(it) + if (it == 1f) " (обычная)" else "" }.toTypedArray(), selected) { choice, index ->
+                active.setPlaybackSpeed(playbackSpeeds[index])
+                choice.dismiss()
+            }.show()
+    }
     private var loadingCollection: String? = null
     private var catalogNotice: String? = null
     private var collectionNotice: String? = null
@@ -613,6 +629,9 @@ internal class VideoPanel(
             }.show()
         }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         details.addView(titleRow, width())
+        speedButton = button(details, "Скорость: ${speedLabel(savedPlaybackSpeed())}") { chooseSpeed() }.apply {
+            contentDescription = "Скорость воспроизведения"
+        }
         gap(details, 8)
         val status = text(details, description(track), 13f, MigiPalette.muted)
         val actions = LinearLayout(this)
@@ -647,6 +666,7 @@ internal class VideoPanel(
         builder.setMediaSourceFactory(DefaultMediaSourceFactory(VideoStreamDataSource.factory(this, track))
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(10)))
         player = builder.build().also { active ->
+            active.setPlaybackSpeed(savedPlaybackSpeed())
             active.trackSelectionParameters = active.trackSelectionParameters.buildUpon().setPreferredTextLanguage("ru").build()
             active.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
@@ -654,6 +674,14 @@ internal class VideoPanel(
             view.player = active
             var externalSelected = false
             active.addListener(object : Player.Listener {
+                override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                    if (player !== active) return
+                    val speed = playbackParameters.speed
+                    if (speed.isFinite() && speed in 0.25f..3f) {
+                        playbackPreferences.edit().putFloat("speed", speed).apply()
+                        speedButton?.text = "Скорость: ${speedLabel(speed)}"
+                    }
+                }
                 override fun onTracksChanged(tracks: Tracks) {
                     // MergingMediaSource prefixes format IDs with its child source index.
                     // Select the attached file once, without fighting later user choices.

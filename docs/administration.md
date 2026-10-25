@@ -136,6 +136,14 @@ Android already has **Звук и субтитры** beside the video title, wit
 subtitles can be selected there; subtitles can also be switched off. Android
 uses ExoPlayer track selection and does not require the browser MP4 view.
 
+Both browser players offer **Скорость** from 0.25× to 3×, including 1.25×,
+1.5× and 2×. Speed preserves audio pitch and does not change the current
+position or Play/Pause. Video and music remember their speeds independently;
+the value survives reload, queue navigation, audio-track changes and compatible
+video preparation. Android video has a **Скорость** button under the title and
+also remembers the chosen rate across episodes and app restarts. Changes from
+the native fullscreen player speed menu are remembered as well.
+
 ## Start it
 
 ```bash
