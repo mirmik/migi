@@ -7,7 +7,7 @@ import unittest
 
 scripts = Path(__file__).parent / 'migi-file-exchange' / 'scripts'
 sys.path.insert(0, str(scripts))
-client = importlib.machinery.SourceFileLoader('migi_document', str(scripts / 'migi-document')).load_module()
+client = importlib.machinery.SourceFileLoader('migi_document', str(Path(__file__).parent.parent / 'scripts' / 'migi-document')).load_module()
 
 class DocumentClientTests(unittest.TestCase):
     def test_html_preserves_math_and_list(self):

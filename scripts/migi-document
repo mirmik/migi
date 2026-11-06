@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import re
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "migi-file-exchange" / "scripts"))
 from _migi_transport import resolve_agent_client, read_bounded, MigiClientError
 
 

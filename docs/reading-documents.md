@@ -9,11 +9,11 @@ remain available in Documents, with their saved page position.
 
 ## Agent usage
 
-The portable helper is bundled with the file-exchange skill:
+The helper is available in the repository's `scripts` directory:
 
 ```sh
-python3 skills/migi-file-exchange/scripts/migi-document docs/examples/energy-note.html --check
-python3 skills/migi-file-exchange/scripts/migi-document docs/examples/energy-note.html
+python3 scripts/migi-document docs/examples/energy-note.html --check
+python3 scripts/migi-document docs/examples/energy-note.html
 ```
 
 It uses `MIGI_AGENT_CONFIG` or `~/.config/migi/agent.json`, including the existing

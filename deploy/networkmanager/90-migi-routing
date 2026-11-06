@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IFACE="enp197s0"
+IFACE="enp198s0"
 LAN_IP="192.168.0.61"
 LAN_GATEWAY="192.168.0.1"
 LAN_CIDR="192.168.0.0/24"
