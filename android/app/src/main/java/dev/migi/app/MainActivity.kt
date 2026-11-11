@@ -1545,6 +1545,7 @@ class MainActivity : Activity() {
                     }
                     for (file in files) {
                         val image = file.isViewableImage()
+                        val pdf = file.isViewablePdf()
                         val thumbnail = if (image) ImageView(this).apply {
                             scaleType = ImageView.ScaleType.FIT_CENTER
                             background = roundedDrawable(MigiPalette.surfaceHigh, dp(12).toFloat())
@@ -1590,9 +1591,17 @@ class MainActivity : Activity() {
                         val actions = LinearLayout(this).apply {
                             orientation = LinearLayout.HORIZONTAL
                         }
-                        if (file.isViewableHTML() || image) {
-                            val openLabel = if (image) R.string.open_image_file else R.string.open_html_file
-                            val openingLabel = if (image) R.string.opening_image_file else R.string.opening_html_file
+                        if (file.isViewableHTML() || image || pdf) {
+                            val openLabel = when {
+                                pdf -> R.string.open_pdf_file
+                                image -> R.string.open_image_file
+                                else -> R.string.open_html_file
+                            }
+                            val openingLabel = when {
+                                pdf -> R.string.opening_pdf_file
+                                image -> R.string.opening_image_file
+                                else -> R.string.opening_html_file
+                            }
                             actions.addView(secondaryActionButton(openLabel).apply {
                                 thumbnail?.setOnClickListener { if (isEnabled) performClick() }
                                 setOnClickListener {
@@ -1604,7 +1613,8 @@ class MainActivity : Activity() {
                                         val result = runCatching {
                                             FileExchangeClient(this@MainActivity)
                                                 .let { client ->
-                                                    if (image) client.downloadImageForViewing(file)
+                                                    if (pdf) client.downloadPdfForViewing(file)
+                                                    else if (image) client.downloadImageForViewing(file)
                                                     else client.downloadForViewing(file)
                                                 }
                                         }
@@ -1617,10 +1627,18 @@ class MainActivity : Activity() {
                                             button.setText(openLabel)
                                             result.onSuccess { temporary ->
                                                 updateStatus(
-                                                    getString(if (image) R.string.image_file_opened else R.string.html_file_opened, file.name),
+                                                    getString(when {
+                                                        pdf -> R.string.pdf_file_opened
+                                                        image -> R.string.image_file_opened
+                                                        else -> R.string.html_file_opened
+                                                    }, file.name),
                                                 )
                                                 startActivity(
-                                                    if (image) ImageViewerActivity.intent(
+                                                    if (pdf) PdfViewerActivity.intent(
+                                                        this@MainActivity,
+                                                        file.name,
+                                                        temporary,
+                                                    ) else if (image) ImageViewerActivity.intent(
                                                         this@MainActivity,
                                                         file.name,
                                                         temporary,
@@ -1662,7 +1680,7 @@ class MainActivity : Activity() {
                                 )
                             }
                         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            if (file.isViewableHTML() || image) marginStart = dp(5)
+                            if (file.isViewableHTML() || image || pdf) marginStart = dp(5)
                         })
                         content.addView(actions, matchWidth())
                         val item = MaterialCardView(this).apply {

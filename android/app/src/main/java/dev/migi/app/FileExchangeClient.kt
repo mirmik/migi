@@ -139,6 +139,21 @@ internal class FileExchangeClient(private val context: Context) {
         )
     }
 
+    fun downloadPdfForViewing(file: SharedFile): File {
+        require(file.isViewablePdf()) { "Unsupported PDF format" }
+        val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+        File(context.cacheDir, PdfViewerPolicy.CACHE_DIRECTORY).listFiles()
+            ?.filter { it.name.startsWith(PdfViewerPolicy.FILE_PREFIX) && it.lastModified() < cutoff }
+            ?.forEach(File::delete)
+        return downloadVerified(
+            file = file,
+            directoryName = PdfViewerPolicy.CACHE_DIRECTORY,
+            prefix = PdfViewerPolicy.FILE_PREFIX,
+            suffix = PdfViewerPolicy.FILE_SUFFIX,
+            maxBytes = PdfViewerPolicy.MAX_PDF_BYTES,
+        )
+    }
+
     fun downloadThumbnail(file: SharedFile, destination: File) {
         require(file.isViewableImage()) { "Unsupported image format" }
         val config = config()

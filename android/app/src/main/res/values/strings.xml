@@ -148,4 +148,15 @@
     <string name="pairing_complete">Paired; starting connection</string>
     <string name="pairing_failed">Pairing failed: %1$s</string>
     <string name="video_library">Видео · сериалы и фильмы</string>
+    <string name="open_pdf_file">View PDF</string>
+    <string name="opening_pdf_file">Downloading and verifying PDF…</string>
+    <string name="pdf_file_opened">Opened: %1$s</string>
+    <string name="pdf_viewer_loading">Loading page…</string>
+    <string name="pdf_viewer_failed">Cannot open PDF: %1$s</string>
+    <string name="pdf_viewer_password">Password-protected PDFs are not supported.</string>
+    <string name="pdf_viewer_invalid">The PDF is damaged or unsupported.</string>
+    <string name="pdf_viewer_page">Page %1$d of %2$d</string>
+    <string name="pdf_viewer_previous">Previous</string>
+    <string name="pdf_viewer_next">Next</string>
+    <string name="close_pdf_viewer">Close</string>
 </resources>

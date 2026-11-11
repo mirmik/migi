@@ -64,6 +64,8 @@
             android:name=".ImageViewerActivity"
             android:exported="false" />
 
+        <activity android:name=".PdfViewerActivity" android:exported="false" />
+
         <service
             android:name=".ConnectionService"
             android:exported="false"

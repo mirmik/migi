@@ -109,6 +109,16 @@ name is display-only and cannot select a server path. A `file.available` event
 is appended only after the object is committed. Files expire after a configured
 TTL and both per-object and aggregate byte limits bound disk consumption.
 
+Android's Files tab opens PDFs in a private built-in viewer after verifying the
+downloaded length and SHA-256 against inbox metadata (up to 100 MiB). PDF MIME
+types are recognized directly; a `.pdf` extension is accepted for missing or
+generic binary MIME types. The platform `PdfRenderer` renders one page at a
+time off the UI thread, with an 8-million-pixel / 4096-pixel-edge bitmap limit.
+Previous/Next controls show the page number; pinch, drag, and double tap control
+the view. Rotation preserves the page. Password-protected or invalid PDFs show
+an error. The private cache survives recreation and is deleted on close;
+abandoned downloads are pruned after 24 hours when another PDF is opened.
+
 The first version is one server-wide inbox. It deliberately does not claim to
 deliver an upload into a particular live agent session; session addressing and
 agent wake-up are a separate future protocol layer.

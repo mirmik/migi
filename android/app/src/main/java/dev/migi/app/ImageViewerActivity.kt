@@ -124,7 +124,7 @@ class ImageViewerActivity : Activity() {
     }
 }
 
-private class ZoomImageView(context: Context) : ImageView(context) {
+internal class ZoomImageView(context: Context) : ImageView(context) {
     private var fit = 1f
     private var zoom = 1f
     private var offsetX = 0f
